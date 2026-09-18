@@ -8,7 +8,7 @@ const SID = (() => {
     const out = execFileSync("bsk", ["session", "start", "--json"], { encoding: "utf-8" });
     return JSON.parse(out).session_id;
   } catch {
-    return process.env.PAGE_TEST_SESSION || "";
+    return process.env.PAGEQA_SESSION || "";
   }
 })();
 

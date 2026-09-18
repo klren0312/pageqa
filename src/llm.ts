@@ -1,21 +1,14 @@
 import { createModels, createProvider, type Model, type Api } from "@earendil-works/pi-ai";
 import * as openaiCompletions from "@earendil-works/pi-ai/api/openai-completions";
+import { loadConfig } from "./config.js";
 
 /**
  * LLM 后端：基于 @earendil-works/pi-ai 构造一个指向 CodeBuddy 本地反代的自定义 provider。
  *
- * 默认反代地址 http://127.0.0.1:3000/v1（上游 copilot.tencent.com，模型 hunyuan-2.0-instruct），
- * 无需任何官网 API Key。如反代不可达，可设置环境变量覆盖：
- *   - PAGE_TEST_LLM_BASE_URL
- *   - PAGE_TEST_LLM_API_KEY
- *   - PAGE_TEST_LLM_MODEL
- *
- * 也可通过设置 PAGE_TEST_LLM_PROVIDER / PAGE_TEST_LLM_MODEL 切换到 pi-ai 其他已配置 provider。
+ * 配置优先级（高 -> 低）：环境变量 PAGEQA_LLM_*  >  用户配置文件（~/.pageqa/config.json）  >  内置默认值。
+ * 首次运行会自动在用户主目录创建配置文件，便于用户修改模型/反代地址/密钥。
  */
 
-const DEFAULT_BASE_URL = process.env.PAGE_TEST_LLM_BASE_URL || "http://127.0.0.1:3000/v1";
-const DEFAULT_API_KEY = process.env.PAGE_TEST_LLM_API_KEY || "codebuddy-proxy-key";
-const DEFAULT_MODEL = process.env.PAGE_TEST_LLM_MODEL || "hunyuan-2.0-instruct";
 const PROVIDER_ID = "codebuddy";
 
 interface CodeBuddyModelConfig {
@@ -45,6 +38,10 @@ export interface LlmBackend {
 }
 
 export function createLlmBackend(): LlmBackend {
+  const cfg = loadConfig();
+  const DEFAULT_BASE_URL = cfg.baseUrl;
+  const DEFAULT_API_KEY = cfg.apiKey;
+  const DEFAULT_MODEL = cfg.model;
   const models = createModels();
   const provider = createProvider({
     id: PROVIDER_ID,

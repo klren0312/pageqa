@@ -1,11 +1,11 @@
-# Spec: page-test-agent
+# Spec: pageqa
 
 页面测试 agent 是一个基于 Node.js + TypeScript 的命令行工具，用自然语言描述测试意图，由 **pi-agent-core** 状态化 agent 把意图解析为浏览器操作步骤并自动编排，通过 **browserskill（`bsk`）** 连接真实浏览器执行，最终输出可读测试报告与机器可读结果。LLM 后端默认经 **CodeBuddy 本地反代**（混元）实现免官网 Key 的自然语言解析。
 
 ## 1. 总体架构
 
 ```text
-page-test-agent/
+pageqa/
   package.json          # 包元数据、bin 入口、依赖（pi-agent-core, pi-ai）
   tsconfig.json         # TypeScript 编译配置
   src/
@@ -23,7 +23,7 @@ page-test-agent/
 - `src/llm.ts` 使用 `@earendil-works/pi-ai` 的 `createModels` / `createProvider` 构造一个自定义 `openai-completions` provider，指向 CodeBuddy 本地反代 `http://127.0.0.1:3000/v1`，模型 `hunyuan-2.0-instruct`。
 - `auth` 采用静态解析的 `ApiKeyAuth`（`resolve` 返回 `{ apiKey, baseUrl }`），避免交互式 env 探测；默认 Key `codebuddy-proxy-key`。
 - 模型定义需包含 pi-ai `Model` 必填字段：`api`、`provider`、`baseUrl`、`input`、`contextWindow`、`maxTokens`/`maxOutput`、`cost`（含 `tiers` 等价字段）、`compat`。
-- 可通过环境变量 `PAGE_TEST_LLM_BASE_URL` / `PAGE_TEST_LLM_API_KEY` / `PAGE_TEST_LLM_MODEL` 覆盖；也可切换到 pi-ai 其他已配置 provider。
+- 可通过环境变量 `PAGEQA_LLM_BASE_URL` / `PAGEQA_LLM_API_KEY` / `PAGEQA_LLM_MODEL` 覆盖；也可切换到 pi-ai 其他已配置 provider。
 - `streamFn` 使用 `models.streamSimple.bind(models)`，供 `pi-agent-core` 的 Agent 驱动 LLM。
 
 ## 3. 浏览器驱动（browserskill / bsk）
@@ -54,7 +54,7 @@ page-test-agent/
 ## 6. CLI 接口
 
 ```text
-page-test-agent [options] <input>
+pageqa [options] <input>
 
 <input>            自然语言脚本文件（.md/.txt）或内联文本（按行解析多句）
 

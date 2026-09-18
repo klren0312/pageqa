@@ -1,46 +1,90 @@
-# page-test-agent
+# pageqa
 
-用自然语言驱动的页面测试 agent。基于 **pi-agent-core**（状态化 LLM agent）编排测试步骤，**browserskill（`bsk`）** 驱动真实浏览器执行，默认经 **CodeBuddy 本地反代**（混元）实现免官网 Key 的自然语言解析。最终产出可读文本报告与机器可读 JSON 报告，返回可接入 CI 的退出码。
+用自然语言驱动的页面测试 agent。基于 **pi-agent-core**（状态化 LLM agent）编排测试步骤，**browserskill（`bsk`）** 驱动真实浏览器执行，自然语言解析由可配置的 LLM 端点完成。最终产出可读文本报告与机器可读 JSON 报告，返回可接入 CI 的退出码。
 
 - 运行时：**Node.js + TypeScript**，npm 分发，CLI 入口。
 - 浏览器驱动：**browserskill（`bsk`）**，连接一个已运行的真实浏览器（Chrome/Edge），支持公开页与登录态页面。
-- 自然语言驱动：**pi-agent-core** 状态化 agent，把自然语言意图解析为浏览器操作步骤并自动编排；LLM 后端默认 CodeBuddy 反代（混元）。
+- 自然语言驱动：**pi-agent-core** 状态化 agent，把自然语言意图解析为浏览器操作步骤并自动编排；LLM 后端通过可配置的 OpenAI 兼容端点接入（base URL / API Key / 模型均可配置）。
 
 ## 前置
 
-1. 安装并启动 `bsk` daemon，且连接一个浏览器：
-   ```bash
-   bsk status          # 确认 daemon 与已连接浏览器
-   bsk session start   # 创建 session（CLI 也会自动创建）
-   ```
-2. CodeBuddy 本地反代可用（默认 `http://127.0.0.1:3000/v1`，模型 `hunyuan-2.0-instruct`，Key `codebuddy-proxy-key`）。
-   可用环境变量覆盖：
-   - `PAGE_TEST_LLM_BASE_URL`
-   - `PAGE_TEST_LLM_API_KEY`
-   - `PAGE_TEST_LLM_MODEL`
+### 1. 安装并配置 browserskill（`bsk`）
+
+`bsk` 是连接真实浏览器（Chrome/Edge）的驱动，本项目通过它执行页面操作。
+
+- 项目主页与安装方式：**https://github.com/Tencent/BrowserSkill**
+- 按仓库 README 安装 `bsk` CLI 并启动 daemon，然后连接一个已登录的浏览器（支持公开页与登录态页面）。
+
+验证安装与连接：
+```bash
+bsk status           # 确认 daemon 已启动且已连接浏览器
+bsk session start    # 创建 session（CLI 也会自动创建）
+```
+
+> 提示：本工具的 `--session <id>` 即来自 `bsk session start` 返回的 `session_id`；不传时 CLI 会自动新建一个（前提 daemon 已连浏览器）。
+
+### 2. LLM 后端（可配置 OpenAI 兼容端点）
+
+自然语言解析依赖一个 OpenAI 兼容的 LLM 端点。端点地址、密钥与模型均可通过配置文件或环境变量设置：
+
+- 默认地址：`http://127.0.0.1:3000/v1`（可被覆盖为任意 OpenAI 兼容端点）
+- 默认 Key：`codebuddy-proxy-key`
+
+可用环境变量覆盖（优先级高于配置文件）：
+- `PAGEQA_LLM_BASE_URL`
+- `PAGEQA_LLM_API_KEY`
+- `PAGEQA_LLM_MODEL`
+
+### 3. 用户级配置文件（可选但推荐）
+
+工具会在**用户主目录**自动创建配置文件，持久化 LLM 设置，避免每次用环境变量：
+
+- 配置目录：`~/.pageqa`（Windows：`%USERPROFILE%\.pageqa`）
+- 配置文件：`config.json`
+
+```json
+{
+  "baseUrl": "http://127.0.0.1:3000/v1",
+  "apiKey": "codebuddy-proxy-key",
+  "model": "hunyuan-2.0-instruct"
+}
+```
+
+- 首次运行（或执行 `pageqa --init-config`）会自动创建该文件，编辑即可切换模型/端点地址/密钥。
+- **优先级（高 → 低）**：环境变量 `PAGEQA_LLM_*`  >  用户配置文件 `config.json`  >  内置默认值。
+- 例如要改用其他兼容 OpenAI 的端点，把 `baseUrl`/`apiKey`/`model` 改掉即可，无需改代码。
 
 ## 安装
 
+本地开发：
 ```bash
 npm install
 npm run build
 ```
 
+全局安装（发布后）：
+```bash
+npm install -g pageqa
+pageqa --init-config   # 在用户目录创建配置文件 ~/.pageqa/config.json
+```
+
+> 全局安装后首次运行也会自动创建配置文件；用 `--init-config` 可显式创建/重置。
+
 ## 使用
 
 ```bash
 # 内联自然语言（多句按行分隔）
-page-test-agent --session <id> "打开 https://example.com
+pageqa --session <id> "打开 https://example.com
 并断言标题包含 Example"
 
 # 读取脚本文件（自动识别 `## ` 分隔的多个场景，逐个运行并汇总）
-page-test-agent examples/smoke.md
+pageqa examples/smoke.md
 
 # JSON 报告
-page-test-agent --json examples/smoke.md
+pageqa --json examples/smoke.md
 
 # 强制按多场景套件运行（即使只有一个场景）
-page-test-agent --suite "打开 https://example.com 并断言标题包含 Example"
+pageqa --suite "打开 https://example.com 并断言标题包含 Example"
 ```
 
 ### 多场景套件
@@ -54,6 +98,7 @@ page-test-agent --suite "打开 https://example.com 并断言标题包含 Exampl
 | `--session <id>` | 指定已存在的 bsk session（默认自动创建） |
 | `--json` | 输出 JSON 报告 |
 | `--suite` | 强制按多场景套件运行 |
+| `--init-config` | 在用户目录创建/重置配置文件 |
 | `--out <file>` | 将报告写入文件 |
 | `-h, --help` | 帮助 |
 
@@ -63,7 +108,7 @@ page-test-agent --suite "打开 https://example.com 并断言标题包含 Exampl
 
 ```
 自然语言意图
-   └─> pi-agent-core Agent（LLM: pi-ai 自定义 provider -> CodeBuddy 反代 -> 混元）
+   └─> pi-agent-core Agent（LLM: pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
           └─> bsk 工具：navigate / snapshot / click / fill / hover / scroll / wait / assert_text
                  └─> 真实浏览器（bsk 连接）
           └─> 结论与证据 -> 报告（文本/JSON）+ 退出码
@@ -82,17 +127,17 @@ page-test-agent --suite "打开 https://example.com 并断言标题包含 Exampl
 npm test
 ```
 
-冒烟测试覆盖：A1 打开+标题断言、A2 元素交互与断言、A3 失败可读原因与退出码、A4 文本/JSON 报告。需 bsk daemon 连接浏览器且 CodeBuddy 反代可用。
+冒烟测试覆盖：A1 打开+标题断言、A2 元素交互与断言、A3 失败可读原因与退出码、A4 文本/JSON 报告。需 bsk daemon 连接浏览器且 LLM 端点可用。
 
 也可直接运行套件脚本：
 
 ```bash
-page-test-agent examples/smoke.md --json
+pageqa examples/smoke.md --json
 ```
 
 ## CI 集成
 
-`.github/workflows/ci.yml` 演示如何在 GitHub Actions 中接入：安装 bsk 并连接浏览器 → 构建 → 运行 `examples/smoke.md` → 上传 JSON 报告。失败场景会使退出码非零，从而标记 CI 失败。CodeBuddy 反代地址/Key 通过仓库 Secrets（`PAGE_TEST_LLM_BASE_URL` 等）注入。
+`.github/workflows/ci.yml` 演示如何在 GitHub Actions 中接入：安装 bsk 并连接浏览器 → 构建 → 运行 `examples/smoke.md` → 上传 JSON 报告。失败场景会使退出码非零，从而标记 CI 失败。LLM 端点地址/Key 通过仓库 Secrets（`PAGEQA_LLM_BASE_URL` 等）注入。
 
 ## 目录
 
@@ -100,7 +145,7 @@ page-test-agent examples/smoke.md --json
 src/
   index.ts       CLI 入口
   agent.ts       编排器（pi-agent-core Agent + bsk 工具 + 报告）
-  llm.ts         LLM 后端（pi-ai 自定义 provider -> CodeBuddy 反代）
+  llm.ts         LLM 后端（pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
   bsk/tools.ts   browserskill 工具层
   report.ts      报告解析与渲染
 tests/smoke.test.mjs 端到端验证
