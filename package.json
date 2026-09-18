@@ -1,0 +1,37 @@
+{
+  "name": "page-test-agent",
+  "version": "0.1.0",
+  "description": "用自然语言驱动的页面测试 agent：基于 pi-agent-core 编排 + browserskill 驱动真实浏览器，经 CodeBuddy 反代（混元）实现免 Key 自然语言测试。",
+  "type": "module",
+  "bin": {
+    "page-test-agent": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "pretest": "npm run build",
+    "test": "node --test tests/smoke.test.mjs"
+  },
+  "keywords": [
+    "page-test",
+    "e2e",
+    "testing",
+    "agent",
+    "pi-agent-core",
+    "browserskill",
+    "bsk"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "file:../pi/packages/agent",
+    "@earendil-works/pi-ai": "file:../pi/packages/ai"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0"
+  }
+}

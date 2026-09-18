@@ -1,0 +1,65 @@
+{
+  "schema": "comet.native.capability-cache.v1",
+  "entries": [
+    {
+      "key": "{\"workflow\":\"native\",\"currentSpecRoot\":\"docs/comet/specs\",\"archiveRoot\":\"docs/comet/archive\",\"task\":\"开发页面测试 agent：打开网页读取内容、元素交互、断言校验、自然语言驱动\"}",
+      "fingerprint": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "result": {
+        "workflow": "native",
+        "query": {
+          "task": "开发页面测试 agent：打开网页读取内容、元素交互、断言校验、自然语言驱动",
+          "operation": "associate capability",
+          "terms": [
+            "开发页面测试",
+            "打开网页读取内容",
+            "元素交互",
+            "断言校验",
+            "自然语言驱动",
+            "开发页面测试 agent：打开网页读取内容、元素交互、断言校验、自然语言驱动",
+            "agent",
+            "开发",
+            "测试",
+            "打开",
+            "网页",
+            "内容",
+            "元素",
+            "交互",
+            "断言",
+            "自然",
+            "语言",
+            "驱动"
+          ],
+          "strongTerms": [],
+          "phraseTerms": [
+            "开发页面测试",
+            "打开网页读取内容",
+            "元素交互",
+            "断言校验",
+            "自然语言驱动",
+            "开发页面测试 agent：打开网页读取内容、元素交互、断言校验、自然语言驱动"
+          ],
+          "weakTerms": [
+            "agent",
+            "开发",
+            "测试",
+            "打开",
+            "网页",
+            "内容",
+            "元素",
+            "交互",
+            "断言",
+            "自然",
+            "语言",
+            "驱动"
+          ],
+          "remoteQuery": "开发页面测试 agent：打开网页读取内容、元素交互、断言校验、自然语言驱动\nOperation: associate capability"
+        },
+        "candidates": [],
+        "associationDraft": null,
+        "diagnostics": [],
+        "searched": true,
+        "providerLimit": 40
+      }
+    }
+  ]
+}

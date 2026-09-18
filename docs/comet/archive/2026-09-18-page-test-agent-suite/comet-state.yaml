@@ -1,0 +1,161 @@
+schema: comet.native.v4
+name: page-test-agent-suite
+language: zh-CN
+phase: archive
+status: done
+state_version: 8
+brief: brief.md
+shape_confirmation_hash: fdcbc6330c81de72e5741f3395e3f463b8b44094e9fc0a34b686f9da2536f346
+spec_changes: []
+workspace:
+  isolation: current
+  change_branch: master
+  target_branch: master
+  finish: null
+loop:
+  stage: done
+  goal_cycle: 1
+  iteration: 1
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: "A1：脚本 `examples/smoke.md`（含 A1/A2/A3 三个 `## ` 场景）经 CLI 运行，输出「整体结论:
+      FAIL」且进程退出码为 1（A3 为故意失败场景），并列出 3 个场景各自的 PASS/FAIL。"
+    result: passed
+    reason:
+      text: examples/smoke.md 三场景(A3故意失败)→整体FAIL, exit1, 列出3场景PASS/FAIL
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: A2：单个无 `## ` 的内联自然语言意图（如「打开 https://example.com 并断言标题包含 Example」）经 CLI
+      运行，行为等同单场景，退出码 0。
+    result: passed
+    reason:
+      text: 内联无##意图→单场景, exit0, 兼容既有 CLI
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: A3：`--json` 套件输出结构稳定，包含 `status`/`assertions`/`summary`/`transcript`，可被 CI
+      解析。
+    result: passed
+    reason:
+      text: --json 套件输出含 status/assertions/summary/transcript, 结构稳定
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: A4：原有端到端冒烟测试（`tests/smoke.test.mjs` 覆盖 A1-A4）仍全部通过，无回归。
+    result: passed
+    reason:
+      text: npm test 原有 A1-A4 全部通过(4/4), 无回归
+      truncated: false
+builder_handoff:
+  candidate_id: 20de8415-120f-471f-8da4-63001a3b9773
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:94906223-4157-44f7-a0b2-485e3cd592ae
+  iteration: 1
+  summary:
+    text: "页面测试 agent 套件增强实现完成：多场景套件（splitScenarios/runSuite，## 分隔，汇总整体
+      PASS/FAIL+退出码，任一失败→exit1，无 ## 兼容单场景，忽略 # 标题与开场说明）；--suite
+      强制套件模式；.github/workflows/ci.yml 提供 GitHub Actions 接入示例（Secrets 注入
+      CodeBuddy 反代）。编译通过，examples/smoke.md 套件运行整体 FAIL+exit1 验证通过，单场景内联
+      exit0，npm test 原有 A1-A4 全部通过(4/4)无回归。"
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+  checks:
+    - name:
+        text: build (tsc)
+        truncated: false
+      result: passed
+      note:
+        text: npm run build 通过
+        truncated: false
+    - name:
+        text: A1 套件汇总+退出码1
+        truncated: false
+      result: passed
+      note:
+        text: examples/smoke.md 三场景(A3故意失败)→整体FAIL, exit1, 列出3场景PASS/FAIL
+        truncated: false
+    - name:
+        text: A2 单场景兼容 exit0
+        truncated: false
+      result: passed
+      note:
+        text: 内联无##意图→单场景, exit0
+        truncated: false
+    - name:
+        text: A3 --json 套件结构稳定
+        truncated: false
+      result: passed
+      note:
+        text: 含 status/assertions/summary/transcript
+        truncated: false
+    - name:
+        text: A4 原有冒烟测试无回归
+        truncated: false
+      result: passed
+      note:
+        text: npm test A1-A4 全部通过(4/4)
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: 需 bsk daemon 连接浏览器 + CodeBuddy 反代可用（同主 change 约束）
+      truncated: false
+    - text: 套件顺序执行，未并发
+      truncated: false
+    - text: CI 工作流为示例，未在此环境实跑 GitHub Actions
+      truncated: false
+  known_limits_truncated: false
+  review: null
+  submitted_at: 2026-09-18T06:25:54.187Z
+blockers: []
+verification:
+  candidate_id: 20de8415-120f-471f-8da4-63001a3b9773
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:8f6b08d7-e8b2-41f4-b602-2aea487144a4
+  iteration: 1
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks: []
+  summary:
+    text: 本地端到端验证：套件汇总+退出码、单场景兼容、JSON 结构、原冒烟无回归均通过。编译通过，CI 工作流为示例（逻辑审阅）。
+    truncated: false
+  risks: []
+  risks_truncated: false
+  completed_at: 2026-09-18T06:28:05.332Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: 本地端到端验证：套件汇总+退出码、单场景兼容、JSON 结构、原冒烟无回归均通过。编译通过，CI 工作流为示例（逻辑审阅）。
+      truncated: false
+    completed_at: 2026-09-18T06:28:05.332Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-09-18T06:21:01.848Z

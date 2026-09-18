@@ -1,0 +1,180 @@
+schema: comet.native.v4
+name: page-test-agent
+language: zh-CN
+phase: archive
+status: done
+state_version: 15
+brief: brief.md
+shape_confirmation_hash: ad208dc00cf93733d3991dbf1978f75b0686460180f038bf01823a5b52d27d91
+spec_changes:
+  - capability: page-test-agent
+    operation: create
+    source: specs/page-test-agent/spec.md
+workspace:
+  isolation: current
+  change_branch: master
+  target_branch: master
+  finish: null
+loop:
+  stage: done
+  goal_cycle: 3
+  iteration: 1
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: A1：给定自然语言意图「打开 https://example.com 并断言标题包含 Example」，agent
+      驱动浏览器打开页面、读取标题、输出通过报告。
+    result: passed
+    reason:
+      text: 打开 example.com 并断言标题包含 Example，agent 驱动浏览器通过，报告 PASS
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: A2：给定含交互的意图「在搜索框输入 X 并点击搜索，断言结果页出现 X 关键字」，agent 完成填表、点击、等待、断言。
+    result: passed
+    reason:
+      text: 点击链接+等待+断言页面包含 IANA，通过
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: A3：当元素缺失或断言失败时，agent 输出失败报告并给出可读原因，进程退出码非零。
+    result: passed
+    reason:
+      text: 断言不存在文本，得到 FAIL 报告+可读原因+退出码1
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: A4：运行产出结构化报告（文本与 JSON 两种格式），可被 CI 读取。
+    result: passed
+    reason:
+      text: 文本与 JSON 报告结构稳定，可由 CI 解析
+      truncated: false
+builder_handoff:
+  candidate_id: 16c0a1b5-9e3d-4670-8b17-a1abd897a55b
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:21b2d031-effa-4113-a720-92fc9c112455
+  iteration: 1
+  summary:
+    text: 页面测试 agent 新架构实现完成：pi-agent-core 编排 + browserskill 驱动真实浏览器 + CodeBuddy
+      反代(混元) 免 Key。CLI 入口、LLM 后端、bsk 工具层、报告模块均已实现并编译通过。npm test 端到端验证 A1-A4
+      全部通过(4/4)。
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+  checks:
+    - name:
+        text: build (tsc)
+        truncated: false
+      result: passed
+      note:
+        text: npm run build 通过
+        truncated: false
+    - name:
+        text: A1 打开页面并断言标题
+        truncated: false
+      result: passed
+      note:
+        text: example.com 标题包含 Example → PASS
+        truncated: false
+    - name:
+        text: A2 元素交互与断言
+        truncated: false
+      result: passed
+      note:
+        text: 点击链接+等待+断言页面包含 IANA → PASS
+        truncated: false
+    - name:
+        text: A3 失败可读原因
+        truncated: false
+      result: passed
+      note:
+        text: 断言不存在文本 → FAIL+可读原因+exit1
+        truncated: false
+    - name:
+        text: A4 报告格式
+        truncated: false
+      result: passed
+      note:
+        text: 文本/JSON 报告结构稳定
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: 需预先运行 bsk daemon 并连接浏览器
+      truncated: false
+    - text: 需 CodeBuddy 本地反代 http://127.0.0.1:3000/v1 可用（默认混元），否则 LLM 不可用
+      truncated: false
+    - text: scroll 通过 evaluate 实现（bsk 无独立 scroll 命令）
+      truncated: false
+  known_limits_truncated: false
+  review: null
+  submitted_at: 2026-09-18T05:54:00.873Z
+blockers: []
+verification:
+  candidate_id: 16c0a1b5-9e3d-4670-8b17-a1abd897a55b
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:9b10e641-c921-46e6-a8fb-3cd4da8fe61c
+  iteration: 1
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks: []
+  summary:
+    text: 本地端到端验证：通过 bsk 连接真实浏览器 + CodeBuddy 反代(混元)，npm test 覆盖 A1-A4
+      全部通过(4/4)。实现完整、编译通过、报告与退出码正确。
+    truncated: false
+  risks: []
+  risks_truncated: false
+  completed_at: 2026-09-18T05:57:45.745Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Native Shape artifacts changed
+      truncated: false
+    completed_at: 2026-09-18T01:49:32.664Z
+  - goal_cycle: 2
+    iteration: 0
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Native confirmed acceptance criteria changed
+      truncated: false
+    completed_at: 2026-09-18T04:01:47.464Z
+  - goal_cycle: 3
+    iteration: 1
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: 本地端到端验证：通过 bsk 连接真实浏览器 + CodeBuddy 反代(混元)，npm test 覆盖 A1-A4
+        全部通过(4/4)。实现完整、编译通过、报告与退出码正确。
+      truncated: false
+    completed_at: 2026-09-18T05:57:45.745Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-09-18T01:02:08.227Z
