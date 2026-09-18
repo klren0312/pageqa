@@ -34,19 +34,33 @@ export function buildReport(input: string, transcript: string): TestReport {
 
 function parseAssertions(text: string): AssertionResult[] {
   const results: AssertionResult[] = [];
-  // 匹配两种常见句式：
-  //   断言「X」：成立/不成立。证据...
+  // 预处理：
+  //   1) 去掉 markdown 加粗标记（agent 常输出「…：**成立**」）
+  //   2) 把「成立/不成立」前的换行折回同一行
+  const cleaned = text
+    .replace(/\*\*|__/g, "")
+    .replace(/[ \t]*\n[ \t]*(?=(?:成立|不成立))/g, "");
+  // 匹配两种常见句式（描述里可含「」/引号等标点）：
+  //   断言 X：成立/不成立。证据...
   //   断言「X」成立。证据...
-  const re = /断言[「"']?([^」"']+?)[""」]?\s*(?:[:：]\s*)?(成立|不成立)/g;
+  const re = /断言\s*(.+?)\s*(?:[:：]\s*)?(不成立|成立)/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const expectation = m[1].trim();
+  while ((m = re.exec(cleaned)) !== null) {
+    const expectation = stripEdges(m[1]);
     const verdict = m[2] === "成立" ? "pass" : "fail";
-    const after = text.slice(m.index + m[0].length).split("\n")[0].trim();
-    const evidence = after.startsWith("。") ? after.slice(1).trim() : after;
+    const after = cleaned.slice(m.index + m[0].length).split("\n")[0];
+    const evidence = stripEdges(after);
     results.push({ expectation, verdict, evidence: evidence || undefined });
   }
   return results;
+}
+
+/** 去掉首尾的连接符/标点噪声（agent 常写「…：**成立**，证据…」「…」——成立）。 */
+function stripEdges(text: string): string {
+  return text
+    .replace(/^[\s,，。、;；:：]+/, "")
+    .replace(/[\s,，。、;；:：\-—]+$/, "")
+    .trim();
 }
 
 function extractSummary(text: string): string {
