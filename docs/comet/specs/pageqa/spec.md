@@ -50,7 +50,9 @@ pageqa/
 ## 5. 报告与退出码
 
 - `src/report.ts` 从 agent 结论文本解析断言（`断言「X」：成立/不成立` 句式），无法解析时按关键字（不成立/未找到/失败/不存在）降级判定。
-- 文本报告含结论（PASS/FAIL）、断言列表与证据、摘要、transcript；JSON 报告结构稳定：`{ status, assertions[], summary?, transcript }`。
+- 文本报告含结论（PASS/FAIL）、断言列表与证据、摘要、transcript；JSON 报告结构稳定：`{ status, assertions[], summary?, transcript, usage? }`。
+- token 消耗：`runAgent` 汇总本次运行全部 assistant 消息的 `usage`（含续跑轮次）为 `TokenUsage { input, output, cacheRead, cacheWrite, reasoning, total, calls }`；`runSuite` 用 `mergeUsage` 合并各场景用量。
+- 文本报告**末尾**输出一行 token 消耗（`formatUsage`），套件模式下每个场景块内也各有一行，末尾为合计；JSON 报告经 `usage` 字段输出。端点未返回 usage（`calls>0` 且 `total=0`）时须如实标注，不得把 0 当作真实消耗。
 - 全部断言通过 → 退出码 `0`；任一失败/错误 → 退出码 `1`。可直接接入 CI。
 
 ## 6. CLI 接口

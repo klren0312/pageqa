@@ -4,11 +4,16 @@ import { createBskTools, ensureSession, ensureBskReady } from "./bsk/tools.js";
 import { JevClient } from "./jev.js";
 import { loadConfig } from "./config.js";
 import {
+  addUsage,
   buildReport,
   countAssertions,
+  emptyUsage,
+  formatUsage,
+  mergeUsage,
   parseAssertions,
   parseProgress,
   type TestReport,
+  type TokenUsage,
 } from "./report.js";
 
 export interface AgentOptions {
@@ -22,6 +27,7 @@ export interface AgentRunResult {
   text: string;
   json: string;
   transcript: string;
+  usage: TokenUsage;
 }
 
 interface Scenario {
@@ -98,6 +104,16 @@ function continuePrompt(
     tail +
     "若确实有步骤无法完成，也要如实输出实际进度。"
   );
+}
+
+/** 汇总 agent 全部 assistant 消息的 usage（包含每一轮与每次续跑）。 */
+function collectUsage(messages: AgentMessage[]): TokenUsage {
+  let acc = emptyUsage();
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    acc = addUsage(acc, m.usage);
+  }
+  return acc;
 }
 
 /** 粗略估算消息文本总字符数。 */
@@ -305,11 +321,17 @@ export async function runAgent(
     "[runAgent] 断言数=" + report.assertions.length + "，状态=" + report.status,
   );
 
+  // token 消耗：从每条 assistant 消息的 usage 汇总，渲染在报告末尾。
+  const usage = collectUsage(agent.state.messages);
+  report.usage = usage;
+  log("[runAgent] " + formatUsage(usage));
+
   return {
     report,
     text: renderText(report),
     json: JSON.stringify(report, null, 2),
     transcript,
+    usage,
   };
 }
 
@@ -358,6 +380,7 @@ export async function runSuite(
   const overall = results.every((r) => r.report.status === "pass")
     ? "pass"
     : "fail";
+  const usage = results.reduce((acc, r) => mergeUsage(acc, r.usage), emptyUsage());
   const summary: TestReport = {
     status: overall,
     assertions: results.flatMap((r, i) =>
@@ -382,12 +405,14 @@ export async function runSuite(
           r.transcript.trim(),
       )
       .join("\n\n"),
+    usage,
   };
   return {
     report: summary,
     text: renderSuiteText(summary, results, scenarios),
     json: JSON.stringify(summary, null, 2),
     transcript: summary.transcript,
+    usage,
   };
 }
 
@@ -410,9 +435,11 @@ function renderText(r: TestReport): string {
   lines.push("结论: " + (r.status === "pass" ? "PASS" : "FAIL"));
   lines.push("断言数: " + r.assertions.length);
   for (const a of r.assertions) lines.push(assertionLine(a));
-  if (r.summary) lines.push("摘要: " + r.summary);
+  if (r.summary)   lines.push("摘要: " + r.summary);
   lines.push("---");
   lines.push(r.transcript.trim());
+  lines.push("---");
+  lines.push(formatUsage(r.usage));
   return lines.join("\n");
 }
 
@@ -438,8 +465,11 @@ function renderSuiteText(
     );
     for (const a of r.report.assertions) lines.push(assertionLine(a));
     if (r.report.summary) lines.push("  摘要: " + r.report.summary);
+    lines.push("  " + formatUsage(r.usage));
   });
   lines.push("");
   lines.push("汇总: " + summary.summary);
+  lines.push("---");
+  lines.push(formatUsage(summary.usage));
   return lines.join("\n");
 }
