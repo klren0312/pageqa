@@ -4,7 +4,7 @@
 
 <https://github.com/user-attachments/assets/d5315f93-7e02-4445-a7cf-506b3bfcaa2d>
 
-- 运行时：**Node.js + TypeScript**，npm 分发，CLI 入口。
+- 运行时：**Node.js + TypeScript**，以 npm 包分发、CLI 入口；仓库开发使用 **pnpm**（锁文件为 `pnpm-lock.yaml`）。
 - 浏览器驱动：**browserskill（`bsk`）**，连接一个已运行的真实浏览器（Chrome/Edge），支持公开页与登录态页面。
 - 自然语言驱动：**pi-agent-core** 状态化 agent，把自然语言意图解析为浏览器操作步骤并自动编排；LLM 后端通过可配置的 OpenAI 兼容端点接入（base URL / API Key / 模型均可配置）。
 
@@ -118,17 +118,17 @@ bsk session start    # 可选：手动创建 session（不传 --session 时 page
 
 ## 安装
 
-本地开发：
+本地开发（仓库使用 pnpm，请先安装：`npm install -g pnpm`）：
 
 ```bash
-npm install
-npm run build
+pnpm install --frozen-lockfile
+pnpm run build
 ```
 
 全局安装（发布后）：
 
 ```bash
-npm install -g pageqa
+npm install -g pageqa   # 或 pnpm add -g pageqa
 pageqa --init-config   # 在用户目录创建配置文件 ~/.pageqa/config.json
 ```
 
@@ -189,7 +189,8 @@ pageqa --suite "打开 https://example.com 并断言标题包含 Example"
 ## 验证
 
 ```bash
-npm test
+pnpm test            # 端到端冒烟：需 bsk daemon 已连接浏览器 + LLM 端点可用
+pnpm run test:unit   # 仅单元测试：不依赖浏览器与 LLM
 ```
 
 冒烟测试覆盖：A1 打开+标题断言、A2 元素交互与断言、A3 失败可读原因与退出码、A4 文本/JSON 报告。需 bsk daemon 连接浏览器且 LLM 端点可用。
@@ -202,7 +203,18 @@ pageqa examples/smoke.md --json
 
 ## CI 集成
 
-`.github/workflows/ci.yml` 演示如何在 GitHub Actions 中接入：安装 bsk 并连接浏览器 → 构建 → 运行 `examples/smoke.md` → 上传 JSON 报告。失败场景会使退出码非零，从而标记 CI 失败。LLM 端点地址/Key 通过仓库 Secrets（`PAGEQA_LLM_BASE_URL` 等）注入。
+**`.github/workflows/ci.yml`**：在 `master`/`main` 的 push 与 PR 上运行，流程为 pnpm 冻结锁文件安装（`pnpm install --frozen-lockfile`）→ `pnpm run build` → `pnpm run test:unit`。
+
+端到端冒烟（`examples/smoke.md`）需要 bsk daemon、已连接的真实浏览器与可用的 LLM 端点，GitHub 托管 runner 上不具备这些条件，因此不在仓库 CI 中运行。若要在自己的 CI 里跑端到端，用环境变量注入 LLM 端点（`PAGEQA_LLM_BASE_URL` / `PAGEQA_LLM_API_KEY` / `PAGEQA_LLM_MODEL`，建议放仓库 Secrets）：
+
+```bash
+pnpm run build
+node dist/index.js --json examples/smoke.md
+```
+
+任一断言失败会返回非零退出码，可直接作为 CI 门禁。
+
+**`.github/workflows/release.yml`**：推送 `v*` tag 时触发，`check` job 先冻结锁文件安装并构建，随后通过 npm **OIDC 可信发布**（依赖 `id-token: write`，无需 `NPM_TOKEN`）发布到 npm 并自动创建 GitHub Release。发布产物附带 SLSA provenance 证明，因此 `package.json` 中的 `repository` 字段必须与仓库地址一致，不可删除。
 
 ## 目录
 
