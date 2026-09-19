@@ -1,5 +1,5 @@
 import { homedir, platform } from "node:os";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
@@ -17,16 +17,25 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
  * 首次运行（配置文件不存在）会自动创建带默认值的配置文件，便于用户日后修改。
  */
 
+import type { JevConfig } from "./jev.js";
+
 export interface PageQaConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  jev: JevConfig;
 }
 
 const DEFAULTS: PageQaConfig = {
   baseUrl: "http://127.0.0.1:3000/v1",
   apiKey: "codebuddy-proxy-key",
   model: "hunyuan-2.0-instruct",
+  jev: {
+    enabled: false,
+    apiKey: "",
+    model: "jev-latest",
+    threshold: 0.5,
+  },
 };
 
 export const CONFIG_DIR = join(homedir(), ".pageqa");
@@ -35,10 +44,33 @@ export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 /** 读取配置：合并 默认值 < 用户文件 < 环境变量。返回最终生效配置。 */
 export function loadConfig(): PageQaConfig {
   const fromFile = readConfigFile();
+  const fromJev: Partial<JevConfig> = fromFile.jev ?? {};
   return {
-    baseUrl: process.env.PAGEQA_LLM_BASE_URL ?? fromFile.baseUrl ?? DEFAULTS.baseUrl,
-    apiKey: process.env.PAGEQA_LLM_API_KEY ?? fromFile.apiKey ?? DEFAULTS.apiKey,
+    baseUrl:
+      process.env.PAGEQA_LLM_BASE_URL ?? fromFile.baseUrl ?? DEFAULTS.baseUrl,
+    apiKey:
+      process.env.PAGEQA_LLM_API_KEY ?? fromFile.apiKey ?? DEFAULTS.apiKey,
     model: process.env.PAGEQA_LLM_MODEL ?? fromFile.model ?? DEFAULTS.model,
+    jev: {
+      enabled: (() => {
+        if (process.env.PAGEQA_JEV_ENABLED !== undefined) {
+          return process.env.PAGEQA_JEV_ENABLED.toLowerCase() === "true";
+        }
+        return fromJev.enabled ?? DEFAULTS.jev.enabled;
+      })(),
+      apiKey:
+        process.env.PAGEQA_JEV_API_KEY ?? fromJev.apiKey ?? DEFAULTS.jev.apiKey,
+      model:
+        process.env.PAGEQA_JEV_MODEL ?? fromJev.model ?? DEFAULTS.jev.model,
+      threshold: (() => {
+        const env = process.env.PAGEQA_JEV_THRESHOLD;
+        if (env != null) {
+          const n = Number(env);
+          if (!isNaN(n)) return n;
+        }
+        return fromJev.threshold ?? DEFAULTS.jev.threshold;
+      })(),
+    },
   };
 }
 
@@ -56,6 +88,7 @@ function readConfigFile(): Partial<PageQaConfig> {
       baseUrl: parsed.baseUrl ?? DEFAULTS.baseUrl,
       apiKey: parsed.apiKey ?? DEFAULTS.apiKey,
       model: parsed.model ?? DEFAULTS.model,
+      jev: parsed.jev ?? DEFAULTS.jev,
     };
   } catch {
     return { ...DEFAULTS };

@@ -18,16 +18,21 @@ https://github.com/user-attachments/assets/d5315f93-7e02-4445-a7cf-506b3bfcaa2d
 
 `bsk` 是连接真实浏览器（Chrome/Edge）的驱动，本项目通过它执行页面操作。
 
-- 项目主页与安装方式：**https://github.com/Tencent/BrowserSkill**
-- 按仓库 README 安装 `bsk` CLI 并启动 daemon，然后连接一个已登录的浏览器（支持公开页与登录态页面）。
+- 项目主页与安装方式：**<https://github.com/Tencent/BrowserSkill>**
+- 按仓库 README **安装 `bsk` CLI**（只需装一次）。
+
+> **无需手动启动 daemon**：运行 `pageqa` 时会自动检查并在 daemon 未运行时后台启动它（`bsk daemon start`），每个进程只启动一次。你也可以用 `bsk status` 查看状态。
+
+**浏览器连接仍需你来做**（这是物理操作，pageqa 无法自动完成）：在浏览器中安装 bsk 扩展并完成连接。若启动时检测不到任何已连接浏览器，pageqa 会明确报错并提示你先连接，而不是卡死。
 
 验证安装与连接：
+
 ```bash
-bsk status           # 确认 daemon 已启动且已连接浏览器
-bsk session start    # 创建 session（CLI 也会自动创建）
+bsk status           # 查看 daemon 与已连接浏览器
+bsk session start    # 可选：手动创建 session（不传 --session 时 pageqa 会自动创建）
 ```
 
-> 提示：本工具的 `--session <id>` 即来自 `bsk session start` 返回的 `session_id`；不传时 CLI 会自动新建一个（前提 daemon 已连浏览器）。
+> 提示：本工具的 `--session <id>` 即来自 `bsk session start` 返回的 `session_id`；不传时 CLI 会自动新建一个（前提已有浏览器连接）。
 
 ### 2. LLM 后端（可配置 OpenAI 兼容端点）
 
@@ -37,6 +42,7 @@ bsk session start    # 创建 session（CLI 也会自动创建）
 - 默认 Key：`codebuddy-proxy-key`
 
 可用环境变量覆盖（优先级高于配置文件）：
+
 - `PAGEQA_LLM_BASE_URL`
 - `PAGEQA_LLM_API_KEY`
 - `PAGEQA_LLM_MODEL`
@@ -60,15 +66,71 @@ bsk session start    # 创建 session（CLI 也会自动创建）
 - **优先级（高 → 低）**：环境变量 `PAGEQA_LLM_*`  >  用户配置文件 `config.json`  >  内置默认值。
 - 例如要改用其他兼容 OpenAI 的端点，把 `baseUrl`/`apiKey`/`model` 改掉即可，无需改代码。
 
+### 4. Jev 语义断言（可选增强）
+
+> **什么是 Jev？** Jev 是 TypeSafe AI 推出的 [System One 模型](https://docs.typesafe.ai)，专为结构化决策设计。它不做文本生成，而是直接返回校准后的概率值（如匹配度 0.93）。适合替代原有的字符串包含匹配，做更精准的语义级断言。
+
+**启用方式**：在 `~/.pageqa/config.json` 中添加 `jev` 字段，或设置环境变量：
+
+```json
+{
+  "baseUrl": "http://127.0.0.1:3000/v1",
+  "apiKey": "codebuddy-proxy-key",
+  "model": "hunyuan-2.0-instruct",
+  "jev": {
+    "enabled": true,
+    "apiKey": "your-typesafe-api-key",
+    "model": "jev-latest",
+    "threshold": 0.5
+  }
+}
+```
+
+| Jev 配置项 | 说明 | 默认值 |
+| --- | --- | --- |
+| `enabled` | 是否启用 Jev 语义断言 | `false` |
+| `apiKey` | TypeSafe API 密钥 | （无） |
+| `model` | Jev 模型 ID | `jev-latest` |
+| `threshold` | 语义匹配概率阈值（0~1） | `0.5` |
+
+**环境变量覆盖**（优先级高于配置文件）：
+
+- `PAGEQA_JEV_ENABLED=true`
+- `PAGEQA_JEV_API_KEY=<your-key>`
+- `PAGEQA_JEV_MODEL=jev-latest`
+- `PAGEQA_JEV_THRESHOLD=0.6`
+
+**获取 API Key**：
+
+1. 访问 [console.typesafe.ai/settings/keys](https://console.typesafe.ai/settings/keys)（需等待早期访问权限）
+2. 或通过 Vercel AI Gateway 获取
+
+**工作原理**：启用后，`assert_text` 工具会将页面快照文本发送给 Jev，由 Jev 判断页面内容是否语义匹配断言期望。相比原有的字符串 `includes` 匹配，Jev 能处理同义词、近义表达、大小写变体等情况，大幅降低误判。
+
+**降级机制**：若 Jev API 调用失败（网络/超时/鉴权错误），会自动回退到原有的字符串包含匹配，确保测试不因 Jev 服务中断而失败。
+
+**架构示意**：
+
+```text
+自然语言意图
+   └─> pi-agent-core Agent（LLM → 可配置 OpenAI 兼容端点）
+          └─> bsk 工具：navigate / snapshot / click / fill / hover / scroll / wait
+                 └─> 真实浏览器（bsk 连接）
+          └─> assert_text ──→ Jev Noul API（可选，语义匹配）
+          └─> 结论与证据 → 报告（文本/JSON）+ 退出码
+```
+
 ## 安装
 
 本地开发：
+
 ```bash
 npm install
 npm run build
 ```
 
 全局安装（发布后）：
+
 ```bash
 npm install -g pageqa
 pageqa --init-config   # 在用户目录创建配置文件 ~/.pageqa/config.json
@@ -121,6 +183,7 @@ pageqa --suite "打开 https://example.com 并断言标题包含 Example"
 ```
 
 可用工具（`src/bsk/tools.ts`）：
+
 - `navigate(url)` 打开网页
 - `snapshot()` 读取页面 aria 树与可见文本（标题、段落、链接、按钮等）
 - `click(target)` / `fill(target, value)` / `hover(target)` 元素交互（target 用 `@eN` 引用或 CSS 选择器）

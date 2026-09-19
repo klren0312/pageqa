@@ -23,13 +23,50 @@ export function buildReport(input: string, transcript: string): TestReport {
     status = assertions.every((a) => a.verdict === "pass") ? "pass" : "fail";
   } else {
     // 无结构化断言：依据关键字与「不成立/失败」判定
-    const lowered = transcript.toLowerCase();
     const negative = /不成立|未找到|失败|不存在|not found|fail|missing/.test(transcript);
     status = negative ? "fail" : "pass";
   }
 
+  // 完整性校验：用例里写了 N 条断言，就应当看到 N 条结果；
+  // 少了解析结果说明 agent 只跑了其中一部分（长流程最容易半途结束）。
+  const expected = countAssertions(input);
+  if (expected > 0 && assertions.length < expected) {
+    status = "fail";
+    assertions.push({
+      expectation: `用例中的断言全部执行（实际 ${assertions.length}/${expected}）`,
+      verdict: "fail",
+      evidence: "解析到的断言少于用例中的断言数量，疑似步骤未执行完就结束",
+    });
+  }
+
+  // agent 自报的步骤进度未跑满，同样判失败。
+  const progress = parseProgress(transcript);
+  if (progress && progress.done < progress.total) {
+    status = "fail";
+    assertions.push({
+      expectation: `全部步骤执行完成（${progress.done}/${progress.total}）`,
+      verdict: "fail",
+      evidence: "agent 自报的步骤完成度不足",
+    });
+  }
+
   const summary = extractSummary(transcript);
   return { status, assertions, summary, transcript };
+}
+
+/** 统计用例（自然语言测试步骤）中的断言数量，用于校验执行完整性。 */
+export function countAssertions(script: string): number {
+  return (script.match(/断言/g) ?? []).length;
+}
+
+/** 解析 agent 结尾的进度声明「步骤完成：M/N」。 */
+function parseProgress(text: string): { done: number; total: number } | null {
+  const m = /步骤完成\s*[:：]\s*(\d+)\s*[/／]\s*(\d+)/.exec(text);
+  if (!m) return null;
+  const done = Number(m[1]);
+  const total = Number(m[2]);
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return null;
+  return { done, total };
 }
 
 function parseAssertions(text: string): AssertionResult[] {
