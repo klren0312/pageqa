@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { buildReport } from "../dist/report.js";
+import { buildReport, countAssertions } from "../dist/report.js";
 
 // 纯单元测试：只依赖 dist/report.js，不需要 bsk / LLM。
 describe("report 断言解析", () => {
@@ -65,5 +65,51 @@ describe("report 断言解析", () => {
   test("无结构化断言时按关键字降级判定", () => {
     assert.equal(buildReport("", "页面正常打开。").status, "pass");
     assert.equal(buildReport("", "元素未找到，测试失败。").status, "fail");
+  });
+});
+
+// 长流程最容易发生「只跑了几步就收尾」，这里锁定完整性校验行为。
+describe("执行完整性校验", () => {
+  const script = [
+    "### 1 第一步",
+    "打开 https://a.com",
+    "断言页面包含 A",
+    "### 2 第二步",
+    "断言页面包含 B",
+  ].join("\n");
+
+  test("用例中的断言数被统计", () => {
+    assert.equal(countAssertions(script), 2);
+  });
+
+  test("断言数不足 → fail", () => {
+    const r = buildReport(script, "1. 断言页面包含 A：成立");
+    assert.equal(r.status, "fail");
+    assert.ok(
+      r.assertions.some((a) => a.verdict === "fail" && a.expectation.includes("1/2")),
+      "应追加一条断言数不足的失败项",
+    );
+  });
+
+  test("断言齐且全部成立 → pass", () => {
+    const r = buildReport(script, "1. 断言页面包含 A：成立\n2. 断言页面包含 B：成立");
+    assert.equal(r.status, "pass");
+  });
+
+  test("agent 自报步骤未跑满 → fail", () => {
+    const r = buildReport(
+      script,
+      "1. 断言页面包含 A：成立\n2. 断言页面包含 B：成立\n步骤完成：1/2",
+    );
+    assert.equal(r.status, "fail");
+    assert.ok(r.assertions.some((a) => a.expectation.includes("全部步骤执行完成")));
+  });
+
+  test("agent 自报步骤跑满 → 不影响判定", () => {
+    const r = buildReport(
+      script,
+      "1. 断言页面包含 A：成立\n2. 断言页面包含 B：成立\n步骤完成：2/2",
+    );
+    assert.equal(r.status, "pass");
   });
 });
