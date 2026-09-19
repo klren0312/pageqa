@@ -11,20 +11,25 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v4
         with:
-          node-version: 20
+          version: 12.4.2
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build
-        run: npm run build
+        run: pnpm run build
 
       - name: Unit tests
-        run: npm run test:unit
+        run: pnpm run test:unit
 
       # 注意：端到端（e2e）测试需要 bsk daemon + 已连接浏览器 + 可用的 LLM 端点，
       # 这些在 CI 环境中不具备，故不在此运行。如需本地 e2e，请在已连接浏览器的

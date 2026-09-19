@@ -86,7 +86,8 @@ const HELP = `pageqa - 自然语言驱动的页面测试工具（pi-agent-core +
 
 前置:
   - 已安装并启动 bsk daemon，且连接了一个浏览器（bsk session start）
-  - CodeBuddy 本地反代可用（默认 http://127.0.0.1:3000/v1，模型 hunyuan-2.0-instruct）
+  - 有一个可用的 OpenAI 兼容 LLM 端点（默认 http://127.0.0.1:3000/v1，模型 hunyuan-2.0-instruct，
+    可通过 ~/.pageqa/config.json 或 PAGEQA_LLM_* 环境变量覆盖）
 
 示例:
   pageqa --session ulao "打开 https://example.com 并断言标题包含 Example"
