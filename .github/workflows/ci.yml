@@ -1,3 +1,4 @@
+---
 name: page-test-agent CI
 
 on:
@@ -7,8 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  e2e:
-    runs-on: windows-latest
+  build-and-test:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -16,30 +17,15 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install browserskill (bsk) and connect a browser
-        run: |
-          # 安装并启动 bsk daemon，连接一个已登录的 Chrome/Edge
-          # 具体安装命令依 bsk 发布渠道而定；此处假设 bsk 已在 runner 镜像中
-          bsk status
-          bsk session start
+      - name: Install dependencies
+        run: npm install
 
-      - name: Install dependencies & build
-        run: |
-          npm install
-          npm run build
+      - name: Build
+        run: npm run build
 
-      - name: Run page-test-agent smoke suite
-        env:
-          PAGE_TEST_LLM_BASE_URL: ${{ secrets.PAGE_TEST_LLM_BASE_URL }}
-          PAGE_TEST_LLM_API_KEY: ${{ secrets.PAGE_TEST_LLM_API_KEY }}
-          PAGE_TEST_LLM_MODEL: ${{ secrets.PAGE_TEST_LLM_MODEL }}
-        run: |
-          # 失败（任一场景未通过）时退出码非零，使 CI 标记失败
-          node dist/index.js --json examples/smoke.md --out report.json || exit 1
+      - name: Unit tests
+        run: npm run test:unit
 
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: page-test-report
-          path: report.json
+      # 注意：端到端（e2e）测试需要 bsk daemon + 已连接浏览器 + 可用的 LLM 端点，
+      # 这些在 CI 环境中不具备，故不在此运行。如需本地 e2e，请在已连接浏览器的
+      # 机器上执行：node dist/index.js --json examples/smoke.md
