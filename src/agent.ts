@@ -3,7 +3,13 @@ import { createLlmBackend } from "./llm.js";
 import { createBskTools, ensureSession, ensureBskReady } from "./bsk/tools.js";
 import { JevClient } from "./jev.js";
 import { loadConfig } from "./config.js";
-import { buildReport, type TestReport } from "./report.js";
+import {
+  buildReport,
+  countAssertions,
+  parseAssertions,
+  parseProgress,
+  type TestReport,
+} from "./report.js";
 
 export interface AgentOptions {
   session?: string;
@@ -30,6 +36,7 @@ const DEFAULT_SYSTEM_PROMPT = [
   "- navigate(url): 打开网页",
   "- snapshot(): 读取页面 aria 树与可见文本（标题、段落、链接、按钮等），并定位元素",
   "- click(target) / fill(target, value) / hover(target): 元素交互，target 用 @eN 引用或 CSS 选择器",
+  "- upload(target, file): 上传本地文件到文件输入框/上传区域，target 传触发上传的元素（或省略由工具自动查找）",
   "- scroll(target) / wait(ms): 滚动与等待",
   "- assert_text(expectation): 断言页面是否包含某文本，返回「成立/不成立」与证据",
   "",
@@ -46,6 +53,7 @@ const DEFAULT_SYSTEM_PROMPT = [
   "- 结尾必须单独输出一行进度声明，格式固定：`步骤完成：<已完成步骤数>/<总步骤数>`。",
   "  例如共 7 个步骤且全部完成时输出 `步骤完成：7/7`；只完成 4 步则输出 `步骤完成：4/7`。",
   "- 若某步骤确实无法完成（元素找不到、操作被拒绝等），明确说明该步骤失败及原因，然后继续或终止，但仍要如实输出进度声明。",
+  "- 只要还有未执行的步骤，就继续调用工具执行下一步，不要中途停下等待用户输入；只有全部步骤都执行（或已明确失败）后才输出进度声明并收尾。",
   "- 工具调用失败（如 click 找不到元素、超时）不等于该步骤失败：必须先重新 snapshot 定位元素后重试；同一操作连续两次失败才可判定该步骤失败。",
   "",
   "硬性约束（违反即视为测试失败）：",
@@ -53,6 +61,7 @@ const DEFAULT_SYSTEM_PROMPT = [
   "- 严禁在尚未 snapshot 确认页面内容的情况下就断言；若 snapshot 返回内容为空或明显不是目标页面，应报告「不成立」并说明原因，而不是编造结论。",
   "- 严禁在步骤未执行完的情况下给出「测试通过」结论；宁可报告某步骤失败，也不要静默省略步骤。",
   "- 不要编造未观察到的内容；若元素不存在、导航失败或页面未打开，明确说明。",
+  "- 涉及文件上传时必须用 upload 工具：原生系统文件选择框无法被自动化点击，直接 click 上传按钮会卡住流程。",
   "",
   "只输出测试结论与证据，不要输出多余解释。",
 ].join("\n");
@@ -64,6 +73,32 @@ const CONTEXT_CHAR_LIMIT = 40_000;
 const KEEP_RECENT_MESSAGES = 12;
 const MAX_OLD_TOOL_CHARS = 1_500;
 const TRIMMED_MARK = "（较早的快照已省略";
+
+// 长流程最常见的失败模式：模型做完一两步就自行收尾（不再调用工具、直接给结论），
+// 后面的步骤根本没执行。这里按 agent 自报的进度/已解析断言数补「继续执行」提示，
+// 直到跑满、确实没有进展或达到次数上限为止。
+const MAX_CONTINUATIONS = 5;
+
+/** 构造续跑提示：只要求接着做，不重复已完成步骤，并再次强调进度声明格式。 */
+function continuePrompt(
+  progress: { done: number; total: number } | null,
+): string {
+  const tail =
+    "不要重复已完成的步骤；每完成一步记「第 k 步完成：<结果>」，全部步骤执行完后必须单独输出一行「步骤完成：<已完成数>/<总数>」。";
+  if (progress) {
+    return (
+      `进度检查：你自报的进度是 ${progress.done}/${progress.total}，仍有步骤未执行。` +
+      `请从第 ${progress.done + 1} 步开始继续执行剩余步骤，` +
+      tail
+    );
+  }
+  return (
+    "进度检查：你没有输出进度声明「步骤完成：<已完成数>/<总数>」，且用例中的断言/步骤尚未全部执行。" +
+    "请继续执行剩余步骤，" +
+    tail +
+    "若确实有步骤无法完成，也要如实输出实际进度。"
+  );
+}
 
 /** 粗略估算消息文本总字符数。 */
 function estimateChars(messages: AgentMessage[]): number {
@@ -206,6 +241,44 @@ export async function runAgent(
   await agent.prompt(input);
   log("[runAgent] prompt 完成，等待 idle...");
   await agent.waitForIdle();
+
+  // 续跑：只在「有明确证据表明还没执行完」时才追问，避免正常用例被多余打扰。
+  // 证据 = agent 自报进度未满，或用例中断言数还没跑够。
+  const expectedAssertions = countAssertions(input);
+  let lastSignature: string | null = null;
+  for (let round = 0; round < MAX_CONTINUATIONS; round++) {
+    if (agent.state.errorMessage) break;
+    const transcriptSoFar = events.join("");
+    const progress = parseProgress(transcriptSoFar);
+    const parsed = parseAssertions(transcriptSoFar).length;
+    const incomplete = progress
+      ? progress.done < progress.total
+      : expectedAssertions > 0 && parsed < expectedAssertions;
+    if (!incomplete) break;
+
+    const signature =
+      (progress ? `${progress.done}/${progress.total}` : "-") + "|" + parsed;
+    if (round > 0 && signature === lastSignature) {
+      log("[runAgent] 续跑后进度未推进（" + signature + "），停止续跑");
+      break;
+    }
+    lastSignature = signature;
+    const note =
+      "[continue] 第 " +
+      (round + 1) +
+      " 次续跑（进度 " +
+      (progress ? `${progress.done}/${progress.total}` : "未声明") +
+      "，断言 " +
+      parsed +
+      "/" +
+      expectedAssertions +
+      "）\n";
+    events.push(note);
+    log("[runAgent] " + note.trim());
+    await agent.prompt(continuePrompt(progress));
+    await agent.waitForIdle();
+  }
+
   log("[runAgent] idle 完成，耗时=" + (Date.now() - t0) + "ms");
 
   // 循环可能因模型报错/上下文超限而提前结束；此时绝不能当成「正常跑完」。

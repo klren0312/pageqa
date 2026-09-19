@@ -30,6 +30,14 @@ bsk session start    # 可选：手动创建 session（不传 --session 时 page
 
 > 提示：本工具的 `--session <id>` 即来自 `bsk session start` 返回的 `session_id`；不传时 CLI 会自动新建一个（前提已有浏览器连接）。
 
+> **重点提示：要执行「文件上传」用例，必须先给 bsk 浏览器扩展开启「允许访问文件网址（Allow access to file URLs）」，否则上传一定失败。**
+>
+> 开启方式（Edge / Chrome）：打开 `edge://extensions`（或 `chrome://extensions`）→ 找到 BrowserSkill 扩展 → 点「详细信息」→ 打开「允许访问文件网址」开关 → 回到扩展卡片点一次「重新加载」（必要时重启浏览器）。
+>
+> 未开启时的典型报错：`the upload trigger did not activate a file input`，以及 `the browser could not attach the staged file to the input ... {"code":-32000,"message":"Not allowed"}`。
+>
+> 这是浏览器级设置，**pageqa 与 bsk 都无法自动开启**（Agent Window 也无法打开 `edge://` 页面），必须人工开一次；开启后本机所有上传用例都可用。
+
 ### 2. LLM 后端（可配置 OpenAI 兼容端点）
 
 自然语言解析依赖一个 OpenAI 兼容的 LLM 端点。端点地址、密钥与模型均可通过配置文件或环境变量设置：
@@ -155,6 +163,27 @@ pageqa --suite "打开 https://example.com 并断言标题包含 Example"
 
 脚本（`.md`/`.txt`）中用 `## 场景名` 分隔多个独立测试场景，CLI 会逐个运行、分别给出结论，并汇总整体 PASS/FAIL 与总退出码（任一场景失败则整体失败）。
 
+### 脚本占位符（运行时变量）
+
+脚本里可以写 `${timestamp}` 之类的占位符，CLI 在读取脚本时按本机当前时间展开。同一次运行内所有占位符共用同一时刻，所以「名称 + 时间戳」这类用例既不会重名，也不必每次手工改时间戳：
+
+```md
+## P1 创建产品
+
+打开 https://example.com/product
+点击「新增」，填写产品名称 `自动化测试产品${timestamp}`
+断言页面包含 `自动化测试产品${timestamp}`
+```
+
+| 占位符 | 展开结果 |
+| --- | --- |
+| `${timestamp}` | `yyyyMMddHHmm`，如 `202609191146` |
+| `${date}` / `${time}` | `yyyyMMdd` / `HHmmss` |
+| `${datetime}` | `yyyyMMddHHmmss` |
+| `${timestamp:<格式>}` | 自定义格式，支持 `yyyy` `yy` `MM` `dd` `HH` `mm` `ss` `SSS`，如 `${timestamp:yyyy-MM-dd HH:mm}` |
+
+未识别的占位符（如 `${PATH}`）原样保留，不会被替换。完整示例：`examples/plm-product-bom.md`。
+
 ### CLI 选项
 
 | 选项 | 说明 |
@@ -168,12 +197,38 @@ pageqa --suite "打开 https://example.com 并断言标题包含 Example"
 
 退出码：`0` 全部断言通过；`1` 任一断言失败/错误/无法执行。可直接接入 CI。
 
+### 文件上传
+
+脚本里直接写「点击某个上传按钮上传本地文件 `<绝对路径>`」，agent 会调用 `upload` 工具完成（可运行 `examples/element-plus-upload.md` 体验）：
+
+```md
+## U1 点击 Click to upload 上传图片
+
+打开 https://element-plus.org/zh-CN/component/upload
+点击示例中的「Click to upload」按钮并上传本地文件 D:\Downloads\example.png
+等待 2 秒，让上传列表完成渲染
+断言页面中已出现上传的文件名 example.png
+```
+
+```bash
+pageqa examples/element-plus-upload.md
+```
+
+要点（踩过的坑）：
+
+- **先开扩展权限**：见「前置 → 1. 安装并配置 browserskill」中的重点提示。未开启时上传必然失败，报 `Not allowed`。
+- `target` 传**触发文件选择器的元素**（按钮的 `@eN` 或 CSS 选择器）；不要传隐藏的 `input[type=file]`——它没有可见几何，bsk 会拒绝点击并报 `target element has no visible geometry`。省略 `target` 时由 bsk 自动在页面中查找文件输入框。
+- **不要先 `click` 上传按钮再调用上传**：原生系统文件选择框无法被自动化操作，单独 click 会把流程挂住。`upload` 会自己点击触发元素并接管文件选择器。
+- 路径必须是**本机绝对路径且文件真实存在**：`upload` 会先校验，不存在直接报错，不会默默跳过。
+- 像 `el-upload` 这类「点击按钮 → 页面 JS 触发隐藏 input」的组件，首次尝试可能返回 `did not activate a file input`（时序问题，不是权限问题）；此时重试一次即可成功。
+- 上传动作成功不等于用例通过：**真伪仍由页面断言决定**。若站点把文件提交到外部接口而接口不可用（例如 element-plus 文档示例提交到 `run.mocky.io`，本机证书校验失败），组件会在上传失败后移除该文件，此时「断言文件出现在列表中」会如实报 FAIL——这是被测页面的真实行为，不是工具问题。
+
 ## 工作原理
 
 ```
 自然语言意图
    └─> pi-agent-core Agent（LLM: pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
-          └─> bsk 工具：navigate / snapshot / click / fill / hover / scroll / wait / assert_text
+          └─> bsk 工具：navigate / snapshot / click / fill / upload / hover / scroll / wait / assert_text
                  └─> 真实浏览器（bsk 连接）
           └─> 结论与证据 -> 报告（文本/JSON）+ 退出码
 ```
@@ -183,8 +238,11 @@ pageqa --suite "打开 https://example.com 并断言标题包含 Example"
 - `navigate(url)` 打开网页
 - `snapshot()` 读取页面 aria 树与可见文本（标题、段落、链接、按钮等）
 - `click(target)` / `fill(target, value)` / `hover(target)` 元素交互（target 用 `@eN` 引用或 CSS 选择器）
+- `upload(target, file)` 上传本地文件（target 为触发文件选择器的元素，省略则由 bsk 自动查找文件输入框）
 - `scroll(target)` / `wait(ms)` 滚动与等待
 - `assert_text(expectation)` 断言页面是否包含指定文本，返回「成立/不成立」与证据
+
+**长流程保护（自动续跑）**：一轮对话结束后，如果 agent 自报的进度没跑满（`步骤完成：k/n` 且 `k < n`），或者用例里写了断言但报告只解析到一部分，pageqa 会自动补一次「继续执行剩余步骤」的提示并继续跑，最多 5 轮；续跑后进度与断言数都没有推进就停止。这样可以避免模型做完一两步就自行收尾、却让报告看起来正常的情况。
 
 ## 验证
 
@@ -223,7 +281,11 @@ src/
   index.ts       CLI 入口
   agent.ts       编排器（pi-agent-core Agent + bsk 工具 + 报告）
   llm.ts         LLM 后端（pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
-  bsk/tools.ts   browserskill 工具层
+  bsk/tools.ts   browserskill 工具层（含 upload 文件上传）
   report.ts      报告解析与渲染
+examples/
+  smoke.md                  示例套件（A1–A3）
+  github-star.md            GitHub Star 用例
+  element-plus-upload.md    文件上传用例（点击 Click to upload 上传本地图片）
 tests/smoke.test.mjs 端到端验证
 ```

@@ -61,9 +61,16 @@ export function countAssertions(script: string): number {
   return (script.match(/断言/g) ?? []).length;
 }
 
-/** 解析 agent 结尾的进度声明「步骤完成：M/N」。 */
-function parseProgress(text: string): { done: number; total: number } | null {
-  const m = /步骤完成\s*[:：]\s*(\d+)\s*[/／]\s*(\d+)/.exec(text);
+/**
+ * 解析 agent 的进度声明「步骤完成：M/N」。
+ * 取最后一次声明：续跑时 agent 会输出多条进度，只有最后一条代表当前状态。
+ */
+export function parseProgress(
+  text: string,
+): { done: number; total: number } | null {
+  const re = /步骤完成\s*[:：]\s*(\d+)\s*[/／]\s*(\d+)/g;
+  const matches = [...text.matchAll(re)];
+  const m = matches.at(-1);
   if (!m) return null;
   const done = Number(m[1]);
   const total = Number(m[2]);
@@ -72,7 +79,7 @@ function parseProgress(text: string): { done: number; total: number } | null {
   return { done, total };
 }
 
-function parseAssertions(text: string): AssertionResult[] {
+export function parseAssertions(text: string): AssertionResult[] {
   const results: AssertionResult[] = [];
   // 预处理：
   //   1) 去掉 markdown 加粗标记（agent 常输出「…：**成立**」）

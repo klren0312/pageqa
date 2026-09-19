@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { JevClient } from "../jev.js";
 
@@ -144,6 +145,10 @@ interface FillParams {
   target: string;
   value: string;
 }
+interface UploadParams {
+  target?: string;
+  file: string;
+}
 interface WaitParams {
   ms?: number;
 }
@@ -236,6 +241,41 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       const p = params as FillParams;
       const out = bsk(["fill", p.target, "--value", p.value, ...quiet]);
       return ok(`已在 ${p.target} 填入文本\n${out}`);
+    },
+  };
+
+  const upload: AgentTool = {
+    name: "upload",
+    label: "Upload",
+    description:
+      "上传本地文件到页面的文件输入框或上传区域（如 el-upload 的「Click to upload」按钮）。" +
+      "target 传触发文件选择器的元素（@eN 或 CSS 选择器），也可直接传隐藏的 <input type=\"file\">；" +
+      "不传 target 时 bsk 自动在页面中查找文件输入框。" +
+      "注意：原生文件选择框无法被自动化点击，因此不要先 click 触发按钮再调用本工具，" +
+      "直接调用 upload 并指定该按钮为 target 即可。",
+    // SAFETY: 结构匹配 AgentTool["parameters"]
+    parameters: {
+      type: "object",
+      properties: {
+        target: {
+          type: "string",
+          description:
+            "触发文件选择器的元素（@eN 引用或 CSS 选择器），或 file input 本身",
+        },
+        file: { type: "string", description: "待上传的本地文件绝对路径" },
+      },
+      required: ["file"],
+    } as unknown as AgentTool["parameters"],
+    execute: async (_id: string, params: unknown) => {
+      const p = params as UploadParams;
+      if (!existsSync(p.file)) {
+        throw new Error(`待上传文件不存在：${p.file}`);
+      }
+      const args = ["upload"];
+      if (p.target) args.push(p.target);
+      args.push("--file", p.file, ...quiet);
+      const out = bsk(args);
+      return ok(`已上传文件 ${p.file}\n${out}`);
     },
   };
 
@@ -358,7 +398,17 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     },
   };
 
-  return [navigate, snapshot, click, fill, hover, scroll, wait, assertText];
+  return [
+    navigate,
+    snapshot,
+    click,
+    fill,
+    upload,
+    hover,
+    scroll,
+    wait,
+    assertText,
+  ];
 }
 
 /** 创建一个 bsk session；若已提供且仍在活跃列表中则复用，否则新建。 */

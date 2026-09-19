@@ -12,7 +12,7 @@ pageqa/
     index.ts            # CLI 入口：解析参数、装配 agent、连 bsk session、返回退出码
     agent.ts            # 编排器：pi-agent-core Agent + bsk 工具 + 报告
     llm.ts             # LLM 后端：pi-ai 自定义 provider -> CodeBuddy 反代（混元）
-    bsk/tools.ts        # browserskill 工具层（navigate/snapshot/click/fill/hover/scroll/wait/assert_text）
+    bsk/tools.ts        # browserskill 工具层（navigate/snapshot/click/fill/upload/hover/scroll/wait/assert_text）
     report.ts           # 报告解析与渲染（文本/JSON）
   examples/smoke.md     # 示例自然语言测试脚本
   tests/smoke.test.mjs  # 端到端冒烟验证（覆盖 A1–A4）
@@ -34,6 +34,7 @@ pageqa/
   - `navigate(url)`：打开 URL（`--wait-until domcontentloaded`）。
   - `snapshot()`：读取页面 aria 语义树与可见文本（标题、段落、链接、按钮等），用于读取内容与定位元素。
   - `click(target)` / `fill(target, value)` / `hover(target)`：元素交互；`target` 用 `@eN` 引用或 CSS 选择器。
+  - `upload(target, file)`：经 `bsk upload <target> --file <path>` 上传本地文件；`target` 为触发文件选择器的元素（或省略，由 bsk 自动查找文件输入框）。
   - `scroll(target)`：经 `evaluate` 滚动到元素。
   - `wait(ms)`：经 `wait-ms` 等待。
   - `assert_text(expectation)`：读取 snapshot 并判断是否包含文本，返回「成立/不成立」与证据。
@@ -44,6 +45,7 @@ pageqa/
 - `src/agent.ts` 构造 `Agent`（`@earendil-works/pi-agent-core`），注入 `systemPrompt`（定义测试协议）与 bsk 工具集，使用 `llm.ts` 的 `model` 与 `streamFn`。
 - Agent 订阅事件：记录工具调用与文本增量，结束（`waitForIdle`）后生成报告。
 - `runAgent(input, { session?, systemPrompt? })`：返回 `{ report, text, json, transcript }`。
+- 续跑保护：`waitForIdle` 后若 agent 自报进度未满（`步骤完成：k/n` 且 `k < n`），或用例中的断言尚未全部解析出来（`countAssertions` vs `parseAssertions`），则自动以「继续执行剩余步骤」再 prompt 一次，最多 5 轮；若续跑后进度与断言数都没推进则停止，避免无谓循环（长流程最常见的失败是模型做完一两步就自行收尾）。
 
 ## 5. 报告与退出码
 
@@ -66,6 +68,7 @@ pageqa [options] <input>
 ```
 
 - 文件输入：仅当 input 确为已存在文件路径（含 `.md`/`.txt` 且无内换行）时读取；否则视为内联文本。
+- 脚本占位符：读取脚本（文件或内联文本）时按本机当前时间展开 `${timestamp}`（`yyyyMMddHHmm`）、`${date}`、`${time}`、`${datetime}`，以及自定义格式 `${timestamp:<格式>}`（`yyyy`/`yy`/`MM`/`dd`/`HH`/`mm`/`ss`/`SSS`）；同一次运行共用同一时刻，未识别的占位符原样保留。用于「名称 + 时间戳」这类要求每次运行不重名、又不写死时间戳的用例。
 - 无参数时打印帮助并以非零退出。
 
 ## 7. 验收映射

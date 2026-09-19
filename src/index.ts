@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { runAgent, runSuite } from "./agent.js";
 import { ensureConfigDir, CONFIG_PATH, loadConfig } from "./config.js";
+import { expandVars, VAR_HELP } from "./vars.js";
 
 interface CliArgs {
   input?: string;
@@ -71,6 +72,9 @@ const HELP = `pageqa - 自然语言驱动的页面测试工具（pi-agent-core +
   --debug          显示调试日志（LLM 思考、工具调用耗时、Jev 请求详情）
   -h, --help       显示帮助
 
+脚本占位符:
+${VAR_HELP}
+
 配置:
   - 首次运行会在用户目录自动创建配置文件：~/.pageqa/config.json
     （Windows: %USERPROFILE%\\.pageqa\\config.json）
@@ -101,12 +105,12 @@ function readInput(input: string): string {
     (input.endsWith(".md") || input.endsWith(".txt"))
   ) {
     try {
-      return readFileSync(input, "utf8");
+      return expandVars(readFileSync(input, "utf8"));
     } catch {
       // 不是文件：视为内联文本
     }
   }
-  return input;
+  return expandVars(input);
 }
 
 async function main(): Promise<number> {
