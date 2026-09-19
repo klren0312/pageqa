@@ -4,11 +4,105 @@ export interface AssertionResult {
   evidence?: string;
 }
 
+/** 一次运行的 LLM token 用量汇总（跨多轮对话累加）。 */
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  /** 端点给出的 totalTokens 之和（缺失时按 input+output+缓存 计算）。 */
+  total: number;
+  /** LLM 调用次数（assistant 消息条数）。 */
+  calls: number;
+}
+
 export interface TestReport {
   status: "pass" | "fail";
   assertions: AssertionResult[];
   summary?: string;
   transcript: string;
+  /** token 消耗，渲染在报告末尾；旧结构仍可用（可选字段）。 */
+  usage?: TokenUsage;
+}
+
+/** 单次 LLM 调用的原始用量（pi-ai 的 `Usage`，字段允许缺失）。 */
+export interface RawUsage {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
+  totalTokens?: number;
+}
+
+/** 尚未发生 LLM 调用时的零用量。 */
+export function emptyUsage(): TokenUsage {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reasoning: 0,
+    total: 0,
+    calls: 0,
+  };
+}
+
+/** 累加一次 LLM 调用的用量。 */
+export function addUsage(acc: TokenUsage, usage: RawUsage): TokenUsage {
+  const input = usage.input ?? 0;
+  const output = usage.output ?? 0;
+  const cacheRead = usage.cacheRead ?? 0;
+  const cacheWrite = usage.cacheWrite ?? 0;
+  return {
+    input: acc.input + input,
+    output: acc.output + output,
+    cacheRead: acc.cacheRead + cacheRead,
+    cacheWrite: acc.cacheWrite + cacheWrite,
+    reasoning: acc.reasoning + (usage.reasoning ?? 0),
+    total:
+      acc.total + (usage.totalTokens ?? input + output + cacheRead + cacheWrite),
+    calls: acc.calls + 1,
+  };
+}
+
+/** 合并两份用量（多场景套件汇总用）。 */
+export function mergeUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cacheRead: a.cacheRead + b.cacheRead,
+    cacheWrite: a.cacheWrite + b.cacheWrite,
+    reasoning: a.reasoning + b.reasoning,
+    total: a.total + b.total,
+    calls: a.calls + b.calls,
+  };
+}
+
+/**
+ * 渲染成一行文本（报告末行）。
+ * 端点未返回 usage 时如实标注，避免把「0 token」误读成真实消耗。
+ */
+export function formatUsage(usage?: TokenUsage): string {
+  if (!usage) return "Token 消耗: 不可用（未采集到用量）";
+  const line =
+    "Token 消耗: 输入 " +
+    usage.input +
+    " / 输出 " +
+    usage.output +
+    " / 缓存读 " +
+    usage.cacheRead +
+    " / 缓存写 " +
+    usage.cacheWrite +
+    " / 合计 " +
+    usage.total +
+    "（LLM 调用 " +
+    usage.calls +
+    " 次）";
+  return usage.calls > 0 && usage.total === 0
+    ? line + "（端点未返回 usage）"
+    : line;
 }
 
 /**

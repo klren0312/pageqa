@@ -1,6 +1,13 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { buildReport, countAssertions } from "../dist/report.js";
+import {
+  addUsage,
+  buildReport,
+  countAssertions,
+  emptyUsage,
+  formatUsage,
+  mergeUsage,
+} from "../dist/report.js";
 
 // 纯单元测试：只依赖 dist/report.js，不需要 bsk / LLM。
 describe("report 断言解析", () => {
@@ -111,5 +118,55 @@ describe("执行完整性校验", () => {
       "1. 断言页面包含 A：成立\n2. 断言页面包含 B：成立\n步骤完成：2/2",
     );
     assert.equal(r.status, "pass");
+  });
+});
+
+// 报告末尾的 token 消耗：累加规则与渲染文案。
+describe("Token 用量统计", () => {
+  test("累加多次 LLM 调用的用量", () => {
+    let u = emptyUsage();
+    u = addUsage(u, { input: 100, output: 20, totalTokens: 120 });
+    u = addUsage(u, { input: 50, output: 10, cacheRead: 30, totalTokens: 90 });
+    assert.equal(u.input, 150);
+    assert.equal(u.output, 30);
+    assert.equal(u.cacheRead, 30);
+    assert.equal(u.total, 210);
+    assert.equal(u.calls, 2);
+  });
+
+  test("端点未给 totalTokens 时按分项求和", () => {
+    const u = addUsage(emptyUsage(), {
+      input: 10,
+      output: 5,
+      cacheRead: 2,
+      cacheWrite: 3,
+    });
+    assert.equal(u.total, 20);
+  });
+
+  test("合并两份用量用于套件汇总", () => {
+    const a = addUsage(emptyUsage(), { input: 1, output: 2, totalTokens: 3 });
+    const b = addUsage(emptyUsage(), { input: 4, output: 5, totalTokens: 9 });
+    const m = mergeUsage(a, b);
+    assert.equal(m.total, 12);
+    assert.equal(m.calls, 2);
+  });
+
+  test("渲染成一行文本", () => {
+    const line = formatUsage(
+      addUsage(emptyUsage(), { input: 100, output: 20, totalTokens: 120 }),
+    );
+    assert.ok(line.includes("输入 100"));
+    assert.ok(line.includes("合计 120"));
+    assert.ok(line.includes("LLM 调用 1 次"));
+    assert.ok(!line.includes("未返回 usage"));
+  });
+
+  test("有调用但 total 为 0 时标注端点未返回 usage", () => {
+    assert.ok(formatUsage(addUsage(emptyUsage(), {})).includes("端点未返回 usage"));
+  });
+
+  test("无用量数据时给出不可用提示", () => {
+    assert.ok(formatUsage(undefined).includes("不可用"));
   });
 });
