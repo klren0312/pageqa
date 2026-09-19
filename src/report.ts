@@ -23,7 +23,9 @@ export function buildReport(input: string, transcript: string): TestReport {
     status = assertions.every((a) => a.verdict === "pass") ? "pass" : "fail";
   } else {
     // 无结构化断言：依据关键字与「不成立/失败」判定
-    const negative = /不成立|未找到|失败|不存在|not found|fail|missing/.test(transcript);
+    const negative = /不成立|未找到|失败|不存在|not found|fail|missing/.test(
+      transcript,
+    );
     status = negative ? "fail" : "pass";
   }
 
@@ -65,7 +67,8 @@ function parseProgress(text: string): { done: number; total: number } | null {
   if (!m) return null;
   const done = Number(m[1]);
   const total = Number(m[2]);
-  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return null;
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0)
+    return null;
   return { done, total };
 }
 
@@ -102,6 +105,9 @@ function stripEdges(text: string): string {
 
 function extractSummary(text: string): string {
   // 取最后一段非空文本作为摘要
-  const paras = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const paras = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
   return paras.at(-1) ?? "";
 }
