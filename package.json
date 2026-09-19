@@ -1,6 +1,6 @@
 {
   "name": "pageqa",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "用自然语言驱动的页面 QA agent：pi-agent-core 编排测试步骤，browserskill(bsk) 驱动真实浏览器执行，LLM 端点可配置（OpenAI 兼容）；输出文本/JSON 报告与可直接接入 CI 的退出码。",
   "type": "module",
   "bin": {
