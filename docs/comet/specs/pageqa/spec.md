@@ -43,7 +43,7 @@ pageqa/
   - `upload(target, file)`：经 `bsk upload <target> --file <path>` 上传本地文件；`target` 为触发文件选择器的元素（或省略，由 bsk 自动查找文件输入框）。
   - `scroll(target)`：经 `evaluate` 滚动到元素。
   - `wait(ms)`：经 `wait-ms` 等待。
-  - `assert_text(expectation)`：读取 snapshot 先做**字面包含匹配**（命中即成立，不调用 Jev）；字面未命中且已启用 Jev 时，再请 Jev 做一次语义复核（`prob >= threshold` 即成立），返回「成立/不成立」与证据。
+  - `assert_text(expectation)`：读取快照先做**字面包含匹配**（命中即成立，不调用 Jev；字面匹配基于瘦身前的完整快照，长文本被截断不会造成假未命中）；字面未命中且已启用 Jev 时，再请 Jev 做一次语义复核（`prob >= threshold` 即成立），返回「成立/不成立」与证据。
 - bsk 连接一个已运行的真实浏览器（Chrome/Edge），支持公开页与登录态页面；无需自下载浏览器。
 
 ## 4. Agent 编排（pi-agent-core）

@@ -261,6 +261,8 @@ const SNAPSHOT_ASSERT_MS = 5_000;
 export function createBskOps(session: string, jevClient?: JevClient): BskOps {
   const quiet = ["--session", session, "--quiet"];
   let snapshotText = "";
+  /** 同一份快照瘦身前的完整原文（assert_text 的字面匹配必须用它，见 ensureRawSnapshot）。 */
+  let snapshotRawText = "";
   let assertSemantic = false;
   let assertOutcome: AssertOutcome | null = null;
   /** 最近一次快照的时刻与新鲜度（见 ensureSnapshot）。 */
@@ -285,6 +287,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       // 快照体积直接决定上下文压力（长流程易因上下文超限被中断）
       debugLog("[bsk] snapshot 字符数=" + raw.length);
     }
+    snapshotRawText = raw;
     snapshotText = slim.text;
     snapshotAt = Date.now();
     snapshotFresh = true;
@@ -305,6 +308,25 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       return snapshotText;
     }
     return takeSnapshot();
+  };
+
+  /**
+   * 同 ensureSnapshot，但返回**瘦身前**的完整原文。
+   *
+   * 断言的字面匹配必须基于完整快照：瘦身会截断长文本行、整行省略非关键文本，
+   * 拿瘦身文本做 includes，针对长页面文本的断言会假未命中，且证据不会说明漏看。
+   * 模型上下文仍吃瘦身文本，省 token 的收益不受影响。
+   */
+  const ensureRawSnapshot = (maxAgeMs: number, label: string): string => {
+    const age = Date.now() - snapshotAt;
+    if (snapshotFresh && age <= maxAgeMs) {
+      debugLog(
+        `[bsk] ${label} 复用 ${age}ms 前的完整快照（期间页面未被改动）`,
+      );
+      return snapshotRawText;
+    }
+    takeSnapshot();
+    return snapshotRawText;
   };
 
   return {
@@ -377,8 +399,9 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     },
 
     async assertText(expectation: string): Promise<string> {
-      // 断言要的是「当下」：只有在期间没有任何改页面动作、且间隔很短时才复用上一份快照
-      const snap = ensureSnapshot(SNAPSHOT_ASSERT_MS, "assert_text");
+      // 断言要的是「当下」+「完整」：只有在期间没有任何改页面动作、且间隔很短时才复用，
+      // 并且字面匹配基于瘦身前的完整快照（ensureRawSnapshot 里有原因说明）。
+      const snap = ensureRawSnapshot(SNAPSHOT_ASSERT_MS, "assert_text");
       // 本次断言是否「靠语义判断才成立」，每次调用先重置：
       // 只有字面未命中、由 Jev 复核判定成立的断言才为 true。
       assertSemantic = false;
