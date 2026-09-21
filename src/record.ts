@@ -19,6 +19,8 @@ export interface ToolExecEvent {
   ok: boolean;
   /** 本次操作前页面最后一次快照文本（用于构造语义定位符）。 */
   lastSnapshot: string;
+  /** 该断言是否**靠 Jev 语义判断才成立**（仅 assert_text 会上报；未上报视为否）。 */
+  semantic?: boolean;
 }
 
 /**
@@ -35,17 +37,6 @@ const STEP_DONE_PATTERNS = [
 /** 自述可能被流式输出切在「完/成」之间，保留一小段尾巴拼回来再匹配。 */
 const NARRATION_TAIL = 64;
 
-export interface RecorderOptions {
-  /**
-   * 本次带模型的运行是否启用了 Jev 语义断言。
-   *
-   * 需要记下来：Jev 允许模型用「标题包含 Example」这种语义化措辞做断言，
-   * 而回放默认是字符串包含匹配，这类断言在回放时会误报失败。
-   * 脚本里标记该断言是语义录制的，回放失败时才能给出「加 --semantic 重试」的提示。
-   */
-  semantic?: boolean;
-}
-
 export class Recorder {
   private readonly steps: ReplayStep[] = [];
   private lastCompletedStep = 0;
@@ -53,14 +44,8 @@ export class Recorder {
   private sawNarration = false;
   /** 自述的尾部缓冲，用于跨 delta 匹配（流式输出会把「完成」切开）。 */
   private tail = "";
-  private readonly semantic: boolean;
 
-  constructor(
-    private readonly vars: RunVarValue[] = [],
-    options: RecorderOptions = {},
-  ) {
-    this.semantic = options.semantic ?? false;
-  }
+  constructor(private readonly vars: RunVarValue[] = []) {}
 
   /**
    * 喂入模型输出的文本增量，跟踪「已完成到第几步」。
@@ -168,8 +153,9 @@ export class Recorder {
           step,
           expectation,
           ...(expectation !== raw ? { recordedExpectation: raw } : {}),
-          // 语义录制的断言在字符串匹配下可能误报，标记出来供回放给出提示
-          ...(this.semantic ? { semantic: true } : {}),
+          // 靠 Jev 语义复核才成立的断言，回放的字符串匹配必然不成立，
+          // 标记出来供回放给出提示（字面命中的断言则无需标记）。
+          ...(event.semantic ? { semantic: true } : {}),
         });
         return;
       }

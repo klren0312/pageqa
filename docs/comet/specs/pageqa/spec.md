@@ -16,9 +16,11 @@ pageqa/
     record.ts           # 录制层：把成功操作与断言记成可回放步骤（含语义定位符、占位符还原）
     locator.ts          # 语义定位符：快照解析 + 回放时按 role/name/同名序号重定位
     replay.ts           # 回放脚本：格式定义、读写校验、零模型回放引擎
+    snapshot.ts         # 快照瘦身：保留可交互节点与祖先链、截断长文本，降低上下文压力
     report.ts           # 报告解析、渲染与套件汇总（LLM 运行与回放共用）
   examples/smoke.md     # 示例自然语言测试脚本
   tests/smoke.test.mjs  # 端到端冒烟验证（覆盖 A1–A4）
+  tests/report.test.mjs / tests/replay.test.mjs / tests/snapshot.test.mjs  # 单元测试（无浏览器/LLM 依赖）
 ```
 
 ## 2. LLM 后端（pi-agent-core + pi-ai）
@@ -36,12 +38,12 @@ pageqa/
 - `closeSession(session)`：调用 `bsk session stop <id>` 收尾，关闭该 session 的 Agent Window（自动化操作的浏览器窗口）并归还借用标签页；由 `runAgent` 的 `finally` 保证在成功、失败、抛错三种路径都会执行，失败仅提示、不影响测试结论。
 - 可用工具：
   - `navigate(url)`：打开 URL（`--wait-until domcontentloaded`）。
-  - `snapshot()`：读取页面 aria 语义树与可见文本（标题、段落、链接、按钮等），用于读取内容与定位元素。
+  - `snapshot()`：读取页面 aria 语义树与可见文本（标题、段落、链接、按钮等），用于读取内容与定位元素。返回前经 `snapshot.ts` 瘦身（超 8000 字符才启用：保留全部 `@eN` 行与其祖先链、截断超长文本行、超预算时省略最长的非关键行），并在期间无页面改动且间隔很短时复用上一份快照，省掉一次 bsk 往返。
   - `click(target)` / `fill(target, value)` / `hover(target)`：元素交互；`target` 用 `@eN` 引用或 CSS 选择器。
   - `upload(target, file)`：经 `bsk upload <target> --file <path>` 上传本地文件；`target` 为触发文件选择器的元素（或省略，由 bsk 自动查找文件输入框）。
   - `scroll(target)`：经 `evaluate` 滚动到元素。
   - `wait(ms)`：经 `wait-ms` 等待。
-  - `assert_text(expectation)`：读取 snapshot 并判断是否包含文本，返回「成立/不成立」与证据。
+  - `assert_text(expectation)`：读取 snapshot 先做**字面包含匹配**（命中即成立，不调用 Jev）；字面未命中且已启用 Jev 时，再请 Jev 做一次语义复核（`prob >= threshold` 即成立），返回「成立/不成立」与证据。
 - bsk 连接一个已运行的真实浏览器（Chrome/Edge），支持公开页与登录态页面；无需自下载浏览器。
 
 ## 4. Agent 编排（pi-agent-core）
@@ -53,7 +55,7 @@ pageqa/
 
 ## 5. 报告与退出码
 
-- `src/report.ts` 从 agent 结论文本解析断言（`断言「X」：成立/不成立` 句式），无法解析时按关键字（不成立/未找到/失败/不存在）降级判定。
+- `src/report.ts` 组装报告。断言**优先取 `assert_text` 工具返回的结构化结果**（期望值 + 成立/不成立 + 证据，由工具层经 `onExec` 逐条上报）：工具结论是确定性的，而模型自述的措辞不可靠（常写成「…，断言成立。」，既没有期望值也无法解析，据此外推会把全部通过的用例报成「用例中的断言全部执行（实际 0/N）」的假失败）。只有在拿不到工具结果时（回放、纯文本输入）才解析结论文本（`断言「X」：成立/不成立` 句式），并沿用按关键字（不成立/未找到/失败/不存在）的降级判定。
 - 文本报告含结论（PASS/FAIL）、断言列表与证据、摘要、transcript；JSON 报告结构稳定：`{ status, assertions[], summary?, transcript, usage? }`。
 - token 消耗：`runAgent` 汇总本次运行全部 assistant 消息的 `usage`（含续跑轮次）为 `TokenUsage { input, output, cacheRead, cacheWrite, reasoning, total, calls }`；`runSuite` 用 `mergeUsage` 合并各场景用量。
 - 文本报告**末尾**输出一行 token 消耗（`formatUsage`），套件模式下每个场景块内也各有一行，末尾为合计；JSON 报告经 `usage` 字段输出。端点未返回 usage（`calls>0` 且 `total=0`）时须如实标注，不得把 0 当作真实消耗。
@@ -76,7 +78,7 @@ pageqa/
   - **navigate 失败** → 后续步骤无意义，中止。
   - `--fail-fast` 恢复「任一失败即停」。
   - **结论判定必须同时看断言**：`failed > 0 || aborted || 任一断言不成立` → fail；只统计抛出的步骤失败会漏掉「断言返回不成立」，导致带 FAIL 断言的用例报 PASS（已用单测钉死）。
-- **零模型边界**：回放默认断言走字符串包含，不触碰任何远端服务；`--semantic` 才启用 Jev。若录制时启用了 Jev，断言步骤会带 `semantic: true` 标记，回放在字符串匹配下失败时提示「可加 `--semantic` 重试」。
+- **零模型边界**：回放默认断言走字符串包含，不触碰任何远端服务；`--semantic` 才启用 Jev。录制时**靠 Jev 语义复核才成立**的断言（字面不含期望文本）会带 `semantic: true` 标记，回放开始前提示有几条、失败时提示「可加 `--semantic` 重试」；字面命中的断言不标记（回放同样能通过）。
 - **报告与用量**：回放报告 `mode: "replay"`、`script: <path>`，`usage` 全 0；文本报告标注「模式: 回放（未调用大模型）」，token 行显示「未调用大模型（回放模式）」而不是「合计 0」。
 
 ## 7. CLI 接口

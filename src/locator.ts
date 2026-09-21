@@ -55,7 +55,7 @@ export function normalizeRef(target: string): string {
 }
 
 /** 缩进宽度（tab 按 2 空格计，bsk 用空格缩进，这里只是保险）。 */
-function indentWidth(line: string): number {
+export function indentWidth(line: string): number {
   let n = 0;
   for (const ch of line) {
     if (ch === " ") n += 1;
@@ -66,13 +66,28 @@ function indentWidth(line: string): number {
 }
 
 /** 取出 `role "name"` 形式的角色与可访问名。 */
-function parseRoleName(text: string): { role: string; name: string } {
+export function parseRoleName(text: string): { role: string; name: string } {
   const roleMatch = text.match(/^([A-Za-z][A-Za-z0-9_-]*)/);
   const nameMatch = text.match(/"([^"]*)"/);
   return {
     role: roleMatch ? roleMatch[1] : "",
     name: nameMatch ? nameMatch[1] : "",
   };
+}
+
+/**
+ * 是否为快照里的元信息行（`@vom` / `@view` / `@layers` / `L1 page`），这类行不参与层级树。
+ *
+ * 导出给快照瘦身（snapshot.ts）共用：两侧必须用同一条判定，否则瘦身会把它当成
+ * 普通文本行处理，而层级解析又跳过它，两边的祖先链就对不上了。
+ */
+export function isSnapshotMetaLine(body: string): boolean {
+  return (
+    body.startsWith("@vom") ||
+    body.startsWith("@view") ||
+    body.startsWith("@layers") ||
+    /^L\d+\b/.test(body)
+  );
 }
 
 /**
@@ -109,14 +124,7 @@ export function parseSnapshotRefs(snapshotText: string): SnapshotRef[] {
   for (const line of snapshotText.split(/\r?\n/)) {
     const body = line.trim();
     if (!body) continue;
-    if (
-      body.startsWith("@vom") ||
-      body.startsWith("@view") ||
-      body.startsWith("@layers") ||
-      /^L\d+\b/.test(body)
-    ) {
-      continue;
-    }
+    if (isSnapshotMetaLine(body)) continue;
     const indent = indentWidth(line);
 
     const refMatch = body.match(/^@e(\d+)\b\s*(.*)$/);

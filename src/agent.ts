@@ -21,6 +21,7 @@ import {
   renderSuiteText,
   renderText,
   summarizeSuite,
+  type AssertionResult,
   type TestReport,
   type TokenUsage,
 } from "./report.js";
@@ -86,6 +87,9 @@ const DEFAULT_SYSTEM_PROMPT = [
   "- 很多组件库（如 element-plus 的 el-dropdown）的下拉菜单是**悬停触发**的：必须先用 hover 悬停在触发按钮上、等菜单展开，再 click 菜单项。直接 click 触发按钮常常点不开菜单。",
   "- 判断菜单是否已展开：snapshot 里出现了对应的菜单项（如 menuitem「上传文档」）。若 click 触发按钮后 snapshot 里没有菜单项，改为 hover 再点，不要继续在同一个位置重复 click。",
   "- 页面上可能有多个同名下拉（例如页面级的「操作」与当前区域级的「操作」）。选错会展开完全不同的菜单，后续步骤连锁失败：请按当前操作的区域选择那一个，并在它展开后确认菜单项与用例要求一致。",
+  "- `@eN` 编号只在**最近一次 snapshot 的页面状态下**有效：展开/收起下拉菜单、切换路由、提交表单等任何页面变化都会重新编号。若在你上次 snapshot 之后页面又变化过，必须先重新 snapshot 再取用 `@eN`，不得沿用旧编号——沿用会点到编号相同的另一个元素，而且工具不会报错。",
+  "- 若快照里找不到目标元素（例如展开的下拉菜单把下方控件遮住了），不要凭编号猜：先重新 snapshot（必要时先收起菜单），等目标元素出现在快照里再操作。",
+  "- 声称某一步完成前必须有依据：快照或工具结果里能看到该操作的效果（选中态、填入值、成功提示）。看不到就说明没生效，要重新定位后重做，不要照抄用例描述交差。",
   "",
   "表单提交失败处理（关键，不得跳过）：",
   "- 点击「提交 / 确定 / 保存 / 确认」类按钮后，必须先确认动作是否真的成功：弹窗是否关闭、是否出现成功提示、列表数据是否刷新。",
@@ -214,7 +218,7 @@ interface SessionHolder {
 /**
  * 用 pi-agent-core 编排一次自然语言页面测试：注入 bsk 工具，驱动浏览器执行，整理报告。
  * 若配置中启用了 Jev（PAGEQA_JEV_ENABLED=true 且配置了 API Key），
- * 断言环节会使用 Jev 语义判断替代字符串包含匹配。
+ * 断言在**字面包含未命中**时会请 Jev 做一次语义复核（命中则不调用，省一次远端往返）。
  *
  * 无论用例通过、失败还是中途抛错，结束后都会关闭本次的 bsk session，
  * 从而关掉自动化操作的那个浏览器窗口（Agent Window）。
@@ -242,6 +246,13 @@ interface AgentSession {
   steps: string[];
   /** 回放脚本录制器（记录成功执行过的浏览器操作）。 */
   recorder: Recorder;
+  /**
+   * 本次运行中 `assert_text` 工具返回的断言结果（按执行顺序）。
+   *
+   * 报告以它为断言准源：工具返回「成立/不成立」是确定性的，模型自述的措辞则
+   * 时好时坏（写成「…，断言成立。」时既无期望值也无法解析，会把通过的用例判成假失败）。
+   */
+  assertions: AssertionResult[];
   startedAt: number;
 }
 
@@ -284,14 +295,24 @@ async function initializeAgent(
   info(`[pageqa] 语义断言（Jev）${jevClient.enabled ? "已启用" : "未启用"}`);
 
   // 录制器：始终收集本次运行的操作序列，是否落盘由 CLI 的 --emit-script 决定。
-  // 记录是否启用了 Jev：语义录制的断言在回放的字符串匹配下可能误报，需要标记。
-  const recorder = new Recorder(opts.vars ?? [], {
-    semantic: jevClient.enabled,
-  });
+  // 「哪条断言靠 Jev 语义复核才成立」由工具层逐条上报（见 bsk/tools.ts），
+  // 不再按「整场是否启用 Jev」一刀切——字面命中的断言回放同样能通过，不必标记。
+  const recorder = new Recorder(opts.vars ?? []);
+  // 断言结果由工具层逐条上报（见 bsk/tools.ts 的 onExec），报告不再依赖模型措辞。
+  const assertions: AssertionResult[] = [];
   const tools = createBskTools({
     session,
     jevClient,
-    onExec: (event) => recorder.noteTool(event),
+    onExec: (event) => {
+      recorder.noteTool(event);
+      if (event.assert) {
+        assertions.push({
+          expectation: event.assert.expectation,
+          verdict: event.assert.pass ? "pass" : "fail",
+          evidence: event.assert.evidence,
+        });
+      }
+    },
   });
   log(
     "[runAgent] 工具数=" +
@@ -335,7 +356,7 @@ async function initializeAgent(
 
   subscribeProgress(agent, events, recorder);
 
-  return { agent, events, numbered, steps, recorder, startedAt };
+  return { agent, events, numbered, steps, recorder, assertions, startedAt };
 }
 
 /**
@@ -411,7 +432,12 @@ async function executeWithContinuations(
     if (agent.state.errorMessage) break;
     const transcriptSoFar = events.join("");
     const progress = parseProgress(transcriptSoFar);
-    const parsed = parseAssertions(transcriptSoFar).length;
+    // 断言进度以工具结果为准（模型自述的措辞时好时坏，可能一条都解析不出来）；
+    // 没有工具结果时才退回按结论文本解析。
+    const parsed = Math.max(
+      session.assertions.length,
+      parseAssertions(transcriptSoFar).length,
+    );
     const incomplete = progress
       ? progress.done < progress.total
       : expectedAssertions > 0 && parsed < expectedAssertions;
@@ -471,7 +497,7 @@ function finalizeResult(
   if (agentError) events.push("\n[agent-error] " + agentError + "\n");
 
   const transcript = events.join("");
-  const report = buildReport(input, transcript);
+  const report = buildReport(input, transcript, session.assertions);
   // 报告里标注回放脚本的落盘位置（真正写文件由 CLI 在运行结束后完成）
   if (opts.scriptPath) report.script = opts.scriptPath;
   if (agentError) {
