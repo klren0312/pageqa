@@ -1,8 +1,14 @@
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { createLlmBackend } from "./llm.js";
-import { createBskTools, ensureSession, ensureBskReady } from "./bsk/tools.js";
+import {
+  closeSession,
+  createBskTools,
+  ensureSession,
+  ensureBskReady,
+} from "./bsk/tools.js";
 import { JevClient } from "./jev.js";
 import { loadConfig } from "./config.js";
+import { debugLog, info, setDebug } from "./log.js";
 import {
   addUsage,
   buildReport,
@@ -10,6 +16,7 @@ import {
   emptyUsage,
   formatUsage,
   mergeUsage,
+  numberSteps,
   parseAssertions,
   parseProgress,
   type TestReport,
@@ -54,13 +61,20 @@ const DEFAULT_SYSTEM_PROMPT = [
   "5. 最后用简洁中文给出结论：每个断言「成立/不成立」，并附证据（实际看到的标题或文本片段）。",
   "",
   "完整性要求（长流程尤其重要）：",
-  "- 必须按顺序执行完提示中列出的**每一个步骤**（包括以 `### ` 标注的每个子步骤），不得只完成前几步就总结收尾。",
-  "- 每完成一个步骤，简要记一句「第 k 步完成：<结果>」，再继续下一步；不要提前输出最终结论。",
+  "- 用例的每一步都已用 `### 步骤 k：<描述>` 编号（k 从 1 连续递增）。必须严格按编号顺序执行**每一个步骤**，不得跳步、不得只完成前几步就总结收尾。",
+  "- 每完成一个步骤，简要记一句「第 k 步完成：<结果>」（k 必须与用例中的步骤编号一致），再继续下一步；不要提前输出最终结论。",
   "- 结尾必须单独输出一行进度声明，格式固定：`步骤完成：<已完成步骤数>/<总步骤数>`。",
   "  例如共 7 个步骤且全部完成时输出 `步骤完成：7/7`；只完成 4 步则输出 `步骤完成：4/7`。",
   "- 若某步骤确实无法完成（元素找不到、操作被拒绝等），明确说明该步骤失败及原因，然后继续或终止，但仍要如实输出进度声明。",
   "- 只要还有未执行的步骤，就继续调用工具执行下一步，不要中途停下等待用户输入；只有全部步骤都执行（或已明确失败）后才输出进度声明并收尾。",
   "- 工具调用失败（如 click 找不到元素、超时）不等于该步骤失败：必须先重新 snapshot 定位元素后重试；同一操作连续两次失败才可判定该步骤失败。",
+  "",
+  "表单提交失败处理（关键，不得跳过）：",
+  "- 点击「提交 / 确定 / 保存 / 确认」类按钮后，必须先确认动作是否真的成功：弹窗是否关闭、是否出现成功提示、列表数据是否刷新。",
+  "- 若弹窗仍未关闭、仍停留在表单页，或出现「xxx 不能为空」「请输入 xxx」「请选择 xxx」「必填项」等校验提示，一律视为提交失败，此时不得跳过该步骤、不得继续下一步。",
+  "- 提交失败时重新 snapshot 扫描当前表单的全部必填项：优先按校验提示定位缺失字段；其次找 label 前带红色「*」或标注「必填 / required」的字段。",
+  "- 逐一补齐缺失的必填项：文本/数字输入框填入合法内容（名称类可用「自动化测试+时间戳」这类合法值；编码、排序、数量、比例类填合法数字如 1、001）；下拉/单选/复选/日期/级联等非文本控件先点击展开，再点选第一个可用选项或页面默认项。",
+  "- 补齐后再次提交，重复「确认是否成功 → 扫描必填项 → 补齐 → 再提交」，最多 3 轮；仍无法提交则如实记录失败原因后继续后续步骤，不得静默跳过。",
   "",
   "硬性约束（违反即视为测试失败）：",
   "- 严禁在 navigate 之前调用 assert_text：页面尚未打开时断言必然不成立，且会误报通过。",
@@ -84,6 +98,9 @@ const TRIMMED_MARK = "（较早的快照已省略";
 // 后面的步骤根本没执行。这里按 agent 自报的进度/已解析断言数补「继续执行」提示，
 // 直到跑满、确实没有进展或达到次数上限为止。
 const MAX_CONTINUATIONS = 5;
+
+/** 套件报告里每个场景最多回放多少条执行轨迹（末尾优先），避免报告过长。 */
+const TRACE_TAIL_LINES = 25;
 
 /** 构造续跑提示：只要求接着做，不重复已完成步骤，并再次强调进度声明格式。 */
 function continuePrompt(
@@ -114,6 +131,12 @@ function collectUsage(messages: AgentMessage[]): TokenUsage {
     acc = addUsage(acc, m.usage);
   }
   return acc;
+}
+
+/** 取用例文本的单行预览，便于在日志里快速识别当前跑的是哪条用例。 */
+function preview(input: string, max = 60): string {
+  const oneLine = input.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? oneLine.slice(0, max) + "…" : oneLine;
 }
 
 /** 粗略估算消息文本总字符数。 */
@@ -168,41 +191,77 @@ function trimOldToolResults(
   });
 }
 
+/** 本次运行使用的 session 持有者：让最外层的 finally 能兜底关闭它。 */
+interface SessionHolder {
+  id?: string;
+}
+
 /**
  * 用 pi-agent-core 编排一次自然语言页面测试：注入 bsk 工具，驱动浏览器执行，整理报告。
  * 若配置中启用了 Jev（PAGEQA_JEV_ENABLED=true 且配置了 API Key），
  * 断言环节会使用 Jev 语义判断替代字符串包含匹配。
+ *
+ * 无论用例通过、失败还是中途抛错，结束后都会关闭本次的 bsk session，
+ * 从而关掉自动化操作的那个浏览器窗口（Agent Window）。
  */
 export async function runAgent(
   input: string,
   opts: AgentOptions = {},
 ): Promise<AgentRunResult> {
+  const holder: SessionHolder = {};
+  try {
+    return await runAgentCore(input, opts, holder);
+  } finally {
+    if (holder.id) closeSession(holder.id);
+  }
+}
+
+/** runAgent 的实际编排逻辑；session 记录到 holder 供调用方兜底清理。 */
+async function runAgentCore(
+  input: string,
+  opts: AgentOptions,
+  holder: SessionHolder,
+): Promise<AgentRunResult> {
   const debug = opts.debug ?? false;
-  const log = debug
-    ? (m: string) => process.stderr.write("[debug] " + m + "\n")
-    : () => {};
+  setDebug(debug);
+  const log = debugLog;
 
   const t0 = Date.now();
   log("[runAgent] 开始，输入长度=" + input.length);
+  // 由 pageqa 统一给用例的每行编号后再交给模型：模型输出的「步骤完成：k/n」
+  // 就能映射回用例原文，报告可直接指出「停在哪一步、下一步该做什么」。
+  const { numbered, steps } = numberSteps(input);
+  info(
+    `[pageqa] 用例开始：${preview(input)}（${input.length} 字符，${steps.length} 个步骤）`,
+  );
 
+  log("[runAgent] 创建 LLM 后端...");
   const { models, model } = createLlmBackend();
   log("[runAgent] LLM 后端已创建，model=" + model.id);
+  info(`[pageqa] LLM 已就绪：model=${model.id}`);
 
-  log("[runAgent] 创建/复用 bsk session...");
-  await ensureBskReady(debug);
+  info("[pageqa] 检查 bsk daemon 与浏览器连接…");
+  await ensureBskReady();
+  info("[pageqa] 创建/复用 bsk session…");
   const session = ensureSession(opts.session);
+  holder.id = session;
   log("[runAgent] bsk session=" + session);
+  info(`[pageqa] bsk session=${session}`);
 
   const jevCfg = loadConfig().jev;
   const jevClient = new JevClient(jevCfg, debug);
   log("[runAgent] Jev enabled=" + jevClient.enabled);
+  info(`[pageqa] 语义断言（Jev）${jevClient.enabled ? "已启用" : "未启用"}`);
 
-  const tools = createBskTools({ session, jevClient, debug });
+  const tools = createBskTools({ session, jevClient });
   log(
     "[runAgent] 工具数=" +
       tools.length +
       " " +
       tools.map((t) => t.name).join(", "),
+  );
+  info(
+    `[pageqa] 工具已就绪：${tools.length} 个；用例已编号为 ${steps.length} 个步骤（报告按此定位卡点）`,
   );
 
   const events: string[] = [];
@@ -235,26 +294,44 @@ export async function runAgent(
     },
   });
 
+  // 工具执行进度始终打印（默认可见），让长流程每跑一步都有回显；
+  // 避免出现「终端长时间无输出、不知道卡在哪一步」的观感。
+  let toolCount = 0;
+  let toolStartedAt = 0;
+  let firstTextLogged = false;
   agent.subscribe((e) => {
     if (e.type === "tool_execution_start") {
       events.push("[tool] " + e.toolName);
       log("[agent] 工具调用开始: " + e.toolName);
+      toolCount += 1;
+      toolStartedAt = Date.now();
+      info(`[pageqa] ▶ #${toolCount} ${e.toolName} …`);
     } else if (e.type === "tool_execution_end") {
       // 工具失败必须显式记录，否则报告里看不出「某步其实报错了」
       events.push((e.isError ? "[tool-error] " : "[tool-ok] ") + e.toolName);
       log(
         "[agent] 工具调用" + (e.isError ? "失败" : "完成") + ": " + e.toolName,
       );
+      const cost = toolStartedAt ? Date.now() - toolStartedAt : 0;
+      info(
+        `[pageqa] ${e.isError ? "✗" : "✓"} #${toolCount} ${e.toolName}` +
+          `${e.isError ? "（失败，将重试或报告）" : ""} ${cost}ms`,
+      );
     } else if (
       e.type === "message_update" &&
       e.assistantMessageEvent?.type === "text_delta"
     ) {
+      if (!firstTextLogged) {
+        firstTextLogged = true;
+        info("[pageqa] 模型已开始输出，正在推进步骤…");
+      }
       events.push(e.assistantMessageEvent.delta);
     }
   });
 
   log("[runAgent] 发送 prompt...");
-  await agent.prompt(input);
+  info("[pageqa] 已提交用例，等待模型与浏览器执行…");
+  await agent.prompt(numbered);
   log("[runAgent] prompt 完成，等待 idle...");
   await agent.waitForIdle();
 
@@ -291,6 +368,11 @@ export async function runAgent(
       "）\n";
     events.push(note);
     log("[runAgent] " + note.trim());
+    info(
+      `[pageqa] 步骤未跑完，发起第 ${round + 1} 次续跑（进度 ` +
+        `${progress ? `${progress.done}/${progress.total}` : "未声明"}，` +
+        `断言 ${parsed}/${expectedAssertions}）`,
+    );
     await agent.prompt(continuePrompt(progress));
     await agent.waitForIdle();
   }
@@ -325,6 +407,10 @@ export async function runAgent(
   const usage = collectUsage(agent.state.messages);
   report.usage = usage;
   log("[runAgent] " + formatUsage(usage));
+  info(
+    `[pageqa] 用例结束：${report.status === "pass" ? "PASS" : "FAIL"}，` +
+      `断言 ${report.assertions.length} 条，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+  );
 
   return {
     report,
@@ -371,11 +457,23 @@ export async function runSuite(
   script: string,
   opts: AgentOptions = {},
 ): Promise<AgentRunResult> {
+  setDebug(opts.debug ?? false);
   const scenarios = splitScenarios(script);
   const results: AgentRunResult[] = [];
-  for (const sc of scenarios) {
+  info(
+    `[pageqa] 套件共 ${scenarios.length} 个场景：` +
+      scenarios.map((s) => s.name).join(" / "),
+  );
+  for (const [i, sc] of scenarios.entries()) {
+    info(
+      `[pageqa] ═══ 场景 ${i + 1}/${scenarios.length}：${sc.name} ═══`,
+    );
     const r = await runAgent(sc.body, { ...opts, systemPrompt: undefined });
     results.push(r);
+    info(
+      `[pageqa] ═══ 场景 ${i + 1}/${scenarios.length} 结束：` +
+        `${r.report.status === "pass" ? "PASS" : "FAIL"} ═══`,
+    );
   }
   const overall = results.every((r) => r.report.status === "pass")
     ? "pass"
@@ -405,6 +503,14 @@ export async function runSuite(
           r.transcript.trim(),
       )
       .join("\n\n"),
+    // 逐场景明细：JSON 报告里保留 steps/trace，CI 侧可直接定位失败场景的卡点步骤。
+    scenarios: results.map((r, i) => ({
+      name: scenarios[i]?.name ?? String(i + 1),
+      status: r.report.status,
+      steps: r.report.steps ?? [],
+      trace: r.report.trace ?? [],
+      assertions: r.report.assertions,
+    })),
     usage,
   };
   return {
@@ -465,6 +571,14 @@ function renderSuiteText(
     );
     for (const a of r.report.assertions) lines.push(assertionLine(a));
     if (r.report.summary) lines.push("  摘要: " + r.report.summary);
+    // 执行轨迹：套件模式下不再只给一个「23/42」，把工具调用与步骤自述还原出来，
+    // 使用者才能判断「卡在用例的哪一步、该改哪一句」。
+    const trace = r.report.trace ?? [];
+    if (trace.length > 0) {
+      const shown = trace.slice(-TRACE_TAIL_LINES);
+      lines.push(`  执行轨迹（末尾 ${shown.length}/${trace.length} 条）:`);
+      for (const t of shown) lines.push("    " + t);
+    }
     lines.push("  " + formatUsage(r.usage));
   });
   lines.push("");
