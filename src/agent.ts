@@ -15,18 +15,29 @@ import {
   countAssertions,
   emptyUsage,
   formatUsage,
-  mergeUsage,
   numberSteps,
   parseAssertions,
   parseProgress,
+  renderSuiteText,
+  renderText,
+  summarizeSuite,
   type TestReport,
   type TokenUsage,
 } from "./report.js";
+import { Recorder } from "./record.js";
+import type { ScenarioRecording } from "./replay.js";
+import { restorePlaceholders, type RunVarValue } from "./vars.js";
 
 export interface AgentOptions {
   session?: string;
   systemPrompt?: string;
   debug?: boolean;
+  /** 场景名（套件模式下由 `## 场景名` 提供），写进录制结果供回放脚本使用。 */
+  scenarioName?: string;
+  /** 本次运行展开 `${...}` 占位符用的取值，录制回放脚本时用于把具体值还原成占位符。 */
+  vars?: RunVarValue[];
+  /** 将要写入的回放脚本路径（仅用于在报告里标注，落盘由 CLI 负责）。 */
+  scriptPath?: string;
 }
 
 export interface AgentRunResult {
@@ -35,6 +46,8 @@ export interface AgentRunResult {
   json: string;
   transcript: string;
   usage: TokenUsage;
+  /** 本次运行录制到的可回放步骤（单场景一条；套件模式逐场景一条）。 */
+  recordings: ScenarioRecording[];
 }
 
 interface Scenario {
@@ -69,6 +82,11 @@ const DEFAULT_SYSTEM_PROMPT = [
   "- 只要还有未执行的步骤，就继续调用工具执行下一步，不要中途停下等待用户输入；只有全部步骤都执行（或已明确失败）后才输出进度声明并收尾。",
   "- 工具调用失败（如 click 找不到元素、超时）不等于该步骤失败：必须先重新 snapshot 定位元素后重试；同一操作连续两次失败才可判定该步骤失败。",
   "",
+  "下拉菜单（关键）：",
+  "- 很多组件库（如 element-plus 的 el-dropdown）的下拉菜单是**悬停触发**的：必须先用 hover 悬停在触发按钮上、等菜单展开，再 click 菜单项。直接 click 触发按钮常常点不开菜单。",
+  "- 判断菜单是否已展开：snapshot 里出现了对应的菜单项（如 menuitem「上传文档」）。若 click 触发按钮后 snapshot 里没有菜单项，改为 hover 再点，不要继续在同一个位置重复 click。",
+  "- 页面上可能有多个同名下拉（例如页面级的「操作」与当前区域级的「操作」）。选错会展开完全不同的菜单，后续步骤连锁失败：请按当前操作的区域选择那一个，并在它展开后确认菜单项与用例要求一致。",
+  "",
   "表单提交失败处理（关键，不得跳过）：",
   "- 点击「提交 / 确定 / 保存 / 确认」类按钮后，必须先确认动作是否真的成功：弹窗是否关闭、是否出现成功提示、列表数据是否刷新。",
   "- 若弹窗仍未关闭、仍停留在表单页，或出现「xxx 不能为空」「请输入 xxx」「请选择 xxx」「必填项」等校验提示，一律视为提交失败，此时不得跳过该步骤、不得继续下一步。",
@@ -98,9 +116,6 @@ const TRIMMED_MARK = "（较早的快照已省略";
 // 后面的步骤根本没执行。这里按 agent 自报的进度/已解析断言数补「继续执行」提示，
 // 直到跑满、确实没有进展或达到次数上限为止。
 const MAX_CONTINUATIONS = 5;
-
-/** 套件报告里每个场景最多回放多少条执行轨迹（末尾优先），避免报告过长。 */
-const TRACE_TAIL_LINES = 25;
 
 /** 构造续跑提示：只要求接着做，不重复已完成步骤，并再次强调进度声明格式。 */
 function continuePrompt(
@@ -225,6 +240,8 @@ interface AgentSession {
   numbered: string;
   /** 步骤清单（用于日志与卡点定位）。 */
   steps: string[];
+  /** 回放脚本录制器（记录成功执行过的浏览器操作）。 */
+  recorder: Recorder;
   startedAt: number;
 }
 
@@ -266,7 +283,16 @@ async function initializeAgent(
   log("[runAgent] Jev enabled=" + jevClient.enabled);
   info(`[pageqa] 语义断言（Jev）${jevClient.enabled ? "已启用" : "未启用"}`);
 
-  const tools = createBskTools({ session, jevClient });
+  // 录制器：始终收集本次运行的操作序列，是否落盘由 CLI 的 --emit-script 决定。
+  // 记录是否启用了 Jev：语义录制的断言在回放的字符串匹配下可能误报，需要标记。
+  const recorder = new Recorder(opts.vars ?? [], {
+    semantic: jevClient.enabled,
+  });
+  const tools = createBskTools({
+    session,
+    jevClient,
+    onExec: (event) => recorder.noteTool(event),
+  });
   log(
     "[runAgent] 工具数=" +
       tools.length +
@@ -307,9 +333,9 @@ async function initializeAgent(
     },
   });
 
-  subscribeProgress(agent, events);
+  subscribeProgress(agent, events, recorder);
 
-  return { agent, events, numbered, steps, startedAt };
+  return { agent, events, numbered, steps, recorder, startedAt };
 }
 
 /**
@@ -318,7 +344,11 @@ async function initializeAgent(
  * 工具执行进度始终打印（默认可见），让长流程每跑一步都有回显；
  * 避免出现「终端长时间无输出、不知道卡在哪一步」的观感。
  */
-function subscribeProgress(agent: Agent, events: string[]): void {
+function subscribeProgress(
+  agent: Agent,
+  events: string[],
+  recorder: Recorder,
+): void {
   const log = debugLog;
   let toolCount = 0;
   let toolStartedAt = 0;
@@ -351,6 +381,9 @@ function subscribeProgress(agent: Agent, events: string[]): void {
         info("[pageqa] 模型已开始输出，正在推进步骤…");
       }
       events.push(e.assistantMessageEvent.delta);
+      // 顺带给录制器喂文本：从「第 k 步完成」自述里跟踪进度，
+      // 把后续工具调用映射回用例步骤号（映射不准时为 null，不影响回放）。
+      recorder.noteText(e.assistantMessageEvent.delta);
     }
   });
 }
@@ -419,7 +452,11 @@ async function executeWithContinuations(
  * 阶段三：根据执行轨迹整理报告。
  * agent 因错误/上下文超限中断时，绝不当作「正常跑完」，而是显式追加强制失败断言。
  */
-function finalizeResult(session: AgentSession, input: string): AgentRunResult {
+function finalizeResult(
+  session: AgentSession,
+  input: string,
+  opts: AgentOptions,
+): AgentRunResult {
   const { agent, events, startedAt } = session;
   const log = debugLog;
 
@@ -435,6 +472,8 @@ function finalizeResult(session: AgentSession, input: string): AgentRunResult {
 
   const transcript = events.join("");
   const report = buildReport(input, transcript);
+  // 报告里标注回放脚本的落盘位置（真正写文件由 CLI 在运行结束后完成）
+  if (opts.scriptPath) report.script = opts.scriptPath;
   if (agentError) {
     report.status = "fail";
     report.assertions.push({
@@ -462,6 +501,19 @@ function finalizeResult(session: AgentSession, input: string): AgentRunResult {
     json: JSON.stringify(report, null, 2),
     transcript,
     usage,
+    // 录制结果与「跑得成不成功」无关：失败运行也能导出脚本（--emit-script），
+    // 便于排查「模型这次到底做了什么」。
+    recordings: [
+      {
+        name: opts.scenarioName ?? "场景 1",
+        // 用例原文同样按占位符形式写进脚本：这份文本会被回放报告用来指出
+        // 「对应用例第 k 步」，与用户的用例文件保持一致才不会看着像写死了值。
+        caseSteps: (report.steps ?? []).map((s) =>
+          restorePlaceholders(s, opts.vars ?? []),
+        ),
+        steps: session.recorder.recorded,
+      },
+    ],
   };
 }
 
@@ -474,7 +526,7 @@ async function runAgentCore(
   setDebug(opts.debug ?? false);
   const session = await initializeAgent(input, opts, holder);
   await executeWithContinuations(session, input);
-  return finalizeResult(session, input);
+  return finalizeResult(session, input, opts);
 }
 
 /** 把一个脚本拆分为多个场景（按 `## ` 二级标题分隔）。无标题则整体作为一个场景。 */
@@ -524,122 +576,35 @@ export async function runSuite(
     info(
       `[pageqa] ═══ 场景 ${i + 1}/${scenarios.length}：${sc.name} ═══`,
     );
-    const r = await runAgent(sc.body, { ...opts, systemPrompt: undefined });
+    const r = await runAgent(sc.body, {
+      ...opts,
+      systemPrompt: undefined,
+      scenarioName: sc.name,
+    });
     results.push(r);
     info(
       `[pageqa] ═══ 场景 ${i + 1}/${scenarios.length} 结束：` +
         `${r.report.status === "pass" ? "PASS" : "FAIL"} ═══`,
     );
   }
-  const overall = results.every((r) => r.report.status === "pass")
-    ? "pass"
-    : "fail";
-  const usage = results.reduce((acc, r) => mergeUsage(acc, r.usage), emptyUsage());
-  const summary: TestReport = {
-    status: overall,
-    assertions: results.flatMap((r, i) =>
-      r.report.assertions.map((a) => ({
-        ...a,
-        expectation:
-          "[" + (scenarios[i]?.name ?? String(i + 1)) + "] " + a.expectation,
-      })),
-    ),
-    summary:
-      "共 " +
-      results.length +
-      " 个场景，通过 " +
-      results.filter((r) => r.report.status === "pass").length +
-      " 个",
-    transcript: results
-      .map(
-        (r, i) =>
-          "## " +
-          (scenarios[i]?.name ?? String(i + 1)) +
-          "\n" +
-          r.transcript.trim(),
-      )
-      .join("\n\n"),
-    // 逐场景明细：JSON 报告里保留 steps/trace，CI 侧可直接定位失败场景的卡点步骤。
-    scenarios: results.map((r, i) => ({
-      name: scenarios[i]?.name ?? String(i + 1),
-      status: r.report.status,
-      steps: r.report.steps ?? [],
-      trace: r.report.trace ?? [],
-      assertions: r.report.assertions,
+  // 汇总口径与回放模式共用同一实现（report.ts 的 summarizeSuite），两种模式报告结构一致。
+  const summary = summarizeSuite(
+    scenarios.map((sc, i) => ({
+      name: sc.name,
+      report: results[i].report,
+      usage: results[i].usage,
     })),
-    usage,
-  };
+  );
+  if (opts.scriptPath) summary.script = opts.scriptPath;
   return {
     report: summary,
     text: renderSuiteText(summary, results, scenarios),
     json: JSON.stringify(summary, null, 2),
     transcript: summary.transcript,
-    usage,
+    usage: summary.usage ?? emptyUsage(),
+    recordings: results.flatMap((r) => r.recordings),
   };
 }
 
-function verdictTag(v: "pass" | "fail"): string {
-  return v === "pass" ? "PASS" : "FAIL";
-}
-
-function assertionLine(a: {
-  verdict: "pass" | "fail";
-  expectation: string;
-  evidence?: string;
-}): string {
-  const ev = a.evidence ? " (" + a.evidence + ")" : "";
-  return "  - [" + verdictTag(a.verdict) + "] " + a.expectation + ev;
-}
-
-function renderText(r: TestReport): string {
-  const lines: string[] = [];
-  lines.push("=== 页面测试报告 ===");
-  lines.push("结论: " + (r.status === "pass" ? "PASS" : "FAIL"));
-  lines.push("断言数: " + r.assertions.length);
-  for (const a of r.assertions) lines.push(assertionLine(a));
-  if (r.summary)   lines.push("摘要: " + r.summary);
-  lines.push("---");
-  lines.push(r.transcript.trim());
-  lines.push("---");
-  lines.push(formatUsage(r.usage));
-  return lines.join("\n");
-}
-
-function renderSuiteText(
-  summary: TestReport,
-  results: AgentRunResult[],
-  scenarios: { name: string; body: string }[],
-): string {
-  const lines: string[] = [];
-  lines.push("=== 页面测试套件报告 ===");
-  lines.push("整体结论: " + (summary.status === "pass" ? "PASS" : "FAIL"));
-  lines.push("场景数: " + results.length);
-  results.forEach((r, i) => {
-    lines.push("");
-    lines.push(
-      "--- 场景 " +
-        (i + 1) +
-        "：" +
-        (scenarios[i]?.name ?? "") +
-        " [" +
-        (r.report.status === "pass" ? "PASS" : "FAIL") +
-        "] ---",
-    );
-    for (const a of r.report.assertions) lines.push(assertionLine(a));
-    if (r.report.summary) lines.push("  摘要: " + r.report.summary);
-    // 执行轨迹：套件模式下不再只给一个「23/42」，把工具调用与步骤自述还原出来，
-    // 使用者才能判断「卡在用例的哪一步、该改哪一句」。
-    const trace = r.report.trace ?? [];
-    if (trace.length > 0) {
-      const shown = trace.slice(-TRACE_TAIL_LINES);
-      lines.push(`  执行轨迹（末尾 ${shown.length}/${trace.length} 条）:`);
-      for (const t of shown) lines.push("    " + t);
-    }
-    lines.push("  " + formatUsage(r.usage));
-  });
-  lines.push("");
-  lines.push("汇总: " + summary.summary);
-  lines.push("---");
-  lines.push(formatUsage(summary.usage));
-  return lines.join("\n");
-}
+// 报告渲染（renderText / renderSuiteText）与套件汇总（summarizeSuite）在 report.ts 中实现，
+// 由 LLM 运行与零模型回放共用，保证两种模式的报告结构与汇总口径一致。

@@ -16,7 +16,7 @@
     "start": "node dist/index.js",
     "pretest": "npm run build",
     "test": "node --test tests/smoke.test.mjs",
-    "test:unit": "npm run build && node --test tests/report.test.mjs",
+    "test:unit": "npm run build && node --test tests/report.test.mjs tests/replay.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "files": [
