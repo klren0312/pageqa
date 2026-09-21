@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { JevClient } from "../jev.js";
@@ -44,22 +44,46 @@ function bsk(args: string[]): string {
   }
 }
 
-/** 运行 `bsk status --json`，成功返回解析后的对象；daemon 未运行/其他错误返回 null。
- *  注意：bsk 未安装（ENOENT）是致命错误，会向上抛出。 */
-function bskStatusJson(): unknown | null {
-  try {
-    const out = bsk(["status", "--json"]);
-    return JSON.parse(out) as unknown;
-  } catch (err) {
-    const e = err as { code?: string };
-    if (e.code === "ENOENT") throw err;
-    return null;
-  }
+/**
+ * `bsk status --json` 的异步版本。
+ *
+ * 与同步版返回语义一致：daemon 未运行/解析失败返回 null；bsk 未安装（ENOENT）抛出致命错误。
+ * 用于 daemon 启动轮询：轮询期间必须让出事件循环，否则同步子进程调用会阻塞
+ * 整个进程，导致启动等待期（最长 30s）无法响应 Ctrl+C 等信号。
+ */
+function bskStatusJsonAsync(): Promise<unknown | null> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "bsk",
+      ["status", "--json"],
+      { encoding: "utf-8", timeout: BSK_TIMEOUT_MS, windowsHide: true },
+      (err, stdout) => {
+        if (err) {
+          const e = err as { code?: string };
+          if (e.code === "ENOENT") {
+            reject(
+              new Error(
+                "未找到 bsk 命令：请先安装 browserskill 并确认 bsk 在 PATH 中",
+              ),
+            );
+            return;
+          }
+          resolve(null);
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout) as unknown);
+        } catch {
+          resolve(null);
+        }
+      },
+    );
+  });
 }
 
-/** 当前是否已连接至少一个浏览器（从 status 解析）。 */
-function connectedBrowserCount(): number {
-  const status = bskStatusJson() as { browsers?: unknown[] } | null;
+/** 当前是否已连接至少一个浏览器（从 status 解析，异步）。 */
+async function connectedBrowserCount(): Promise<number> {
+  const status = (await bskStatusJsonAsync()) as { browsers?: unknown[] } | null;
   if (!status || !Array.isArray(status.browsers)) return 0;
   return status.browsers.length;
 }
@@ -76,7 +100,7 @@ function startDaemon(): Promise<void> {
     child.unref();
 
     const deadline = Date.now() + 30_000;
-    const poll = () => {
+    const poll = async () => {
       try {
         if (child.exitCode !== null && child.exitCode !== 0) {
           reject(new Error(`bsk daemon 启动失败，退出码 ${child.exitCode}`));
@@ -85,7 +109,15 @@ function startDaemon(): Promise<void> {
       } catch {
         // 子进程状态读取失败，继续轮询
       }
-      if (bskStatusJson() !== null) {
+      let status: unknown | null;
+      try {
+        status = await bskStatusJsonAsync();
+      } catch (err) {
+        // bsk 未安装（ENOENT）：致命错误，直接失败而不是空等 30s
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      if (status !== null) {
         info(
           `[pageqa] bsk daemon 已就绪（${((Date.now() - started) / 1000).toFixed(1)}s）`,
         );
@@ -119,12 +151,12 @@ export function ensureBskReady(): Promise<void> {
   if (readyPromise) return readyPromise;
   readyPromise = (async () => {
     debugLog("[bsk] 查询 daemon 状态…");
-    if (bskStatusJson() === null) {
+    if ((await bskStatusJsonAsync()) === null) {
       await startDaemon();
     } else {
       debugLog("[bsk] daemon 已在运行，跳过启动");
     }
-    const n = connectedBrowserCount();
+    const n = await connectedBrowserCount();
     if (n === 0) {
       throw new Error(
         "bsk 未连接任何浏览器：pageqa 无法自动连接物理浏览器。\n" +
@@ -139,6 +171,25 @@ export function ensureBskReady(): Promise<void> {
 /** 构造 AgentTool 标准的成功返回（含必填 details 字段）。 */
 function ok(text: string) {
   return { content: [{ type: "text", text } as const], details: {} };
+}
+
+/**
+ * 构造 AgentTool 的 parameters 声明。
+ * pi-agent-core 的 parameters 类型与 JSON Schema 子集不完全兼容，
+ * 这里集中做一次类型断言，避免在每个工具定义里重复 `as unknown as ...`。
+ */
+function paramsOf(
+  properties: Record<string, unknown>,
+  required: string[] = [],
+): AgentTool["parameters"] {
+  // SAFETY: pi-agent-core 的 AgentTool["parameters"] 类型是 JSON Schema 的受限子集，
+  // 与这里构造的 {type, properties, required} 结构在运行时兼容，但静态类型无法推导，
+  // 因此集中在此处断言一次（工具定义处不再重复断言）。
+  return {
+    type: "object",
+    properties,
+    required,
+  } as unknown as AgentTool["parameters"];
 }
 
 export interface BskToolOptions {
@@ -178,12 +229,9 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     label: "Navigate",
     description:
       "在浏览器标签页打开一个 URL（支持 http/https/about: 等）。导航完成后页面 DOM 就绪。",
-    // SAFETY: AgentTool["parameters"] 在此上下文中与 {type, properties, required} 结构兼容
-    parameters: {
-      type: "object",
-      properties: { url: { type: "string", description: "目标 URL" } },
-      required: ["url"],
-    } as unknown as AgentTool["parameters"],
+    parameters: paramsOf({ url: { type: "string", description: "目标 URL" } }, [
+      "url",
+    ]),
     execute: async (_id: string, params: unknown) => {
       const p = params as NavParams;
       const out = bsk([
@@ -202,11 +250,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     label: "Snapshot",
     description:
       "读取当前页面的 aria 语义树与可见文本（标题、段落、链接、按钮等）。用于读取内容、标题、文本并定位元素。",
-    // SAFETY: 空对象在此上下文中与 AgentTool["parameters"] 兼容
-    parameters: {
-      type: "object",
-      properties: {},
-    } as unknown as AgentTool["parameters"],
+    parameters: paramsOf({}),
     execute: async () => {
       const out = bsk(["snapshot", ...quiet]);
       // 快照体积直接决定上下文压力（长流程易因上下文超限被中断）
@@ -219,14 +263,10 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     name: "click",
     label: "Click",
     description: "点击一个元素。可用快照里的 @eN 引用或 CSS 选择器。",
-    // SAFETY: 结构匹配 AgentTool["parameters"]
-    parameters: {
-      type: "object",
-      properties: {
-        target: { type: "string", description: "@eN 引用或 CSS 选择器" },
-      },
-      required: ["target"],
-    } as unknown as AgentTool["parameters"],
+    parameters: paramsOf(
+      { target: { type: "string", description: "@eN 引用或 CSS 选择器" } },
+      ["target"],
+    ),
     execute: async (_id: string, params: unknown) => {
       const p = params as TargetParams;
       const out = bsk(["click", p.target, ...quiet]);
@@ -238,15 +278,13 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     name: "fill",
     label: "Fill",
     description: "在输入框/文本域中填入文本（会先清空原有内容）。",
-    // SAFETY: 结构匹配 AgentTool["parameters"]
-    parameters: {
-      type: "object",
-      properties: {
+    parameters: paramsOf(
+      {
         target: { type: "string", description: "@eN 引用或 CSS 选择器" },
         value: { type: "string", description: "要输入的文本" },
       },
-      required: ["target", "value"],
-    } as unknown as AgentTool["parameters"],
+      ["target", "value"],
+    ),
     execute: async (_id: string, params: unknown) => {
       const p = params as FillParams;
       const out = bsk(["fill", p.target, "--value", p.value, ...quiet]);
@@ -263,10 +301,8 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       "不传 target 时 bsk 自动在页面中查找文件输入框。" +
       "注意：原生文件选择框无法被自动化点击，因此不要先 click 触发按钮再调用本工具，" +
       "直接调用 upload 并指定该按钮为 target 即可。",
-    // SAFETY: 结构匹配 AgentTool["parameters"]
-    parameters: {
-      type: "object",
-      properties: {
+    parameters: paramsOf(
+      {
         target: {
           type: "string",
           description:
@@ -274,8 +310,8 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         },
         file: { type: "string", description: "待上传的本地文件绝对路径" },
       },
-      required: ["file"],
-    } as unknown as AgentTool["parameters"],
+      ["file"],
+    ),
     execute: async (_id: string, params: unknown) => {
       const p = params as UploadParams;
       if (!existsSync(p.file)) {
@@ -293,14 +329,10 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     name: "hover",
     label: "Hover",
     description: "悬停在一个元素上，用于触发悬停菜单/提示。",
-    // SAFETY: 结构匹配 AgentTool["parameters"]
-    parameters: {
-      type: "object",
-      properties: {
-        target: { type: "string", description: "@eN 引用或 CSS 选择器" },
-      },
-      required: ["target"],
-    } as unknown as AgentTool["parameters"],
+    parameters: paramsOf(
+      { target: { type: "string", description: "@eN 引用或 CSS 选择器" } },
+      ["target"],
+    ),
     execute: async (_id: string, params: unknown) => {
       const p = params as TargetParams;
       const out = bsk(["hover", p.target, ...quiet]);
@@ -312,14 +344,10 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     name: "scroll",
     label: "Scroll",
     description: "滚动到指定元素使其进入视口。",
-    // SAFETY: 结构匹配 AgentTool["parameters"]
-    parameters: {
-      type: "object",
-      properties: {
-        target: { type: "string", description: "@eN 引用或 CSS 选择器" },
-      },
-      required: ["target"],
-    } as unknown as AgentTool["parameters"],
+    parameters: paramsOf(
+      { target: { type: "string", description: "@eN 引用或 CSS 选择器" } },
+      ["target"],
+    ),
     execute: async (_id: string, params: unknown) => {
       const p = params as TargetParams;
       const js = `(() => { const el = document.querySelector(${JSON.stringify(p.target)}); if (el) el.scrollIntoView({block:'center'}); return el ? 'scrolled' : 'element-not-found'; })()`;
@@ -332,12 +360,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     name: "wait",
     label: "Wait",
     description: "等待一段时间（毫秒）或等待页面导航完成。",
-    // SAFETY: 结构匹配 AgentTool["parameters"]
-    parameters: {
-      type: "object",
-      properties: { ms: { type: "number", description: "等待毫秒数" } },
-      required: [],
-    } as unknown as AgentTool["parameters"],
+    parameters: paramsOf({ ms: { type: "number", description: "等待毫秒数" } }),
     execute: async (_id: string, params: unknown) => {
       const p = (params as WaitParams) ?? {};
       const ms = p.ms ?? 1000;
@@ -352,14 +375,12 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     label: "Assert Text",
     description:
       "断言当前页面是否包含指定文本。返回「成立」或「不成立」并附上证据（命中片段）。用于校验测试结果。",
-    // SAFETY: 结构匹配 AgentTool["parameters"]
-    parameters: {
-      type: "object",
-      properties: {
+    parameters: paramsOf(
+      {
         expectation: { type: "string", description: "期望在页面中出现的文本" },
       },
-      required: ["expectation"],
-    } as unknown as AgentTool["parameters"],
+      ["expectation"],
+    ),
     execute: async (_id: string, params: unknown) => {
       const p = params as ExpectParams;
       const snap = bsk(["snapshot", ...quiet]);
@@ -385,8 +406,14 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
             ? `语义匹配度 ${(prob * 100).toFixed(1)}%，超过阈值 ${(jevClient.threshold * 100).toFixed(0)}%`
             : `语义匹配度 ${(prob * 100).toFixed(1)}%，未达到阈值 ${(jevClient.threshold * 100).toFixed(0)}%`;
           return ok(`断言「${p.expectation}」：${verdict}。${evidence}`);
-        } catch {
-          // Jev 调用失败：回退到原有的字符串包含逻辑
+        } catch (err) {
+          // Jev 调用失败：回退到原有的字符串包含逻辑。
+          // 必须记录失败原因（超时/鉴权/网络等），否则用户只看到「Jev 不可用，已回退」，
+          // 却无法从 --debug 日志判断到底是哪一类故障。
+          debugLog(
+            "[bsk] Jev 断言失败，回退到字符串匹配：" +
+              (err instanceof Error ? err.message : String(err)),
+          );
           const hit = snap.includes(p.expectation);
           const verdict = hit ? "成立" : "不成立";
           const evidence = hit

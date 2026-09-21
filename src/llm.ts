@@ -24,6 +24,28 @@ const MODELS: LlmModelConfig[] = [
   { id: "deepseek-v4.1-flash", name: "Deepseek-V4.1-Flash", contextWindow: 1_000_000, maxOutput: 128_000 },
 ];
 
+/** 预设之外的模型使用的保守上下文窗口/输出上限（未知模型按最小预设处理，避免超出端点实际限制）。 */
+const FALLBACK_CONTEXT_WINDOW = 32_000;
+const FALLBACK_MAX_OUTPUT = 64_000;
+
+/**
+ * 解析实际要注册的模型清单：预设模型沿用精确的 contextWindow/maxOutput；
+ * 用户配置了预设之外的模型时，动态补一条保守条目，使「改配置即用」成立
+ * （README 承诺 baseUrl/apiKey/model 均可配置、无需改代码）。
+ */
+function resolveModels(modelId: string): LlmModelConfig[] {
+  if (MODELS.some((m) => m.id === modelId)) return MODELS;
+  return [
+    ...MODELS,
+    {
+      id: modelId,
+      name: modelId,
+      contextWindow: FALLBACK_CONTEXT_WINDOW,
+      maxOutput: FALLBACK_MAX_OUTPUT,
+    },
+  ];
+}
+
 /** 构造一个静态解析的 ApiKeyAuth（避免交互式 env 探测）。 */
 function staticApiKeyAuth(apiKey: string, baseUrl: string) {
   return {
@@ -43,11 +65,12 @@ export function createLlmBackend(): LlmBackend {
   const DEFAULT_API_KEY = cfg.apiKey;
   const DEFAULT_MODEL = cfg.model;
   const models = createModels();
+  const registered = resolveModels(DEFAULT_MODEL);
   const provider = createProvider({
     id: PROVIDER_ID,
     name: "OpenAI Compatible (自定义端点)",
     auth: { apiKey: staticApiKeyAuth(DEFAULT_API_KEY, DEFAULT_BASE_URL) },
-    models: MODELS.map((m) => ({
+    models: registered.map((m) => ({
       id: m.id,
       name: m.name,
       api: "openai-completions",

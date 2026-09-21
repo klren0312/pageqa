@@ -216,17 +216,31 @@ export async function runAgent(
   }
 }
 
-/** runAgent 的实际编排逻辑；session 记录到 holder 供调用方兜底清理。 */
-async function runAgentCore(
+/** 单个场景的 agent 编排上下文：一次 setup 产出，供执行与收尾两个阶段复用。 */
+interface AgentSession {
+  agent: Agent;
+  /** agent 事件累积的原始文本（工具调用/输出），供报告与续跑判定使用。 */
+  events: string[];
+  /** 用例编号后的文本，作为首次 prompt。 */
+  numbered: string;
+  /** 步骤清单（用于日志与卡点定位）。 */
+  steps: string[];
+  startedAt: number;
+}
+
+/**
+ * 阶段一：准备运行环境。
+ * 完成 LLM 后端创建、bsk 就绪检查、session 创建、工具组装、Agent 实例化与事件订阅。
+ */
+async function initializeAgent(
   input: string,
   opts: AgentOptions,
   holder: SessionHolder,
-): Promise<AgentRunResult> {
+): Promise<AgentSession> {
   const debug = opts.debug ?? false;
-  setDebug(debug);
   const log = debugLog;
+  const startedAt = Date.now();
 
-  const t0 = Date.now();
   log("[runAgent] 开始，输入长度=" + input.length);
   // 由 pageqa 统一给用例的每行编号后再交给模型：模型输出的「步骤完成：k/n」
   // 就能映射回用例原文，报告可直接指出「停在哪一步、下一步该做什么」。
@@ -248,8 +262,7 @@ async function runAgentCore(
   log("[runAgent] bsk session=" + session);
   info(`[pageqa] bsk session=${session}`);
 
-  const jevCfg = loadConfig().jev;
-  const jevClient = new JevClient(jevCfg, debug);
+  const jevClient = new JevClient(loadConfig().jev, debug);
   log("[runAgent] Jev enabled=" + jevClient.enabled);
   info(`[pageqa] 语义断言（Jev）${jevClient.enabled ? "已启用" : "未启用"}`);
 
@@ -294,11 +307,23 @@ async function runAgentCore(
     },
   });
 
-  // 工具执行进度始终打印（默认可见），让长流程每跑一步都有回显；
-  // 避免出现「终端长时间无输出、不知道卡在哪一步」的观感。
+  subscribeProgress(agent, events);
+
+  return { agent, events, numbered, steps, startedAt };
+}
+
+/**
+ * 订阅 agent 事件，把工具调用与模型输出记入 events，并把进度回显到 stderr。
+ *
+ * 工具执行进度始终打印（默认可见），让长流程每跑一步都有回显；
+ * 避免出现「终端长时间无输出、不知道卡在哪一步」的观感。
+ */
+function subscribeProgress(agent: Agent, events: string[]): void {
+  const log = debugLog;
   let toolCount = 0;
   let toolStartedAt = 0;
   let firstTextLogged = false;
+
   agent.subscribe((e) => {
     if (e.type === "tool_execution_start") {
       events.push("[tool] " + e.toolName);
@@ -328,6 +353,18 @@ async function runAgentCore(
       events.push(e.assistantMessageEvent.delta);
     }
   });
+}
+
+/**
+ * 阶段二：发首次用例，并在「有明确证据表明还没执行完」时续跑。
+ * 证据 = agent 自报进度未满，或用例中断言数还没跑够；进度无推进则提前停止。
+ */
+async function executeWithContinuations(
+  session: AgentSession,
+  input: string,
+): Promise<void> {
+  const { agent, events, numbered } = session;
+  const log = debugLog;
 
   log("[runAgent] 发送 prompt...");
   info("[pageqa] 已提交用例，等待模型与浏览器执行…");
@@ -335,8 +372,6 @@ async function runAgentCore(
   log("[runAgent] prompt 完成，等待 idle...");
   await agent.waitForIdle();
 
-  // 续跑：只在「有明确证据表明还没执行完」时才追问，避免正常用例被多余打扰。
-  // 证据 = agent 自报进度未满，或用例中断言数还没跑够。
   const expectedAssertions = countAssertions(input);
   let lastSignature: string | null = null;
   for (let round = 0; round < MAX_CONTINUATIONS; round++) {
@@ -377,7 +412,16 @@ async function runAgentCore(
     await agent.waitForIdle();
   }
 
-  log("[runAgent] idle 完成，耗时=" + (Date.now() - t0) + "ms");
+  log("[runAgent] idle 完成，耗时=" + (Date.now() - session.startedAt) + "ms");
+}
+
+/**
+ * 阶段三：根据执行轨迹整理报告。
+ * agent 因错误/上下文超限中断时，绝不当作「正常跑完」，而是显式追加强制失败断言。
+ */
+function finalizeResult(session: AgentSession, input: string): AgentRunResult {
+  const { agent, events, startedAt } = session;
+  const log = debugLog;
 
   // 循环可能因模型报错/上下文超限而提前结束；此时绝不能当成「正常跑完」。
   const agentError = agent.state.errorMessage;
@@ -409,7 +453,7 @@ async function runAgentCore(
   log("[runAgent] " + formatUsage(usage));
   info(
     `[pageqa] 用例结束：${report.status === "pass" ? "PASS" : "FAIL"}，` +
-      `断言 ${report.assertions.length} 条，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+      `断言 ${report.assertions.length} 条，耗时 ${((Date.now() - startedAt) / 1000).toFixed(1)}s`,
   );
 
   return {
@@ -419,6 +463,18 @@ async function runAgentCore(
     transcript,
     usage,
   };
+}
+
+/** runAgent 的实际编排逻辑；session 记录到 holder 供调用方兜底清理。 */
+async function runAgentCore(
+  input: string,
+  opts: AgentOptions,
+  holder: SessionHolder,
+): Promise<AgentRunResult> {
+  setDebug(opts.debug ?? false);
+  const session = await initializeAgent(input, opts, holder);
+  await executeWithContinuations(session, input);
+  return finalizeResult(session, input);
 }
 
 /** 把一个脚本拆分为多个场景（按 `## ` 二级标题分隔）。无标题则整体作为一个场景。 */

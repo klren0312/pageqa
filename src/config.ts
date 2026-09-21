@@ -77,9 +77,7 @@ export function loadConfig(): PageQaConfig {
 /** 读取用户配置文件；不存在则创建默认文件并返回默认值。 */
 function readConfigFile(): Partial<PageQaConfig> {
   if (!existsSync(CONFIG_PATH)) {
-    ensureConfigDir();
-    writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULTS, null, 2), "utf8");
-    return { ...DEFAULTS };
+    return createDefaultConfigFile();
   }
   try {
     const raw = readFileSync(CONFIG_PATH, "utf8");
@@ -93,6 +91,18 @@ function readConfigFile(): Partial<PageQaConfig> {
   } catch {
     return { ...DEFAULTS };
   }
+}
+
+/**
+ * 写出带默认值的配置文件（首次运行时调用）。
+ *
+ * 从 readConfigFile 中拆出，使“读配置的副作用会在磁盘上建文件”这件事显式可见，
+ * 而不是隐藏在名为“读取”的函数里。
+ */
+function createDefaultConfigFile(): Partial<PageQaConfig> {
+  ensureConfigDir();
+  writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULTS, null, 2), "utf8");
+  return { ...DEFAULTS };
 }
 
 /** 确保配置目录存在（首次运行时创建 ~/.pageqa）。 */
