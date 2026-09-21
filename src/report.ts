@@ -185,10 +185,26 @@ export function buildReport(input: string, transcript: string): TestReport {
   return { status, assertions, summary, transcript, trace, steps };
 }
 
-/** 统计用例（自然语言测试步骤）中的断言数量，用于校验执行完整性。 */
+/** 统计用例（自然语言测试步骤）中的断言数量，用于校验执行完整性。
+ *
+ * 只统计「断言 <描述>」这类真正的断言行，排除「断言」被当作讨论对象的叙述用法
+ * （如「断言失败时记录日志」「请检查断言结果」「断言的写法」）。
+ *
+ * 早期实现直接统计「断言」二字出现次数，会把叙述性文字也算成断言，
+ * 使期望断言数虚高，进而把实际已全部通过的正常用例误判为
+ * 「用例中的断言全部执行（实际 N/M）」，造成假失败。
+ */
 export function countAssertions(script: string): number {
-  return (script.match(/断言/g) ?? []).length;
+  return (script.match(ASSERTION_PATTERN) ?? []).length;
 }
+
+/**
+ * 断言行匹配：命中「断言」但排除其后紧跟叙述性词汇的用法。
+ * 排除词覆盖「断言失败/未通过/未成立/不成立/结果/的/写法/类型/覆盖/次数/用于」等
+ * 把「断言」当作被讨论对象的语境；未列出的普通描述（如「断言页面包含 A」）仍计入。
+ */
+const ASSERTION_PATTERN =
+  /断言(?!失败|未通过|未成立|不成立|结果|的|写法|类型|覆盖|次数|用于)/g;
 
 /**
  * 把用例按非空行编号，得到确定性的步骤序列（`### 步骤 k：<原文>`）。

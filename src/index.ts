@@ -15,6 +15,8 @@ interface CliArgs {
   initConfig: boolean;
   help: boolean;
   debug: boolean;
+  /** 参数解析错误（如带值选项缺少参数）；有值时 main 会提示并退出。 */
+  error?: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -32,9 +34,15 @@ function parseArgs(argv: string[]): CliArgs {
       case "--help":
         args.help = true;
         break;
-      case "--session":
-        args.session = argv[++i];
+      case "--session": {
+        const v = argv[++i];
+        if (v === undefined) {
+          args.error = "--session 需要一个 session id 参数";
+          return args;
+        }
+        args.session = v;
         break;
+      }
       case "--json":
         args.json = true;
         break;
@@ -44,9 +52,15 @@ function parseArgs(argv: string[]): CliArgs {
       case "--init-config":
         args.initConfig = true;
         break;
-      case "--out":
-        args.out = argv[++i];
+      case "--out": {
+        const v = argv[++i];
+        if (v === undefined) {
+          args.error = "--out 需要一个文件路径参数";
+          return args;
+        }
+        args.out = v;
         break;
+      }
       case "--debug":
         args.debug = true;
         break;
@@ -140,6 +154,11 @@ function looksLikeScriptFile(input: string): boolean {
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
+  if (args.error) {
+    process.stderr.write(`参数错误：${args.error}\n\n`);
+    process.stdout.write(HELP + "\n");
+    return 1;
+  }
   if (args.help) {
     process.stdout.write(HELP + "\n");
     return 0;
@@ -214,3 +233,22 @@ main()
     );
     process.exit(1);
   });
+
+// 兜底：main() 的 catch 只能捕获其 Promise 链内的错误。
+// 工具执行、事件订阅回调等异步路径上抛出的异常不会被它捕获，
+// 若不处理会直接静默崩溃（进程退出码非 0 但无任何报错信息）。
+process.on("uncaughtException", (err) => {
+  process.stderr.write(
+    `执行失败（未捕获异常）: ${err instanceof Error ? err.stack : String(err)}\n`,
+  );
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(
+    `执行失败（未处理的 Promise rejection）: ${
+      reason instanceof Error ? reason.stack : String(reason)
+    }\n`,
+  );
+  process.exit(1);
+});

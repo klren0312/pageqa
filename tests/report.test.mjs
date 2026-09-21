@@ -91,6 +91,38 @@ describe("执行完整性校验", () => {
     assert.equal(countAssertions(script), 2);
   });
 
+  test("叙述性「断言」不计入断言数", () => {
+    // 以下「断言」都是被讨论的对象，而非真正的断言行
+    for (const s of [
+      "断言失败时记录日志",
+      "这个断言失败了",
+      "断言未通过",
+      "这里讨论断言的写法",
+      "请检查断言结果",
+      "断言的类型有两种",
+    ]) {
+      assert.equal(countAssertions(s), 0, `不应计入：${s}`);
+    }
+  });
+
+  test("带引号/冒号的断言行仍被计入", () => {
+    assert.equal(countAssertions("断言「用户名」：成立"), 1);
+    assert.equal(countAssertions("断言页面包含 A：成立"), 1);
+  });
+
+  // 回归：用例里含叙述性「断言」时，早期实现会把期望断言数算多，
+  // 导致实际已全部通过的用例被误判为「断言未全部执行」→ 假失败。
+  test("叙述性「断言」不会造成假失败", () => {
+    const s = ["打开页面", "断言失败时记录日志", "断言标题包含 Example"].join("\n");
+    assert.equal(countAssertions(s), 1, "只应统计 1 条真断言");
+    const r = buildReport(s, "断言「标题包含 Example」：成立。证据：标题是 Example");
+    assert.equal(r.status, "pass", "正常用例不应被判 fail");
+    assert.ok(
+      !r.assertions.some((a) => a.expectation.includes("全部执行")),
+      "不应追加「断言数不足」的失败项",
+    );
+  });
+
   test("断言数不足 → fail", () => {
     const r = buildReport(script, "1. 断言页面包含 A：成立");
     assert.equal(r.status, "fail");
