@@ -510,17 +510,18 @@
           uploadBtn.disabled = true;
           if (uploadStatus) uploadStatus.innerHTML = '<p>上传中...</p>';
           setTimeout(() => {
+            // 成功/失败提示都常驻显示：自动化 agent 从「点击上传」到「回头断言」
+            // 要经历若干次 LLM 往返（实测 2~6 秒），自动隐藏的 toast 会让断言必然看不到它。
+            const MAX_SIZE = 10 * 1024 * 1024;
+            const oversized = selectedFiles.filter(f => f.size > MAX_SIZE);
             if (uploadStatus) {
-              uploadStatus.innerHTML = `
-                <div class="success-message">
+              uploadStatus.innerHTML = oversized.length > 0
+                ? `<div class="error">上传失败：${oversized.map(f => f.name).join('、')} 超过 10MB 大小限制</div>`
+                : `<div class="success-message">
                   成功上传 ${selectedFiles.length} 个文件
-                </div>
-              `;
+                </div>`;
             }
             uploadBtn.disabled = false;
-            setTimeout(() => {
-              if (uploadStatus) uploadStatus.innerHTML = '';
-            }, 3000);
           }, 1500);
         });
       }

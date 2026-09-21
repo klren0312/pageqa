@@ -433,11 +433,12 @@ async function executeWithContinuations(
     const transcriptSoFar = events.join("");
     const progress = parseProgress(transcriptSoFar);
     // 断言进度以工具结果为准（模型自述的措辞时好时坏，可能一条都解析不出来）；
-    // 没有工具结果时才退回按结论文本解析。
-    const parsed = Math.max(
-      session.assertions.length,
-      parseAssertions(transcriptSoFar).length,
-    );
+    // 只有在拿不到工具结果时才退回按结论文本解析（与 buildReport 同一条规则，
+    // 不能用两者较大值——结论文本解析计数一高就会压过可靠的工具结果）。
+    const parsed =
+      session.assertions.length > 0
+        ? session.assertions.length
+        : parseAssertions(transcriptSoFar).length;
     const incomplete = progress
       ? progress.done < progress.total
       : expectedAssertions > 0 && parsed < expectedAssertions;
