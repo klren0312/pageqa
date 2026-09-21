@@ -30,6 +30,7 @@ pageqa/
 
 - `src/bsk/tools.ts` 把 `bsk` CLI 命令包装成 `pi-agent-core` 的 `AgentTool`；每个命令带 `--session <id> --quiet`。
 - `ensureSession(existing?)`：若给定 session 在 `bsk session list` 中活跃则复用，否则 `bsk session start --json` 新建。
+- `closeSession(session)`：调用 `bsk session stop <id>` 收尾，关闭该 session 的 Agent Window（自动化操作的浏览器窗口）并归还借用标签页；由 `runAgent` 的 `finally` 保证在成功、失败、抛错三种路径都会执行，失败仅提示、不影响测试结论。
 - 可用工具：
   - `navigate(url)`：打开 URL（`--wait-until domcontentloaded`）。
   - `snapshot()`：读取页面 aria 语义树与可见文本（标题、段落、链接、按钮等），用于读取内容与定位元素。

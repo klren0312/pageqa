@@ -5,8 +5,10 @@ import {
   buildReport,
   countAssertions,
   emptyUsage,
+  extractTrace,
   formatUsage,
   mergeUsage,
+  numberSteps,
 } from "../dist/report.js";
 
 // 纯单元测试：只依赖 dist/report.js，不需要 bsk / LLM。
@@ -118,6 +120,60 @@ describe("执行完整性校验", () => {
       "1. 断言页面包含 A：成立\n2. 断言页面包含 B：成立\n步骤完成：2/2",
     );
     assert.equal(r.status, "pass");
+  });
+});
+
+// 失败定位：把 agent 自报的「第 k 步」映射回用例原文，报告才能指出卡点。
+describe("步骤编号与卡点定位", () => {
+  test("按非空行编号，并忽略标题/引用说明行", () => {
+    const { numbered, steps } = numberSteps(
+      ["# 标题", "> 说明", "", "打开 A", "断言 A"].join("\n"),
+    );
+    assert.deepEqual(steps, ["打开 A", "断言 A"]);
+    assert.ok(numbered.includes("### 步骤 1：打开 A"));
+    assert.ok(numbered.includes("### 步骤 2：断言 A"));
+  });
+
+  test("抽取执行轨迹：工具调用 + agent 步骤自述", () => {
+    const trace = extractTrace(
+      [
+        "[tool] navigate",
+        "第 1 步完成：页面已打开",
+        "[tool-ok] snapshot",
+        "[tool-error] click",
+        "步骤完成：2/4",
+      ].join("\n"),
+    );
+    assert.ok(trace.includes("[tool] navigate"));
+    assert.ok(trace.includes("[tool-error] click"));
+    assert.ok(trace.some((l) => l.includes("第 1 步完成")));
+    assert.ok(trace.some((l) => l.includes("步骤完成：2/4")));
+  });
+
+  test("步骤未跑满时，evidence 指出下一步的用例原文", () => {
+    const script = ["打开 A", "断言 A", "点击 B", "断言 B"].join("\n");
+    const r = buildReport(
+      script,
+      ["[tool] navigate", "第 1 步完成：打开 A", "步骤完成：1/4"].join("\n"),
+    );
+    assert.equal(r.status, "fail");
+    const a = r.assertions.find((x) => x.expectation.includes("全部步骤执行完成"));
+    assert.ok(a, "应有步骤未跑满的失败断言");
+    assert.ok(a.evidence.includes("第 2/4 步"), "evidence 应指出下一步编号");
+    assert.ok(a.evidence.includes("断言 A"), "evidence 应带上下一步的用例原文");
+    assert.ok(a.evidence.includes("第 1 步完成"), "evidence 应带上最后进展");
+    assert.deepEqual(r.steps, ["打开 A", "断言 A", "点击 B", "断言 B"]);
+    assert.ok(Array.isArray(r.trace) && r.trace.length > 0);
+  });
+
+  test("步骤编号与自报总数不一致时，不硬套用例原文", () => {
+    const r = buildReport(
+      ["打开 A", "断言 A"].join("\n"),
+      "步骤完成：1/9",
+    );
+    const a = r.assertions.find((x) => x.expectation.includes("全部步骤执行完成"));
+    assert.ok(a);
+    assert.ok(!a.evidence.includes("未执行到的步骤"));
   });
 });
 

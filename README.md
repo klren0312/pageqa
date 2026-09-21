@@ -163,6 +163,31 @@ pageqa --suite "打开 https://example.com 并断言标题包含 Example"
 
 脚本（`.md`/`.txt`）中用 `## 场景名` 分隔多个独立测试场景，CLI 会逐个运行、分别给出结论，并汇总整体 PASS/FAIL 与总退出码（任一场景失败则整体失败）。
 
+### 失败定位（步骤编号 + 执行轨迹）
+
+长流程失败时，只看到「步骤完成：23/42」是没法改用例的——不知道卡在用例的哪一句。为此：
+
+1. **步骤由 pageqa 统一编号**：用例的每个非空行（忽略 `#`/`>` 说明行）会被编号为 `### 步骤 k：<原文>` 后再交给模型。模型必须按编号执行，并输出同一套编号的「第 k 步完成：…」「步骤完成：k/n」。因此 `k` 能直接映射回用例的某一行。
+2. **报告输出执行轨迹**：套件报告里每个场景会附上工具调用与步骤自述（末尾 25 条），失败原因与卡点一目了然。
+3. **未跑完时直接点名下一步**：完整性校验的失败项会给出「最后进展」和「未执行到的步骤（第 k/n 步）：<用例原文>」，照着它就能定位到要改的那句。
+4. JSON 报告额外提供 `steps`（用例步骤清单）与 `trace`（执行轨迹数组）字段；套件模式还提供 `scenarios[]`（逐场景的 `name/status/steps/trace/assertions`），便于 CI 侧做失败归因。
+
+失败时的报告片段示例：
+
+```text
+--- 场景 1：P1 产品 → 目录 → 物料 → … [FAIL] ---
+  - [PASS] 页面中已出现产品 `自动化测试产品202609210905` (证据：列表首行显示…)
+  - [FAIL] 全部步骤执行完成（23/36） (agent 自报的步骤完成度不足；最后进展：第 23 步完成：已点击「操作」下拉并选择「检出」；未执行到的步骤（第 24/36 步）：点击页面右侧菜单栏的「待办事项」，进入「待办列表」；轨迹末尾：[tool] snapshot → [tool-ok] click → [tool-error] click)
+  - [FAIL] 用例中的断言全部执行（实际 2/6） (…；最后进展：第 23 步完成…)
+  执行轨迹（末尾 25/25 条）:
+    [tool] navigate
+    第 1 步完成：已打开产品列表页
+    [tool-ok] snapshot
+    …
+    [tool-error] click
+    第 23 步完成：已点击「操作」下拉并选择「检出」
+```
+
 ### Token 消耗
 
 每次运行结束后，报告**末尾**会给出本次运行的 LLM token 消耗（多场景套件在每个场景与末尾合计处各输出一行）：
@@ -197,6 +222,36 @@ Token 消耗: 输入 446 / 输出 136 / 缓存读 6720 / 缓存写 0 / 合计 73
 
 未识别的占位符（如 `${PATH}`）原样保留，不会被替换。完整示例：`examples/plm-product-bom.md`。
 
+### 运行进度日志
+
+长流程（建产品 → 建物料 → 检定 → 审批 …）单次可能跑十几分钟。为避免「终端没输出、不知道卡在哪一步」，pageqa 会把**带时间戳的进度日志实时输出到 stderr**（stdout 只保留最终报告，两者互不干扰）：
+
+```text
+08:48:45 [pageqa] ===== 启动 =====
+08:48:45 [pageqa] 已读取脚本文件 examples/plm-product-bom.md（892 字符）
+08:48:45 [pageqa] 运行模式：单场景
+08:48:45 [pageqa] 用例开始：打开 http://localhost/#/plm/product/list …（892 字符）
+08:48:45 [pageqa] LLM 已就绪：model=hunyuan-2.0-instruct
+08:48:45 [pageqa] 检查 bsk daemon 与浏览器连接…
+08:48:45 [pageqa] bsk daemon 未运行，正在后台启动（首次可能需数秒）…
+08:48:47 [pageqa] bsk daemon 已就绪（1.6s）
+08:48:47 [pageqa] bsk 已连接浏览器 1 个
+08:48:47 [pageqa] bsk session=abc123
+08:48:47 [pageqa] 已提交用例，等待模型与浏览器执行…
+08:48:48 [pageqa] 模型已开始输出，正在推进步骤…
+08:48:49 [pageqa] ▶ #1 navigate …
+08:48:52 [pageqa] ✓ #1 navigate 2874ms
+08:48:52 [pageqa] ▶ #2 snapshot …
+08:48:53 [pageqa] ✓ #2 snapshot 412ms
+...
+08:53:10 [pageqa] 步骤未跑完，发起第 1 次续跑（进度 12/16，断言 2/4）
+08:55:02 [pageqa] 用例结束：PASS，断言 4 条，耗时 376.4s
+```
+
+- 覆盖的关键节点：脚本读取、LLM 就绪、bsk daemon 启动/就绪耗时、浏览器连接数、session、每一步工具调用（编号 + 名称 + 耗时 + 成败）、自动续跑、最终结论与总耗时。
+- 加 `--debug` 可看到更细的明细：每条 `bsk` 命令原文与耗时、快照字符数、上下文裁剪、Jev 请求详情。
+- 需要把日志与报告分开处理时：报告在 stdout（`--json` 也走 stdout），日志始终在 stderr，`pageqa --json … > report.json` 即可不受日志干扰。
+
 ### CLI 选项
 
 | 选项 | 说明 |
@@ -206,9 +261,19 @@ Token 消耗: 输入 446 / 输出 136 / 缓存读 6720 / 缓存写 0 / 合计 73
 | `--suite` | 强制按多场景套件运行 |
 | `--init-config` | 在用户目录创建/重置配置文件 |
 | `--out <file>` | 将报告写入文件 |
+| `--debug` | 显示调试日志（bsk 命令与耗时、快照体积、上下文裁剪、Jev 请求详情） |
 | `-h, --help` | 帮助 |
 
 退出码：`0` 全部断言通过；`1` 任一断言失败/错误/无法执行。可直接接入 CI。
+
+### 自动关闭浏览器窗口
+
+用例跑完后（无论 PASS、FAIL 还是中途报错），pageqa 都会执行 `bsk session stop <id>` 收尾：
+
+- 关掉本次自动化操作所在的浏览器窗口（bsk Agent Window），并归还借用过的用户标签页；
+- 多场景套件是逐个场景运行，因此每个场景结束后各自关闭自己的窗口，不会越跑越多；
+- `--session <id>` 传入的 session 也会在运行结束后被关闭（下次运行会重新创建）；
+- 关闭失败只在日志里提示，不会改变测试结论。
 
 ### 文件上传
 
@@ -294,11 +359,13 @@ src/
   index.ts       CLI 入口
   agent.ts       编排器（pi-agent-core Agent + bsk 工具 + 报告）
   llm.ts         LLM 后端（pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
+  log.ts         进度日志（stderr 默认输出；--debug 输出调试明细）
   bsk/tools.ts   browserskill 工具层（含 upload 文件上传）
   report.ts      报告解析与渲染
 examples/
   smoke.md                  示例套件（A1–A3）
   github-star.md            GitHub Star 用例
   element-plus-upload.md    文件上传用例（点击 Click to upload 上传本地图片）
+  plm-product-bom.md        PLM 长流程用例（建产品→目录→物料→检出→待办同意→BOM 插入）
 tests/smoke.test.mjs 端到端验证
 ```

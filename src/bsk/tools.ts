@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { JevClient } from "../jev.js";
+import { debugLog, info, timer } from "../log.js";
 
 /**
  * browserskill（`bsk`）工具层：把 bsk CLI 命令包装成 pi-agent-core 的 AgentTool。
@@ -13,13 +14,20 @@ import { JevClient } from "../jev.js";
 const BSK_TIMEOUT_MS = 60_000;
 
 function bsk(args: string[]): string {
+  // 调试模式打印每条 bsk 命令，便于定位「卡在哪条命令」；
+  // execFileSync 是阻塞的，所以命令执行期间不会再有其它的日志。
+  const done = timer();
+  debugLog("[bsk] $ bsk " + args.join(" "));
   try {
-    return execFileSync("bsk", args, {
+    const out = execFileSync("bsk", args, {
       encoding: "utf-8",
       timeout: BSK_TIMEOUT_MS,
       windowsHide: true,
     }).toString();
+    debugLog(`[bsk] $ bsk ${args[0] ?? ""} 完成（${done()}ms）`);
+    return out;
   } catch (err) {
+    debugLog(`[bsk] $ bsk ${args[0] ?? ""} 失败（${done()}ms）`);
     const e = err as { code?: string; signal?: string };
     if (e.code === "ENOENT") {
       throw new Error(
@@ -59,6 +67,8 @@ function connectedBrowserCount(): number {
 /** 后台启动 bsk daemon（bsk daemon start 是前台阻塞的，必须 detached 启动后轮询等待就绪）。 */
 function startDaemon(): Promise<void> {
   return new Promise((resolve, reject) => {
+    const started = Date.now();
+    info("[pageqa] bsk daemon 未运行，正在后台启动（首次可能需数秒）…");
     const child = spawn("bsk", ["daemon", "start"], {
       detached: true,
       stdio: "ignore",
@@ -76,6 +86,9 @@ function startDaemon(): Promise<void> {
         // 子进程状态读取失败，继续轮询
       }
       if (bskStatusJson() !== null) {
+        info(
+          `[pageqa] bsk daemon 已就绪（${((Date.now() - started) / 1000).toFixed(1)}s）`,
+        );
         resolve();
         return;
       }
@@ -87,6 +100,9 @@ function startDaemon(): Promise<void> {
         );
         return;
       }
+      debugLog(
+        `[bsk] 等待 daemon 就绪… ${((Date.now() - started) / 1000).toFixed(1)}s`,
+      );
       setTimeout(poll, 500);
     };
     setTimeout(poll, 500);
@@ -99,18 +115,14 @@ let readyPromise: Promise<void> | null = null;
  * 自动确保 bsk 就绪：启动 daemon（若未运行）+ 校验浏览器连接（若未连则报错）。
  * 整个进程只真正执行一次（readyPromise 缓存）。
  */
-export function ensureBskReady(debug = false): Promise<void> {
+export function ensureBskReady(): Promise<void> {
   if (readyPromise) return readyPromise;
-  const log = debug
-    ? (m: string) => process.stderr.write("[bsk] " + m + "\n")
-    : () => {};
   readyPromise = (async () => {
+    debugLog("[bsk] 查询 daemon 状态…");
     if (bskStatusJson() === null) {
-      log("daemon 未运行，尝试启动...");
       await startDaemon();
-      log("daemon 已启动");
     } else {
-      log("daemon 已在运行");
+      debugLog("[bsk] daemon 已在运行，跳过启动");
     }
     const n = connectedBrowserCount();
     if (n === 0) {
@@ -119,7 +131,7 @@ export function ensureBskReady(debug = false): Promise<void> {
           "请在浏览器中安装 bsk 扩展并完成连接（或运行 `bsk session start` 按其提示连接），再重试。",
       );
     }
-    log(`已连接浏览器 ${n} 个`);
+    info(`[pageqa] bsk 已连接浏览器 ${n} 个`);
   })();
   return readyPromise;
 }
@@ -132,7 +144,6 @@ function ok(text: string) {
 export interface BskToolOptions {
   session: string;
   jevClient?: JevClient;
-  debug?: boolean;
 }
 
 interface NavParams {
@@ -199,8 +210,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     execute: async () => {
       const out = bsk(["snapshot", ...quiet]);
       // 快照体积直接决定上下文压力（长流程易因上下文超限被中断）
-      if (opts.debug)
-        process.stderr.write("[bsk] snapshot 字符数=" + out.length + "\n");
+      debugLog("[bsk] snapshot 字符数=" + out.length);
       return ok(out);
     },
   };
@@ -413,7 +423,11 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
 
 /** 创建一个 bsk session；若已提供且仍在活跃列表中则复用，否则新建。 */
 export function ensureSession(existing?: string): string {
-  if (existing && isActiveSession(existing)) return existing;
+  if (existing && isActiveSession(existing)) {
+    debugLog(`[bsk] 复用已存在的 session ${existing}`);
+    return existing;
+  }
+  debugLog("[bsk] 创建新的 session…");
   const out = bsk(["session", "start", "--json"]);
   try {
     const json = JSON.parse(out);
@@ -423,6 +437,28 @@ export function ensureSession(existing?: string): string {
     if (m) return m[1];
   }
   throw new Error("无法创建 bsk session，请确认 bsk daemon 已连接浏览器。");
+}
+
+/**
+ * 关闭本次运行用过的 bsk session：bsk 会随之销毁该 session 的 Agent Window，
+ * 即自动化操作的那个浏览器窗口，并归还借用过的用户标签页。
+ *
+ * 用例跑完（无论通过还是失败）都应调用，避免留下越来越多个浏览器窗口。
+ * 清理失败只提示、不抛出：它不应该改变测试结论，也不该掩盖真正的失败原因。
+ */
+export function closeSession(session: string): void {
+  const done = timer();
+  try {
+    debugLog(`[bsk] 关闭 session ${session}（同时关闭 Agent Window）…`);
+    bsk(["session", "stop", session, "--quiet"]);
+    debugLog(`[bsk] session ${session} 已关闭（${done()}ms）`);
+    info(`[pageqa] 已关闭 bsk session=${session}（浏览器窗口已关闭）`);
+  } catch (err) {
+    info(
+      `[pageqa] 关闭 bsk session=${session} 失败（不影响测试结论）：` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
 }
 
 /** 检查给定 session 是否在 bsk 活跃列表里。 */
