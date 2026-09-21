@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { runAgent, runSuite } from "./agent.js";
 import { ensureConfigDir, CONFIG_PATH, loadConfig } from "./config.js";
 import { expandVars, VAR_HELP } from "./vars.js";
@@ -61,8 +62,11 @@ const HELP = `pageqa - 自然语言驱动的页面测试工具（pi-agent-core +
 用法:
   pageqa [options] <input>
 
-  <input>          自然语言脚本文件(.md/.txt)，或用引号包裹的内联文本
+  <input>          自然语言脚本文件(.md/.txt，路径含空格请用引号包裹)，
+                   或用引号包裹的内联文本
                   脚本中可用『## 场景名』分隔多个测试场景，自动批量运行
+                  路径中粘贴带来的不可见字符（Bidi/零宽）会被自动清理；
+                  若路径以 .md/.txt 结尾但文件不存在，会直接报错而非当作内联文本
 
 选项:
   --session <id>   指定已存在的 bsk session（默认自动创建）
@@ -107,18 +111,31 @@ ${VAR_HELP}
   pageqa examples/smoke.md --debug
 `;
 
-function readInput(input: string): string {
-  if (
-    !input.includes("\n") &&
-    (input.endsWith(".md") || input.endsWith(".txt"))
-  ) {
+/**
+ * 从资源管理器「复制文件路径」或聊天工具粘贴路径时，常会夹带不可见的
+ * Bidi 控制符 / 零宽字符（如 U+202A LEFT-TO-RIGHT EMBEDDING、U+200B、U+FEFF）。
+ * 它们肉眼不可见，却会让 readFileSync 找不到文件，进而把路径误判成内联文本。
+ */
+const INVISIBLE_CHARS = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+
+/** 清洗命令行传入的 <input>：去不可见字符、去首尾空白、去成对引号、去 file:// 前缀。 */
+function cleanInput(raw: string): string {
+  let s = raw.replace(INVISIBLE_CHARS, "").trim();
+  const quoted = s.match(/^(["'])([\s\S]*)\1$/);
+  if (quoted) s = quoted[2].replace(INVISIBLE_CHARS, "").trim();
+  if (/^file:\/\//i.test(s)) {
     try {
-      return expandVars(readFileSync(input, "utf8"));
+      s = fileURLToPath(s);
     } catch {
-      // 不是文件：视为内联文本
+      // 非法 file URL：保持原样，后续按不存在处理
     }
   }
-  return expandVars(input);
+  return s;
+}
+
+/** 是否"看起来"是一个脚本文件路径：单行且以 .md/.txt 结尾（大小写不敏感）。 */
+function looksLikeScriptFile(input: string): boolean {
+  return !/[\r\n]/.test(input) && /\.(md|txt)$/i.test(input);
 }
 
 async function main(): Promise<number> {
@@ -142,17 +159,27 @@ async function main(): Promise<number> {
   }
 
   setDebug(args.debug);
-  const isFile =
-    !args.input.includes("\n") &&
-    (args.input.endsWith(".md") || args.input.endsWith(".txt")) &&
-    existsSync(args.input);
-  const input = readInput(args.input);
+  const rawInput = cleanInput(args.input);
+  const isFile = looksLikeScriptFile(rawInput) && existsSync(rawInput);
+  if (!isFile && looksLikeScriptFile(rawInput)) {
+    // 看起来是脚本文件路径但打不开：明确报错，避免把路径本身当成用例去"测试"
+    process.stderr.write(
+      `找不到脚本文件：${rawInput}\n` +
+        `  - 请确认路径存在且拼写正确\n` +
+        `  - 若路径含空格，请用引号包裹（如 "C:\\dir\\my case.md"）\n` +
+        `  - 若只想跑内联文本，请不要让文本以 .md/.txt 结尾\n`,
+    );
+    return 1;
+  }
+  const input = isFile
+    ? expandVars(readFileSync(rawInput, "utf8"))
+    : expandVars(rawInput);
   const hasScenarios = /^##\s+/m.test(input);
   const suiteMode = hasScenarios || args.suite;
 
   info("[pageqa] ===== 启动 =====");
   info(
-    `[pageqa] 已读取${isFile ? `脚本文件 ${args.input}` : "内联用例"}（${input.length} 字符）`,
+    `[pageqa] 已读取${isFile ? `脚本文件 ${rawInput}` : "内联用例"}（${input.length} 字符）`,
   );
   info(
     `[pageqa] 运行模式：${suiteMode ? "多场景套件" : "单场景"}` +
