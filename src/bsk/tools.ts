@@ -9,6 +9,11 @@ import { debugLog, info, timer } from "../log.js";
  *
  * bsk 连接一个已运行的真实浏览器，每个命令都需要 --session <id>。
  * 所有命令以 --quiet 抑制进度输出，仅返回结构化/可读结果。
+ *
+ * 分两层：
+ * - `createBskOps`（操作层）：每次浏览器操作 = 一条 bsk 命令，返回可读结果。
+ * - `createBskTools`（工具层）：把操作层包成 agent 可调用的工具，并上报每次执行为录制提供素材。
+ * 回放（replay.ts）直接用操作层，因此「录制时怎么操作」与「回放时怎么操作」是同一条命令路径。
  */
 
 const BSK_TIMEOUT_MS = 60_000;
@@ -192,37 +197,190 @@ function paramsOf(
   } as unknown as AgentTool["parameters"];
 }
 
+/**
+ * bsk 操作层：一次浏览器操作 = 一条 bsk 命令。
+ *
+ * `lastSnapshot()` 暴露「最近一次快照文本」：录制时用它把 `@eN` 解析成语义定位符
+ * （`@eN` 只在那次快照内有效，不能直接写进回放脚本）。
+ */
+export interface BskOps {
+  readonly session: string;
+  /** 最近一次快照文本（每次 snapshot / assert_text 都会刷新）。 */
+  lastSnapshot(): string;
+  navigate(url: string): string;
+  snapshot(): string;
+  click(target: string): string;
+  fill(target: string, value: string): string;
+  upload(target: string | undefined, file: string): string;
+  hover(target: string): string;
+  scroll(target: string): string;
+  wait(ms: number): string;
+  /** 断言页面是否包含期望文本；Jev 可用时走语义判断，否则字符串包含。 */
+  assertText(expectation: string): Promise<string>;
+}
+
+export function createBskOps(session: string, jevClient?: JevClient): BskOps {
+  const quiet = ["--session", session, "--quiet"];
+  let snapshotText = "";
+
+  return {
+    session,
+    lastSnapshot: () => snapshotText,
+
+    navigate(url: string): string {
+      const out = bsk([
+        "navigate",
+        url,
+        ...quiet,
+        "--wait-until",
+        "domcontentloaded",
+      ]);
+      return `已导航到 ${url}\n${out}`;
+    },
+
+    snapshot(): string {
+      const out = bsk(["snapshot", ...quiet]);
+      snapshotText = out;
+      // 快照体积直接决定上下文压力（长流程易因上下文超限被中断）
+      debugLog("[bsk] snapshot 字符数=" + out.length);
+      return out;
+    },
+
+    click(target: string): string {
+      const out = bsk(["click", target, ...quiet]);
+      return `已点击 ${target}\n${out}`;
+    },
+
+    fill(target: string, value: string): string {
+      const out = bsk(["fill", target, "--value", value, ...quiet]);
+      return `已在 ${target} 填入文本\n${out}`;
+    },
+
+    upload(target: string | undefined, file: string): string {
+      if (!existsSync(file)) {
+        throw new Error(`待上传文件不存在：${file}`);
+      }
+      const args = ["upload"];
+      if (target) args.push(target);
+      args.push("--file", file, ...quiet);
+      const out = bsk(args);
+      return `已上传文件 ${file}\n${out}`;
+    },
+
+    hover(target: string): string {
+      const out = bsk(["hover", target, ...quiet]);
+      return `已悬停 ${target}\n${out}`;
+    },
+
+    scroll(target: string): string {
+      // scroll-to 同时支持 @eN 引用与 CSS 选择器。
+      // （早期实现用 evaluate + querySelector，遇到 @eN 会静默返回 element-not-found。）
+      const out = bsk(["scroll-to", target, ...quiet]);
+      return `已滚动到 ${target}\n${out}`;
+    },
+
+    wait(ms: number): string {
+      // wait-ms 是 daemon 端 sleep，不接受 --session
+      bsk(["wait-ms", String(ms)]);
+      return `已等待 ${ms}ms`;
+    },
+
+    async assertText(expectation: string): Promise<string> {
+      const snap = bsk(["snapshot", ...quiet]);
+      snapshotText = snap;
+      const evidence = (verdict: string, why: string) =>
+        `断言「${expectation}」：${verdict}。${why}`;
+
+      // 防御：快照为空或明显不是已加载页面 → 断言不成立。
+      // 浏览器页面还没打开时，bsk 返回的是空串/about:blank/错误信息，
+      // 此时不应信任 Jev 或直接判定「成立」（空页面不可能包含断言文本）。
+      const snapLen = snap.trim().length;
+      const SNAP_MIN_LEN = 30;
+      if (snapLen < SNAP_MIN_LEN) {
+        return evidence(
+          "不成立",
+          `证据：页面快照为空或过短（${snapLen} 字符），页面可能尚未打开或未导航`,
+        );
+      }
+
+      // 当 Jev 客户端可用时，使用语义判断替代字符串包含匹配
+      if (jevClient?.enabled) {
+        try {
+          const prob = await jevClient.assertText(snap, expectation);
+          const pass = prob >= jevClient.threshold;
+          const verdict = pass ? "成立" : "不成立";
+          const why = pass
+            ? `语义匹配度 ${(prob * 100).toFixed(1)}%，超过阈值 ${(jevClient.threshold * 100).toFixed(0)}%`
+            : `语义匹配度 ${(prob * 100).toFixed(1)}%，未达到阈值 ${(jevClient.threshold * 100).toFixed(0)}%`;
+          return evidence(verdict, why);
+        } catch (err) {
+          // Jev 调用失败：回退到原有的字符串包含逻辑。
+          // 必须记录失败原因（超时/鉴权/网络等），否则用户只看到「Jev 不可用，已回退」，
+          // 却无法从 --debug 日志判断到底是哪一类故障。
+          debugLog(
+            "[bsk] Jev 断言失败，回退到字符串匹配：" +
+              (err instanceof Error ? err.message : String(err)),
+          );
+          return stringAssert(snap, expectation) + "（Jev 不可用，已回退）";
+        }
+      }
+
+      // 默认：字符串包含匹配
+      return stringAssert(snap, expectation);
+    },
+  };
+}
+
+/** 字符串包含匹配（默认断言路径，也是 Jev 不可用时的回退）。 */
+function stringAssert(snapshotText: string, expectation: string): string {
+  const hit = snapshotText.includes(expectation);
+  return `断言「${expectation}」：${hit ? "成立" : "不成立"}。${
+    hit ? `页面中包含「${expectation}」` : `页面中未找到「${expectation}」`
+  }`;
+}
+
+/** 工具层上报的一次执行（供录制回放脚本）。 */
+export interface BskToolExec {
+  /** 工具名。 */
+  name: string;
+  /** 模型给出的入参。 */
+  params: Record<string, unknown>;
+  /** bsk 是否成功（失败的尝试不会被录进回放脚本）。 */
+  ok: boolean;
+  /** 本次操作**之前**页面最后一次快照文本。 */
+  lastSnapshot: string;
+}
+
 export interface BskToolOptions {
   session: string;
   jevClient?: JevClient;
-}
-
-interface NavParams {
-  url: string;
-}
-interface TargetParams {
-  target: string;
-}
-interface FillParams {
-  target: string;
-  value: string;
-}
-interface UploadParams {
-  target?: string;
-  file: string;
-}
-interface WaitParams {
-  ms?: number;
-}
-interface ExpectParams {
-  expectation: string;
+  /** 每次工具执行后的回调（录制回放脚本用）。 */
+  onExec?: (event: BskToolExec) => void;
 }
 
 /** 构造一组浏览器操作工具，供 page-test agent 调用。 */
 export function createBskTools(opts: BskToolOptions): AgentTool[] {
-  const s = opts.session;
-  const jevClient = opts.jevClient;
-  const quiet = ["--session", s, "--quiet"];
+  const ops = createBskOps(opts.session, opts.jevClient);
+
+  /**
+   * 统一包装一次工具执行：拿到结果后上报给录制器，失败时先上报再抛出
+   * （抛出让 pi-agent-core 把该工具标记为错误，模型会据此重试）。
+   */
+  const exec = async (
+    name: string,
+    params: Record<string, unknown>,
+    fn: () => string | Promise<string>,
+  ) => {
+    const before = ops.lastSnapshot();
+    try {
+      const text = await fn();
+      opts.onExec?.({ name, params, ok: true, lastSnapshot: before });
+      return ok(text);
+    } catch (err) {
+      opts.onExec?.({ name, params, ok: false, lastSnapshot: before });
+      throw err;
+    }
+  };
 
   const navigate: AgentTool = {
     name: "navigate",
@@ -234,14 +392,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     ]),
     execute: async (_id: string, params: unknown) => {
       const p = params as NavParams;
-      const out = bsk([
-        "navigate",
-        p.url,
-        ...quiet,
-        "--wait-until",
-        "domcontentloaded",
-      ]);
-      return ok(`已导航到 ${p.url}\n${out}`);
+      return exec("navigate", { url: p.url }, () => ops.navigate(p.url));
     },
   };
 
@@ -251,12 +402,8 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     description:
       "读取当前页面的 aria 语义树与可见文本（标题、段落、链接、按钮等）。用于读取内容、标题、文本并定位元素。",
     parameters: paramsOf({}),
-    execute: async () => {
-      const out = bsk(["snapshot", ...quiet]);
-      // 快照体积直接决定上下文压力（长流程易因上下文超限被中断）
-      debugLog("[bsk] snapshot 字符数=" + out.length);
-      return ok(out);
-    },
+    execute: async () =>
+      exec("snapshot", {}, () => ops.snapshot()),
   };
 
   const click: AgentTool = {
@@ -269,8 +416,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     ),
     execute: async (_id: string, params: unknown) => {
       const p = params as TargetParams;
-      const out = bsk(["click", p.target, ...quiet]);
-      return ok(`已点击 ${p.target}\n${out}`);
+      return exec("click", { target: p.target }, () => ops.click(p.target));
     },
   };
 
@@ -287,8 +433,9 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     ),
     execute: async (_id: string, params: unknown) => {
       const p = params as FillParams;
-      const out = bsk(["fill", p.target, "--value", p.value, ...quiet]);
-      return ok(`已在 ${p.target} 填入文本\n${out}`);
+      return exec("fill", { target: p.target, value: p.value }, () =>
+        ops.fill(p.target, p.value),
+      );
     },
   };
 
@@ -314,14 +461,11 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     ),
     execute: async (_id: string, params: unknown) => {
       const p = params as UploadParams;
-      if (!existsSync(p.file)) {
-        throw new Error(`待上传文件不存在：${p.file}`);
-      }
-      const args = ["upload"];
-      if (p.target) args.push(p.target);
-      args.push("--file", p.file, ...quiet);
-      const out = bsk(args);
-      return ok(`已上传文件 ${p.file}\n${out}`);
+      return exec(
+        "upload",
+        p.target ? { target: p.target, file: p.file } : { file: p.file },
+        () => ops.upload(p.target, p.file),
+      );
     },
   };
 
@@ -335,8 +479,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     ),
     execute: async (_id: string, params: unknown) => {
       const p = params as TargetParams;
-      const out = bsk(["hover", p.target, ...quiet]);
-      return ok(`已悬停 ${p.target}\n${out}`);
+      return exec("hover", { target: p.target }, () => ops.hover(p.target));
     },
   };
 
@@ -350,9 +493,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     ),
     execute: async (_id: string, params: unknown) => {
       const p = params as TargetParams;
-      const js = `(() => { const el = document.querySelector(${JSON.stringify(p.target)}); if (el) el.scrollIntoView({block:'center'}); return el ? 'scrolled' : 'element-not-found'; })()`;
-      const res = bsk(["evaluate", js, ...quiet]);
-      return ok(res);
+      return exec("scroll", { target: p.target }, () => ops.scroll(p.target));
     },
   };
 
@@ -364,9 +505,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     execute: async (_id: string, params: unknown) => {
       const p = (params as WaitParams) ?? {};
       const ms = p.ms ?? 1000;
-      // wait-ms 是 daemon 端 sleep，不接受 --session
-      bsk(["wait-ms", String(ms)]);
-      return ok(`已等待 ${ms}ms`);
+      return exec("wait", { ms }, () => ops.wait(ms));
     },
   };
 
@@ -383,55 +522,9 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     ),
     execute: async (_id: string, params: unknown) => {
       const p = params as ExpectParams;
-      const snap = bsk(["snapshot", ...quiet]);
-
-      // 防御：快照为空或明显不是已加载页面 → 断言不成立。
-      // 浏览器页面还没打开时，bsk 返回的是空串/about:blank/错误信息，
-      // 此时不应信任 Jev 或直接判定「成立」（空页面不可能包含断言文本）。
-      const snapLen = snap.trim().length;
-      const SNAP_MIN_LEN = 30;
-      if (snapLen < SNAP_MIN_LEN) {
-        return ok(
-          `断言「${p.expectation}」：不成立。证据：页面快照为空或过短（${snapLen} 字符），页面可能尚未打开或未导航`,
-        );
-      }
-
-      // 当 Jev 客户端可用时，使用语义判断替代字符串包含匹配
-      if (jevClient?.enabled) {
-        try {
-          const prob = await jevClient.assertText(snap, p.expectation);
-          const pass = prob >= jevClient.threshold;
-          const verdict = pass ? "成立" : "不成立";
-          const evidence = pass
-            ? `语义匹配度 ${(prob * 100).toFixed(1)}%，超过阈值 ${(jevClient.threshold * 100).toFixed(0)}%`
-            : `语义匹配度 ${(prob * 100).toFixed(1)}%，未达到阈值 ${(jevClient.threshold * 100).toFixed(0)}%`;
-          return ok(`断言「${p.expectation}」：${verdict}。${evidence}`);
-        } catch (err) {
-          // Jev 调用失败：回退到原有的字符串包含逻辑。
-          // 必须记录失败原因（超时/鉴权/网络等），否则用户只看到「Jev 不可用，已回退」，
-          // 却无法从 --debug 日志判断到底是哪一类故障。
-          debugLog(
-            "[bsk] Jev 断言失败，回退到字符串匹配：" +
-              (err instanceof Error ? err.message : String(err)),
-          );
-          const hit = snap.includes(p.expectation);
-          const verdict = hit ? "成立" : "不成立";
-          const evidence = hit
-            ? `页面中包含「${p.expectation}」`
-            : `页面中未找到「${p.expectation}」`;
-          return ok(
-            `断言「${p.expectation}」：${verdict}。${evidence}（Jev 不可用，已回退）`,
-          );
-        }
-      }
-
-      // 默认：字符串包含匹配
-      const hit = snap.includes(p.expectation);
-      const verdict = hit ? "成立" : "不成立";
-      const evidence = hit
-        ? `页面中包含「${p.expectation}」`
-        : `页面中未找到「${p.expectation}」`;
-      return ok(`断言「${p.expectation}」：${verdict}。${evidence}`);
+      return exec("assert_text", { expectation: p.expectation }, () =>
+        ops.assertText(p.expectation),
+      );
     },
   };
 
@@ -446,6 +539,27 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     wait,
     assertText,
   ];
+}
+
+interface NavParams {
+  url: string;
+}
+interface TargetParams {
+  target: string;
+}
+interface FillParams {
+  target: string;
+  value: string;
+}
+interface UploadParams {
+  target?: string;
+  file: string;
+}
+interface WaitParams {
+  ms?: number;
+}
+interface ExpectParams {
+  expectation: string;
 }
 
 /** 创建一个 bsk session；若已提供且仍在活跃列表中则复用，否则新建。 */

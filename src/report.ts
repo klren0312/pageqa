@@ -19,6 +19,12 @@ export interface TokenUsage {
 
 export interface TestReport {
   status: "pass" | "fail";
+  /** 运行模式：`llm`（自然语言解析，默认，旧报告无此字段）或 `replay`（零模型回放）。 */
+  mode?: "llm" | "replay";
+  /** 回放脚本路径（回放模式为所用脚本，LLM 模式为生成的脚本）。 */
+  script?: string;
+  /** 回放中因「元素未找到」被跳过的步骤（不算失败，但必须让人看见）。 */
+  skipped?: string[];
   assertions: AssertionResult[];
   summary?: string;
   transcript: string;
@@ -99,7 +105,10 @@ export function mergeUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
  * 渲染成一行文本（报告末行）。
  * 端点未返回 usage 时如实标注，避免把「0 token」误读成真实消耗。
  */
-export function formatUsage(usage?: TokenUsage): string {
+export function formatUsage(usage?: TokenUsage, mode?: TestReport["mode"]): string {
+  // 回放模式没有也不该有 token 消耗：直接写明「未调用大模型」，
+  // 否则「合计 0」会被误读成端点没返回 usage。
+  if (mode === "replay") return "Token 消耗: 未调用大模型（回放模式）";
   if (!usage) return "Token 消耗: 不可用（未采集到用量）";
   const line =
     "Token 消耗: 输入 " +
@@ -325,4 +334,135 @@ function extractSummary(text: string): string {
     .map((l) => l.trim())
     .filter(Boolean);
   return paras.at(-1) ?? "";
+}
+
+// ───────────────────────── 报告渲染与套件汇总 ─────────────────────────
+// 渲染与汇总放在报告模块里：LLM 运行（agent.ts）与零模型回放（replay.ts）共用同一份实现，
+// 保证两种模式输出的报告结构、行文、汇总口径完全一致。
+
+/** 套件报告里每个场景最多回放多少条执行轨迹（末尾优先），避免报告过长。 */
+export const TRACE_TAIL_LINES = 25;
+
+/** 套件成员：一个场景的运行结果与用量（LLM 运行或回放结果都满足该结构）。 */
+export interface SuiteMember {
+  name: string;
+  report: TestReport;
+  usage: TokenUsage;
+}
+
+function verdictTag(v: "pass" | "fail"): string {
+  return v === "pass" ? "PASS" : "FAIL";
+}
+
+/** 渲染一条断言：`  - [PASS] 期望 (证据)`。 */
+export function assertionLine(a: AssertionResult): string {
+  const ev = a.evidence ? " (" + a.evidence + ")" : "";
+  return "  - [" + verdictTag(a.verdict) + "] " + a.expectation + ev;
+}
+
+/** 渲染单场景文本报告。 */
+export function renderText(r: TestReport): string {
+  const lines: string[] = [];
+  lines.push("=== 页面测试报告 ===");
+  if (r.mode === "replay") lines.push("模式: 回放（未调用大模型）");
+  lines.push("结论: " + (r.status === "pass" ? "PASS" : "FAIL"));
+  lines.push("断言数: " + r.assertions.length);
+  for (const a of r.assertions) lines.push(assertionLine(a));
+  // 跳过必须显式列出：它不计入失败，但「哪些步骤没按脚本执行」是判断回放可信度的关键
+  if (r.skipped?.length) {
+    lines.push(`跳过 ${r.skipped.length} 步（元素未找到，当前页面状态下不需要该步）:`);
+    for (const s of r.skipped) lines.push("  - " + s);
+  }
+  if (r.summary) lines.push("摘要: " + r.summary);
+  if (r.script) lines.push("回放脚本: " + r.script);
+  lines.push("---");
+  lines.push(r.transcript.trim());
+  lines.push("---");
+  lines.push(formatUsage(r.usage, r.mode));
+  return lines.join("\n");
+}
+
+/**
+ * 汇总多个场景：任一场景失败则整体失败。
+ * 断言前缀场景名、保留逐场景 `steps/trace` 明细，CI 侧可直接定位失败场景的卡点步骤。
+ */
+export function summarizeSuite(members: SuiteMember[]): TestReport {
+  const overall = members.every((m) => m.report.status === "pass")
+    ? "pass"
+    : "fail";
+  const usage = members.reduce(
+    (acc, m) => mergeUsage(acc, m.usage),
+    emptyUsage(),
+  );
+  return {
+    status: overall,
+    assertions: members.flatMap((m) =>
+      m.report.assertions.map((a) => ({
+        ...a,
+        expectation: "[" + m.name + "] " + a.expectation,
+      })),
+    ),
+    summary:
+      "共 " +
+      members.length +
+      " 个场景，通过 " +
+      members.filter((m) => m.report.status === "pass").length +
+      " 个",
+    transcript: members
+      .map((m) => "## " + m.name + "\n" + m.report.transcript.trim())
+      .join("\n\n"),
+    scenarios: members.map((m) => ({
+      name: m.name,
+      status: m.report.status,
+      steps: m.report.steps ?? [],
+      trace: m.report.trace ?? [],
+      assertions: m.report.assertions,
+    })),
+    usage,
+  };
+}
+
+/** 渲染套件文本报告：逐场景断言 + 执行轨迹（末尾若干条）+ 最终汇总。 */
+export function renderSuiteText(
+  summary: TestReport,
+  members: { report: TestReport; usage: TokenUsage }[],
+  scenarios: { name: string }[],
+): string {
+  const lines: string[] = [];
+  lines.push("=== 页面测试套件报告 ===");
+  if (summary.mode === "replay") lines.push("模式: 回放（未调用大模型）");
+  lines.push("整体结论: " + (summary.status === "pass" ? "PASS" : "FAIL"));
+  lines.push("场景数: " + members.length);
+  members.forEach((m, i) => {
+    lines.push("");
+    lines.push(
+      "--- 场景 " +
+        (i + 1) +
+        "：" +
+        (scenarios[i]?.name ?? "") +
+        " [" +
+        (m.report.status === "pass" ? "PASS" : "FAIL") +
+        "] ---",
+    );
+    for (const a of m.report.assertions) lines.push(assertionLine(a));
+    if (m.report.skipped?.length) {
+      lines.push(`  跳过 ${m.report.skipped.length} 步（元素未找到，详见执行轨迹）`);
+    }
+    if (m.report.summary) lines.push("  摘要: " + m.report.summary);
+    // 执行轨迹：套件模式下不再只给一个「23/42」，把工具调用与步骤自述还原出来，
+    // 使用者才能判断「卡在用例的哪一步、该改哪一句」。
+    const trace = m.report.trace ?? [];
+    if (trace.length > 0) {
+      const shown = trace.slice(-TRACE_TAIL_LINES);
+      lines.push(`  执行轨迹（末尾 ${shown.length}/${trace.length} 条）:`);
+      for (const t of shown) lines.push("    " + t);
+    }
+    lines.push("  " + formatUsage(m.usage, m.report.mode ?? summary.mode));
+  });
+  lines.push("");
+  lines.push("汇总: " + summary.summary);
+  if (summary.script) lines.push("回放脚本: " + summary.script);
+  lines.push("---");
+  lines.push(formatUsage(summary.usage, summary.mode));
+  return lines.join("\n");
 }

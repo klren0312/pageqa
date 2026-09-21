@@ -67,6 +67,52 @@ export function expandVars(script: string, now: Date = new Date()): string {
   );
 }
 
+/** 一次运行中某个占位符的实际取值（用于把录制到的具体值还原回占位符写法）。 */
+export interface RunVarValue {
+  /** 占位符名，如 `timestamp`。 */
+  name: string;
+  /** 占位符原文，如 `${timestamp}`。 */
+  placeholder: string;
+  /** 本次运行展开出的具体值，如 `202609191146`。 */
+  value: string;
+}
+
+/**
+ * 取本次运行各预设占位符的实际取值。
+ *
+ * 录制回放脚本时，模型看到的是**已展开**的值（如 `自动化测试产品202609191146`），
+ * 直接写进脚本会让脚本只能跑一次（下次回放撞名）。因此需要用同一时刻的取值反查，
+ * 把具体值还原成 `${timestamp}`，回放时再重新展开。
+ */
+export function captureRunVars(now: Date = new Date()): RunVarValue[] {
+  return Object.entries(PRESETS).map(([name, fmt]) => ({
+    name,
+    placeholder: `\${${name}}`,
+    value: formatLocalTime(now, fmt),
+  }));
+}
+
+/**
+ * 把文本里的运行时变量取值还原成占位符写法（`202609191146` -> `${timestamp}`）。
+ *
+ * 只处理长度 >= 8 的取值：`${time}`（`HHmmss`，6 位纯数字）太容易撞上页面里无关的数字
+ * （编号、编码、CSS 类名），替换错了反而会破坏定位符，宁可不还原。
+ * 长值优先替换，否则 `${date}` 会先吃掉 `${datetime}` 的前缀。
+ */
+export function restorePlaceholders(
+  text: string,
+  vars: RunVarValue[],
+): string {
+  let out = text;
+  for (const v of [...vars]
+    .filter((v) => v.value.length >= 8)
+    .sort((a, b) => b.value.length - a.value.length)) {
+    if (!out.includes(v.value)) continue;
+    out = out.split(v.value).join(v.placeholder);
+  }
+  return out;
+}
+
 /** 供 `--help`/文档展示的占位符清单（读取脚本时按运行时本地时间展开）。 */
 export const VAR_HELP = [
   "  ${timestamp}                 yyyyMMddHHmm（如 202609191146）",
