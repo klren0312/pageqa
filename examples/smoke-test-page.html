@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>冒烟测试页面</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: #f5f5f5;
+      color: #333;
+      line-height: 1.6;
+    }
+
+    .navbar {
+      background-color: #fff;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      padding: 1rem 2rem;
+      display: flex;
+      gap: 1rem;
+    }
+
+    .nav-link {
+      text-decoration: none;
+      color: #333;
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+      transition: background-color 0.3s;
+    }
+
+    .nav-link:hover {
+      background-color: #e8e8e8;
+    }
+
+    .nav-link.active {
+      background-color: #007bff;
+      color: #fff;
+    }
+
+    .content {
+      max-width: 800px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+
+    .route-content {
+      background-color: #fff;
+      padding: 2rem;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    h1, h2 {
+      margin-bottom: 1rem;
+      color: #007bff;
+    }
+
+    .form-group {
+      margin-bottom: 1.5rem;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 0.5rem;
+      font-weight: 600;
+    }
+
+    input[type="text"],
+    input[type="email"],
+    input[type="date"],
+    select {
+      width: 100%;
+      padding: 0.75rem;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 1rem;
+    }
+
+    input[type="text"]:focus,
+    input[type="email"]:focus,
+    input[type="date"]:focus,
+    select:focus {
+      outline: none;
+      border-color: #007bff;
+    }
+
+    .btn {
+      background-color: #007bff;
+      color: #fff;
+      padding: 0.75rem 1.5rem;
+      border: none;
+      border-radius: 4px;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background-color 0.3s;
+    }
+
+    .btn:hover {
+      background-color: #0056b3;
+    }
+
+    .btn:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+
+    .error {
+      color: #dc3545;
+      font-size: 0.875rem;
+      margin-top: 0.25rem;
+    }
+
+    .success-message {
+      background-color: #d4edda;
+      color: #155724;
+      padding: 1rem;
+      border-radius: 4px;
+      margin-top: 1rem;
+    }
+
+    .file-input-wrapper {
+      margin-bottom: 1rem;
+    }
+
+    .file-list {
+      margin-top: 1rem;
+    }
+
+    .file-item {
+      background-color: #f8f9fa;
+      padding: 0.5rem;
+      border-radius: 4px;
+      margin-bottom: 0.5rem;
+    }
+
+    .checkbox-group,
+    .radio-group {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .checkbox-group label,
+    .radio-group label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      font-weight: normal;
+    }
+
+    .required {
+      color: #dc3545;
+    }
+
+    .dropdown {
+      position: relative;
+      width: 100%;
+    }
+
+    .dropdown-toggle {
+      width: 100%;
+      padding: 0.75rem;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 1rem;
+      background-color: #fff;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .dropdown-toggle:focus {
+      outline: none;
+      border-color: #007bff;
+    }
+
+    .dropdown-menu {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      margin-top: 4px;
+      background-color: #fff;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      max-height: 200px;
+      overflow-y: auto;
+      z-index: 1000;
+    }
+
+    .dropdown-item {
+      padding: 0.5rem 1rem;
+      cursor: pointer;
+    }
+
+    .dropdown-item:hover {
+      background-color: #f5f5f5;
+    }
+
+    .dropdown-item.selected {
+      background-color: #e8f0fe;
+      color: #007bff;
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <a href="#/" class="nav-link" data-route="/">首页</a>
+    <a href="#/form1" class="nav-link" data-route="/form1">表单页面 1</a>
+    <a href="#/form2" class="nav-link" data-route="/form2">表单页面 2</a>
+    <a href="#/upload" class="nav-link" data-route="/upload">文件上传</a>
+  </nav>
+
+  <main class="content">
+    <section id="home" class="route-content" data-route="/">
+      <h1>欢迎来到冒烟测试页面</h1>
+      <p>请选择上方导航栏的页面开始测试。</p>
+    </section>
+
+    <section id="form1" class="route-content" data-route="/form1" style="display:none;">
+      <h1>表单页面 1</h1>
+      <form id="form1-form" class="test-form">
+        <div class="form-group">
+          <label for="name">姓名 <span class="required">*</span></label>
+          <input type="text" id="name" name="name" placeholder="请输入姓名" required>
+          <div class="error" id="name-error"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="city">城市 <span class="required">*</span></label>
+          <div class="dropdown" id="cityDropdown">
+            <div class="dropdown-toggle" onclick="toggleDropdown('cityDropdown')">请选择城市</div>
+            <div class="dropdown-menu" style="display:none;">
+              <div class="dropdown-item" data-value="北京" onclick="selectOption('cityDropdown', '北京')">北京</div>
+              <div class="dropdown-item" data-value="上海" onclick="selectOption('cityDropdown', '上海')">上海</div>
+              <div class="dropdown-item" data-value="广州" onclick="selectOption('cityDropdown', '广州')">广州</div>
+              <div class="dropdown-item" data-value="深圳" onclick="selectOption('cityDropdown', '深圳')">深圳</div>
+            </div>
+          </div>
+          <input type="hidden" id="city" name="city" required>
+          <div class="error" id="city-error"></div>
+        </div>
+
+        <div class="form-group">
+          <label>兴趣爱好</label>
+          <div class="checkbox-group">
+            <label><input type="checkbox" name="hobbies" value="阅读"> 阅读</label>
+            <label><input type="checkbox" name="hobbies" value="运动"> 运动</label>
+            <label><input type="checkbox" name="hobbies" value="音乐"> 音乐</label>
+            <label><input type="checkbox" name="hobbies" value="游戏"> 游戏</label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>性别 <span class="required">*</span></label>
+          <div class="radio-group">
+            <label><input type="radio" name="gender" value="男" required> 男</label>
+            <label><input type="radio" name="gender" value="女"> 女</label>
+          </div>
+          <div class="error" id="gender-error"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="birthday">出生日期 <span class="required">*</span></label>
+          <input type="text" id="birthday" name="birthday" placeholder="例如：1990-01-01" required>
+          <div class="error" id="birthday-error"></div>
+        </div>
+
+        <button type="submit" class="btn">提交表单</button>
+        <div class="success-message" id="form1-success" style="display:none;">
+          表单提交成功！
+        </div>
+      </form>
+    </section>
+
+    <section id="form2" class="route-content" data-route="/form2" style="display:none;">
+      <h1>表单页面 2</h1>
+      <form id="form2-form" class="test-form">
+        <div class="form-group">
+          <label for="email">邮箱 <span class="required">*</span></label>
+          <input type="email" id="email" name="email" placeholder="请输入邮箱" required>
+          <div class="error" id="email-error"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="profession">职业 <span class="required">*</span></label>
+          <div class="dropdown" id="professionDropdown">
+            <div class="dropdown-toggle" onclick="toggleDropdown('professionDropdown')">请选择职业</div>
+            <div class="dropdown-menu" style="display:none;">
+              <div class="dropdown-item" data-value="学生" onclick="selectOption('professionDropdown', '学生')">学生</div>
+              <div class="dropdown-item" data-value="工程师" onclick="selectOption('professionDropdown', '工程师')">工程师</div>
+              <div class="dropdown-item" data-value="设计师" onclick="selectOption('professionDropdown', '设计师')">设计师</div>
+              <div class="dropdown-item" data-value="产品经理" onclick="selectOption('professionDropdown', '产品经理')">产品经理</div>
+            </div>
+          </div>
+          <input type="hidden" id="profession" name="profession" required>
+          <div class="error" id="profession-error"></div>
+        </div>
+
+        <button type="submit" class="btn">提交表单</button>
+        <div class="success-message" id="form2-success" style="display:none;">
+          表单提交成功！
+        </div>
+      </form>
+    </section>
+
+    <section id="upload" class="route-content" data-route="/upload" style="display:none;">
+      <h1>文件上传</h1>
+      <div class="upload-section">
+        <div class="file-input-wrapper">
+          <label for="fileInput">选择文件</label>
+          <input type="file" id="fileInput" multiple accept="image/*,.pdf,.doc,.docx">
+        </div>
+
+        <div class="file-list" id="fileList">
+          <p>尚未选择文件</p>
+        </div>
+
+        <button type="button" id="uploadBtn" class="btn" disabled>上传文件</button>
+        <div class="upload-status" id="uploadStatus"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    function toggleDropdown(dropdownId) {
+      const dropdown = document.getElementById(dropdownId);
+      const menu = dropdown.querySelector('.dropdown-menu');
+      const isHidden = menu.style.display === 'none';
+      
+      document.querySelectorAll('.dropdown-menu').forEach(menu => {
+        menu.style.display = 'none';
+      });
+      
+      if (isHidden) {
+        menu.style.display = 'block';
+      }
+    }
+
+    function selectOption(dropdownId, value) {
+      const dropdown = document.getElementById(dropdownId);
+      const toggle = dropdown.querySelector('.dropdown-toggle');
+      
+      const hiddenInput = document.getElementById(dropdownId.replace('Dropdown', ''));
+      
+      toggle.textContent = value;
+      if (hiddenInput) hiddenInput.value = value;
+      
+      dropdown.querySelectorAll('.dropdown-item').forEach(item => {
+        item.classList.remove('selected');
+        if (item.dataset.value === value) {
+          item.classList.add('selected');
+        }
+      });
+      
+      dropdown.querySelector('.dropdown-menu').style.display = 'none';
+    }
+
+    function switchRoute(route) {
+      const normalizedRoute = route.startsWith('/') ? route : '/' + route;
+      const routeId = normalizedRoute.replace(/^\//, '') || 'home';
+      
+      document.querySelectorAll('.route-content').forEach(content => {
+        content.style.display = 'none';
+      });
+      
+      const target = document.getElementById(routeId);
+      if (target) {
+        target.style.display = 'block';
+      }
+
+      document.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        const href = link.getAttribute('href');
+        const linkRoute = href.substring(1);
+        if (linkRoute === normalizedRoute) {
+          link.classList.add('active');
+        }
+      });
+    }
+
+    function initRouter() {
+      window.addEventListener('hashchange', () => {
+        const hash = window.location.hash || '#/';
+        const route = hash === '#' ? '/' : hash.substring(1);
+        switchRoute(route);
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      initRouter();
+      if (!window.location.hash) {
+        window.location.hash = '#/';
+      }
+      const hash = window.location.hash;
+      const route = hash === '#' ? '/' : hash.substring(1);
+      switchRoute(route);
+
+      const form1 = document.getElementById('form1-form');
+      if (form1) {
+        form1.addEventListener('submit', (e) => {
+          e.preventDefault();
+          let isValid = true;
+          const name = document.getElementById('name');
+          const city = document.getElementById('city');
+          const gender = document.querySelector('input[name="gender"]:checked');
+          const birthday = document.getElementById('birthday');
+
+          document.querySelectorAll('.error').forEach(el => el.textContent = '');
+
+          if (!name.value.trim()) {
+            document.getElementById('name-error').textContent = '请输入姓名';
+            isValid = false;
+          }
+          if (!city.value) {
+            document.getElementById('city-error').textContent = '请选择城市';
+            isValid = false;
+          }
+          if (!gender) {
+            document.getElementById('gender-error').textContent = '请选择性别';
+            isValid = false;
+          }
+          if (!birthday.value) {
+            document.getElementById('birthday-error').textContent = '请选择出生日期';
+            isValid = false;
+          }
+          if (isValid) {
+            // 成功提示常驻、不自动消失：自动化 agent 从「点击提交」到「回头断言」之间
+            // 要经历若干次 LLM 往返（实测 2~6 秒），3 秒的 toast 会让断言必然看不到它。
+            document.getElementById('form1-success').style.display = 'block';
+            form1.reset();
+            document.getElementById('cityDropdown').querySelector('.dropdown-toggle').textContent = '请选择城市';
+            document.getElementById('cityDropdown').querySelector('input[type="hidden"]').value = '';
+          }
+        });
+      }
+
+      const form2 = document.getElementById('form2-form');
+      if (form2) {
+        form2.addEventListener('submit', (e) => {
+          e.preventDefault();
+          let isValid = true;
+          const email = document.getElementById('email');
+          const profession = document.getElementById('profession');
+
+          document.querySelectorAll('.error').forEach(el => el.textContent = '');
+
+          if (!email.value.trim()) {
+            document.getElementById('email-error').textContent = '请输入邮箱';
+            isValid = false;
+          } else if (!email.value.includes('@')) {
+            document.getElementById('email-error').textContent = '邮箱格式不正确';
+            isValid = false;
+          }
+          if (!profession.value) {
+            document.getElementById('profession-error').textContent = '请在列表中选择项目。';
+            isValid = false;
+          }
+          if (isValid) {
+            // 同表单页面 1：成功提示常驻，避免断言因 agent 往返耗时错过提示
+            document.getElementById('form2-success').style.display = 'block';
+            form2.reset();
+            document.getElementById('professionDropdown').querySelector('.dropdown-toggle').textContent = '请选择职业';
+            document.getElementById('professionDropdown').querySelector('input[type="hidden"]').value = '';
+          }
+        });
+      }
+
+      const fileInput = document.getElementById('fileInput');
+      const fileList = document.getElementById('fileList');
+      const uploadBtn = document.getElementById('uploadBtn');
+      const uploadStatus = document.getElementById('uploadStatus');
+      let selectedFiles = [];
+
+      if (fileInput) {
+        fileInput.addEventListener('change', (e) => {
+          selectedFiles = Array.from(e.target.files);
+          renderFileList();
+          if (uploadBtn) uploadBtn.disabled = selectedFiles.length === 0;
+        });
+      }
+
+      function renderFileList() {
+        if (selectedFiles.length === 0) {
+          if (fileList) fileList.innerHTML = '<p>尚未选择文件</p>';
+          return;
+        }
+        if (fileList) {
+          fileList.innerHTML = selectedFiles.map(file => `
+            <div class="file-item">${file.name} (${formatFileSize(file.size)})</div>
+          `).join('');
+        }
+      }
+
+      function formatFileSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+      }
+
+      if (uploadBtn) {
+        uploadBtn.addEventListener('click', () => {
+          if (selectedFiles.length === 0) return;
+          uploadBtn.disabled = true;
+          if (uploadStatus) uploadStatus.innerHTML = '<p>上传中...</p>';
+          setTimeout(() => {
+            if (uploadStatus) {
+              uploadStatus.innerHTML = `
+                <div class="success-message">
+                  成功上传 ${selectedFiles.length} 个文件
+                </div>
+              `;
+            }
+            uploadBtn.disabled = false;
+            setTimeout(() => {
+              if (uploadStatus) uploadStatus.innerHTML = '';
+            }, 3000);
+          }, 1500);
+        });
+      }
+    });
+  </script>
+</body>
+</html>

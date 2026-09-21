@@ -1,0 +1,389 @@
+{
+  "format": "pageqa-replay",
+  "version": 1,
+  "recordedAt": "2026-09-21T07:09:53.436Z",
+  "source": {
+    "path": "examples/smoke-test.md",
+    "hash": "70fcc09fbb6d42fa"
+  },
+  "scenarios": [
+    {
+      "name": "路由切换测试",
+      "caseSteps": [
+        "打开 `http://localhost:18888/smoke-test-page.html` 并断言页面标题包含 冒烟测试页面",
+        "点击页面上的「表单页面 1」链接，等待页面路由切换",
+        "断言页面中已出现表单内容",
+        "点击页面上的「文件上传」链接，等待页面路由切换",
+        "断言页面中已出现文件上传相关内容"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "http://localhost:18888/smoke-test-page.html"
+        },
+        {
+          "kind": "assert_text",
+          "step": 1,
+          "expectation": "冒烟测试页面"
+        },
+        {
+          "kind": "click",
+          "step": 2,
+          "target": "@e2",
+          "locator": {
+            "role": "link",
+            "name": "表单页面 1",
+            "nth": 0,
+            "target": "@e2",
+            "path": [
+              "RootWebArea \"冒烟测试页面\""
+            ]
+          }
+        },
+        {
+          "kind": "wait",
+          "step": 2,
+          "ms": 1000
+        },
+        {
+          "kind": "assert_text",
+          "step": 3,
+          "expectation": "姓名"
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e4",
+          "locator": {
+            "role": "link",
+            "name": "文件上传",
+            "nth": 0,
+            "target": "@e4",
+            "path": [
+              "RootWebArea \"冒烟测试页面\""
+            ]
+          }
+        },
+        {
+          "kind": "wait",
+          "step": 4,
+          "ms": 1000
+        },
+        {
+          "kind": "assert_text",
+          "step": 5,
+          "expectation": "选择文件"
+        }
+      ]
+    },
+    {
+      "name": "表单填写测试",
+      "caseSteps": [
+        "打开 `http://localhost:18888/smoke-test-page.html`",
+        "点击「表单页面 1」链接",
+        "在「姓名」输入框填写 `张三`",
+        "点击「城市」下拉框，在展开的选项中点击选择 `北京`",
+        "在「性别」中选择 `男`",
+        "在「出生日期」输入框填写 `1990-01-01`",
+        "点击「提交表单」按钮",
+        "等待 1 秒，让表单提交完成",
+        "断言页面中已出现成功消息"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "http://localhost:18888/smoke-test-page.html"
+        },
+        {
+          "kind": "click",
+          "step": 2,
+          "target": "@e2",
+          "locator": {
+            "role": "link",
+            "name": "表单页面 1",
+            "nth": 0,
+            "target": "@e2",
+            "path": [
+              "RootWebArea \"冒烟测试页面\""
+            ]
+          }
+        },
+        {
+          "kind": "fill",
+          "step": 3,
+          "target": "@e5",
+          "value": "张三",
+          "locator": {
+            "role": "textbox",
+            "name": "姓名 *",
+            "nth": 0,
+            "target": "@e5",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 1 姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\"",
+              "form \"姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e6",
+          "locator": {
+            "role": "button",
+            "name": "请选择城市",
+            "nth": 0,
+            "target": "@e6",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 1 姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\"",
+              "form \"姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e7",
+          "locator": {
+            "role": "button",
+            "name": "北京",
+            "nth": 0,
+            "target": "@e7",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 1 姓名 * 城市 * 请选择城市 北京 上海 广州 深圳 兴趣爱好 性别 * 出生日期 *\"",
+              "form \"姓名 * 城市 * 请选择城市 北京 上海 广州 深圳 兴趣爱好 性别 * 出生日期 *\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 5,
+          "target": "@e11",
+          "locator": {
+            "role": "radio",
+            "name": "男",
+            "nth": 0,
+            "target": "@e11",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 1 姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\"",
+              "form \"姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\""
+            ]
+          }
+        },
+        {
+          "kind": "fill",
+          "step": 6,
+          "target": "@e13",
+          "value": "1990-01-01",
+          "locator": {
+            "role": "textbox",
+            "name": "出生日期 *",
+            "nth": 0,
+            "target": "@e13",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 1 姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\"",
+              "form \"姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 7,
+          "target": "@e14",
+          "locator": {
+            "role": "button",
+            "name": "提交表单",
+            "nth": 0,
+            "target": "@e14",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 1 姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\"",
+              "form \"姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\""
+            ]
+          }
+        },
+        {
+          "kind": "wait",
+          "step": 8,
+          "ms": 1000
+        },
+        {
+          "kind": "assert_text",
+          "step": 9,
+          "expectation": "表单提交成功！"
+        }
+      ]
+    },
+    {
+      "name": "表单页面 2 测试",
+      "caseSteps": [
+        "打开 `http://localhost:18888/smoke-test-page.html`",
+        "点击「表单页面 2」链接",
+        "在「邮箱」输入框填写 `test@example.com`",
+        "点击「职业」下拉框，在展开的选项中点击选择 `工程师`",
+        "点击「提交表单」按钮",
+        "等待 1 秒，让表单提交完成",
+        "断言页面中已出现成功消息"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "http://localhost:18888/smoke-test-page.html"
+        },
+        {
+          "kind": "click",
+          "step": 2,
+          "target": "@e3",
+          "locator": {
+            "role": "link",
+            "name": "表单页面 2",
+            "nth": 0,
+            "target": "@e3",
+            "path": [
+              "RootWebArea \"冒烟测试页面\""
+            ]
+          }
+        },
+        {
+          "kind": "fill",
+          "step": 3,
+          "target": "@e5",
+          "value": "test@example.com",
+          "locator": {
+            "role": "textbox",
+            "name": "邮箱 *",
+            "nth": 0,
+            "target": "@e5",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 2 邮箱 * 职业 * 请选择职业\"",
+              "form \"邮箱 * 职业 * 请选择职业\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e6",
+          "locator": {
+            "role": "button",
+            "name": "请选择职业",
+            "nth": 0,
+            "target": "@e6",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 2 邮箱 * 职业 * 请选择职业\"",
+              "form \"邮箱 * 职业 * 请选择职业\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e8",
+          "locator": {
+            "role": "button",
+            "name": "工程师",
+            "nth": 0,
+            "target": "@e8",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 2 邮箱 * 职业 * 请选择职业 学生 工程师 设计师 产品经理\"",
+              "form \"邮箱 * 职业 * 请选择职业 学生 工程师 设计师 产品经理\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 5,
+          "target": "@e7",
+          "locator": {
+            "role": "button",
+            "name": "提交表单",
+            "nth": 0,
+            "target": "@e7",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 2 邮箱 * 职业 * 工程师\"",
+              "form \"邮箱 * 职业 * 工程师\""
+            ]
+          }
+        },
+        {
+          "kind": "wait",
+          "step": 6,
+          "ms": 1000
+        },
+        {
+          "kind": "assert_text",
+          "step": 7,
+          "expectation": "表单提交成功！"
+        }
+      ]
+    },
+    {
+      "name": "文件上传测试",
+      "caseSteps": [
+        "打开 `http://localhost:18888/smoke-test-page.html`",
+        "点击「文件上传」链接",
+        "点击「选择文件」按钮并上传本地文件 `D:\\1project\\page-test-agent\\examples\\smoke-test.md`",
+        "等待 1 秒，让文件列表完成渲染",
+        "断言页面中已出现上传的文件名"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "http://localhost:18888/smoke-test-page.html"
+        },
+        {
+          "kind": "click",
+          "step": 2,
+          "target": "@e4",
+          "locator": {
+            "role": "link",
+            "name": "文件上传",
+            "nth": 0,
+            "target": "@e4",
+            "path": [
+              "RootWebArea \"冒烟测试页面\""
+            ]
+          }
+        },
+        {
+          "kind": "upload",
+          "step": 3,
+          "file": "D:\\1project\\page-test-agent\\examples\\smoke-test.md",
+          "target": "@e5",
+          "locator": {
+            "role": "button",
+            "name": "选择文件",
+            "nth": 0,
+            "target": "@e5",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"文件上传 选择文件 尚未选择文件\""
+            ]
+          }
+        },
+        {
+          "kind": "wait",
+          "step": 4,
+          "ms": 1000
+        },
+        {
+          "kind": "assert_text",
+          "step": 5,
+          "expectation": "smoke-test.md"
+        }
+      ]
+    }
+  ]
+}

@@ -606,8 +606,9 @@ export async function executeReplaySteps(
       outcome.trace.push(`[replay-ok] ${label} ${cost}ms`);
       if (out.text) outcome.outputs.push(out.text);
       if (out.assertion) {
-        // 录制时走 Jev 语义判断的断言，在零模型的字符串匹配下可能误报；
-        // 失败时点明原因并给出可执行的下一步，而不是让人盯着「不成立」猜。
+        // 录制时靠 Jev 语义复核才成立的断言（字面不含期望文本），在零模型的
+        // 字符串匹配下必然不成立；失败时点明原因并给出可执行的下一步，
+        // 而不是让人盯着「不成立」猜。
         if (
           out.assertion.verdict === "fail" &&
           !opts.jevActive &&
@@ -616,7 +617,7 @@ export async function executeReplaySteps(
         ) {
           out.assertion.evidence =
             (out.assertion.evidence ? out.assertion.evidence + "；" : "") +
-            "该断言在录制时走 Jev 语义判断，字符串匹配可能误报——可加 --semantic 重试";
+            "该断言在录制时靠 Jev 语义判断成立（字面不含期望文本），字符串匹配必然不成立——可加 --semantic 重试";
         }
         outcome.assertions.push(out.assertion);
       }
@@ -769,8 +770,9 @@ export async function runReplayScript(
     `[pageqa] 回放脚本：${opts.scriptPath ?? "(内存)"}，共 ${scenarios.length} 个场景，` +
       `零模型执行${opts.semantic ? "（断言使用 Jev 语义判断）" : ""}`,
   );
-  // 录制时启用了 Jev 的断言往往是语义措辞（如「检出成功」「标题包含 Example」），
-  // 默认的字符串包含匹配会误报失败。开始前就说清楚，别等跑到一半才让人猜。
+  // 录制时靠 Jev 语义复核才成立的断言（如「检出成功」「标题包含 Example」这类
+  // 字面不出现在页面上的措辞），默认的字符串包含匹配必然判为不成立。
+  // 开始前就说清楚，别等跑到一半才让人猜。
   if (!opts.semantic) {
     const semanticAssertions = scenarios.reduce(
       (n, sc) =>
@@ -780,8 +782,8 @@ export async function runReplayScript(
     );
     if (semanticAssertions > 0) {
       info(
-        `[pageqa] 注意：脚本中有 ${semanticAssertions} 条断言在录制时走 Jev 语义判断，` +
-          `回放默认用字符串包含匹配，可能误报失败；需要语义判断请加 --semantic`,
+        `[pageqa] 注意：脚本中有 ${semanticAssertions} 条断言在录制时靠 Jev 语义判断成立` +
+          `（字面不含期望文本），回放默认用字符串包含匹配必然不成立；需要语义判断请加 --semantic`,
       );
     }
   }

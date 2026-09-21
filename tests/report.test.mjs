@@ -78,6 +78,70 @@ describe("report 断言解析", () => {
 });
 
 // 长流程最容易发生「只跑了几步就收尾」，这里锁定完整性校验行为。
+// assert_text 工具返回的「期望值 + 成立/不成立 + 证据」是确定性事实，模型自述只是转述。
+// 这里钉死「以工具结果为准」：据此计数与判定，不因模型措辞变化而误判。
+describe("断言以 assert_text 工具结果为准", () => {
+  const script = [
+    "打开 http://localhost/smoke-test-page.html 并断言标题包含 冒烟测试页面",
+    "点击「表单页面 1」链接",
+    "断言页面中已出现表单内容",
+    "点击「文件上传」链接",
+    "断言页面中已出现文件上传相关内容",
+  ].join("\n");
+
+  test("模型只写「断言成立」时不再误报「断言全部执行（实际 0/3）」", () => {
+    const tool = [
+      { expectation: "冒烟测试页面", verdict: "pass", evidence: "页面中包含「冒烟测试页面」" },
+      { expectation: "表单页面 1", verdict: "pass", evidence: "页面中包含「表单页面 1」" },
+      { expectation: "文件上传", verdict: "pass", evidence: "页面中包含「文件上传」" },
+    ];
+    const narrative = [
+      "第 1 步完成：页面成功打开，断言成立。",
+      "第 3 步完成：页面中已出现表单内容，断言成立。",
+      "第 5 步完成：页面中已出现文件上传相关内容，断言成立。",
+      "步骤完成：5/5",
+    ].join("\n");
+    const r = buildReport(script, narrative, tool);
+    assert.equal(r.assertions.length, 3);
+    assert.deepEqual(
+      r.assertions.map((a) => a.expectation),
+      ["冒烟测试页面", "表单页面 1", "文件上传"],
+    );
+    assert.equal(r.status, "pass");
+    assert.ok(
+      !r.assertions.some((a) => a.expectation.includes("全部执行")),
+      "不应追加「断言数不足」的失败项",
+    );
+  });
+
+  test("模型自述「成立」但工具返回不成立 → 以工具为准，判 fail", () => {
+    const r = buildReport(
+      "断言页面中已出现成功消息",
+      "第 1 步完成：页面中已出现成功消息，断言成立。",
+      [{ expectation: "成功", verdict: "fail", evidence: "页面中未找到「成功」" }],
+    );
+    assert.equal(r.status, "fail");
+    assert.equal(r.assertions.length, 1);
+    assert.equal(r.assertions[0].expectation, "成功");
+    assert.equal(r.assertions[0].verdict, "fail");
+  });
+
+  test("工具断言条数少于用例断言数时仍报「断言全部执行」失败", () => {
+    const r = buildReport(script, "步骤完成：2/5", [
+      { expectation: "冒烟测试页面", verdict: "pass", evidence: "x" },
+    ]);
+    assert.equal(r.status, "fail");
+    assert.ok(r.assertions.some((a) => a.expectation.includes("1/3")));
+  });
+
+  test("没有工具结果时退回解析结论文本（旧行为不变）", () => {
+    const r = buildReport(script, "断言「冒烟测试页面」：成立。页面中包含「冒烟测试页面」");
+    assert.equal(r.assertions[0].expectation, "「冒烟测试页面」");
+    // 只解析到 1 条（用例里有 3 条）→ 仍旧追加「断言全部执行」失败项
+    assert.ok(r.assertions.some((a) => a.expectation.includes("全部执行")));
+  });
+});
+
 describe("执行完整性校验", () => {
   const script = [
     "### 1 第一步",

@@ -200,7 +200,7 @@ ${VAR_HELP}
   - 可编辑该文件设置 baseUrl / apiKey / model
   - 也可用环境变量覆盖（优先级高于配置文件）：
       PAGEQA_LLM_BASE_URL / PAGEQA_LLM_API_KEY / PAGEQA_LLM_MODEL
-  - Jev 语义判断（可选，用于增强断言精度）：
+  - Jev 语义判断（可选，用于增强断言精度；仅在字面匹配未命中时调用）：
       PAGEQA_JEV_ENABLED=true   启用 Jev 辅助断言
       PAGEQA_JEV_API_KEY=<key>  TypeSafe API 密钥
       PAGEQA_JEV_MODEL=<model>  Jev 模型（默认 jev-latest）

@@ -130,11 +130,25 @@ export function formatUsage(usage?: TokenUsage, mode?: TestReport["mode"]): stri
 }
 
 /**
- * 从 agent 的结论文本中解析断言结果。agent 会以「成立/不成立」给出每个断言，
- * 并用「断言「X」：成立。证据...」句式。无法解析时降级为基于 PASS/FAIL 关键字的整体判断。
+ * 组装报告。
+ *
+ * 断言以 `assert_text` 工具的**结构化结果**为准（`toolAssertions`）：工具返回的
+ * 「期望值 + 成立/不成立 + 证据」是确定性的，而模型自述的措辞千变万化——它常写成
+ * 「…，断言成立。」，既没有期望值，也无法可靠解析，据此计数会把一条**全部通过**的
+ * 用例报成「用例中的断言全部执行（实际 0/3）」的假失败。
+ *
+ * 只有在拿不到工具结果时（旧调用方、回放、纯文本输入）才退回解析结论文本，
+ * 并沿用原有的关键字降级判定。
  */
-export function buildReport(input: string, transcript: string): TestReport {
-  const assertions = parseAssertions(transcript);
+export function buildReport(
+  input: string,
+  transcript: string,
+  toolAssertions?: AssertionResult[],
+): TestReport {
+  const assertions: AssertionResult[] =
+    toolAssertions && toolAssertions.length > 0
+      ? toolAssertions.map((a) => ({ ...a }))
+      : parseAssertions(transcript);
   const { steps } = numberSteps(input);
   const trace = extractTrace(transcript);
   const lastNote = lastStepNote(trace);

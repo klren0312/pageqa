@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { JevClient } from "../jev.js";
 import { debugLog, info, timer } from "../log.js";
+import { slimSnapshot } from "../snapshot.js";
 
 /**
  * browserskill（`bsk`）工具层：把 bsk CLI 命令包装成 pi-agent-core 的 AgentTool。
@@ -208,6 +209,7 @@ export interface BskOps {
   /** 最近一次快照文本（每次 snapshot / assert_text 都会刷新）。 */
   lastSnapshot(): string;
   navigate(url: string): string;
+  /** 读取页面快照（已瘦身）；期间无页面改动且间隔很短时复用上一份，不重新抓取。 */
   snapshot(): string;
   click(target: string): string;
   fill(target: string, value: string): string;
@@ -215,19 +217,104 @@ export interface BskOps {
   hover(target: string): string;
   scroll(target: string): string;
   wait(ms: number): string;
-  /** 断言页面是否包含期望文本；Jev 可用时走语义判断，否则字符串包含。 */
+  /**
+   * 断言页面是否包含期望文本：字面包含优先，字面未命中时（Jev 可用）才做语义复核。
+   */
   assertText(expectation: string): Promise<string>;
+  /** 最近一次 assertText 是否**靠 Jev 语义判断才成立**（供录制标记语义断言）。 */
+  lastAssertSemantic(): boolean;
+  /**
+   * 最近一次 assertText 的**结构化结果**（期望值、成立与否、证据）。
+   *
+   * 报告用它做断言的准源：工具返回的「成立/不成立」是确定性的，而模型自述的措辞
+   * 千变万化（「…，断言成立。」这类写法既没有期望值也没法可靠解析），据此解析
+   * 会造成「实际已全部通过却报 0/N」的假失败。
+   */
+  lastAssert(): AssertOutcome | null;
 }
+
+/** 一次 assert_text 的结构化结果。 */
+export interface AssertOutcome {
+  /** 断言期望（模型传给 assert_text 的 expectation）。 */
+  expectation: string;
+  /** 是否成立。 */
+  pass: boolean;
+  /** 证据（页面里看到/没看到什么，或 Jev 语义匹配度）。 */
+  evidence: string;
+}
+
+/**
+ * 连续重复抓取的去重窗口：模型（或回放）在没有任何改页面动作的情况下又要素一份快照时，
+ * 直接给上一份，省掉一次 bsk 往返。窗口给得短——它要覆盖的只是「刚看过又要素」这种重复。
+ */
+const SNAPSHOT_DEDUP_MS = 1_000;
+
+/**
+ * 断言可复用快照的窗口。
+ *
+ * 断言的「当下」比定位更敏感（页面可能已被异步更新），因此只在自上次快照以来
+ * 没有任何改页面动作、且间隔很短的条件下复用；窗口外的实情是「模型思考了足够久」，
+ * 此时宁可按原行为重新抓取。
+ */
+const SNAPSHOT_ASSERT_MS = 5_000;
 
 export function createBskOps(session: string, jevClient?: JevClient): BskOps {
   const quiet = ["--session", session, "--quiet"];
   let snapshotText = "";
+  let assertSemantic = false;
+  let assertOutcome: AssertOutcome | null = null;
+  /** 最近一次快照的时刻与新鲜度（见 ensureSnapshot）。 */
+  let snapshotAt = 0;
+  let snapshotFresh = false;
+
+  /** 页面被本工具改动过（或刚刚等待过），之前的快照不再可信。 */
+  const markStale = (): void => {
+    snapshotFresh = false;
+  };
+
+  /** 真正抓一次快照：瘦身后交给模型，并按需记录瘦身统计。 */
+  const takeSnapshot = (): string => {
+    const raw = bsk(["snapshot", ...quiet]);
+    const slim = slimSnapshot(raw);
+    if (slim.applied) {
+      debugLog(
+        `[bsk] snapshot 瘦身：${slim.before} -> ${slim.after} 字符` +
+          `（截断 ${slim.truncatedLines} 行、省略 ${slim.droppedLines} 行）`,
+      );
+    } else {
+      // 快照体积直接决定上下文压力（长流程易因上下文超限被中断）
+      debugLog("[bsk] snapshot 字符数=" + raw.length);
+    }
+    snapshotText = slim.text;
+    snapshotAt = Date.now();
+    snapshotFresh = true;
+    return snapshotText;
+  };
+
+  /**
+   * 取快照：自上次快照后页面**没有被本工具改动**、且间隔在 maxAgeMs 内时复用上一份。
+   *
+   * 所有会改动页面的操作（navigate/click/fill/upload/hover/scroll/wait）都会把快照置为
+   * 不新鲜，因此复用只可能发生在「纯读取之后」——最典型的是「刚 snapshot 完就断言」
+   * 或回放里「上一步是断言、下一步要定位」。页面自身异步更新导致的偏差由窗口兜住。
+   */
+  const ensureSnapshot = (maxAgeMs: number, label: string): string => {
+    const age = Date.now() - snapshotAt;
+    if (snapshotFresh && age <= maxAgeMs) {
+      debugLog(`[bsk] ${label} 复用 ${age}ms 前的快照（期间页面未被改动）`);
+      return snapshotText;
+    }
+    return takeSnapshot();
+  };
 
   return {
     session,
     lastSnapshot: () => snapshotText,
+    lastAssertSemantic: () => assertSemantic,
+    lastAssert: () => assertOutcome,
 
     navigate(url: string): string {
+      markStale();
       const out = bsk([
         "navigate",
         url,
@@ -239,19 +326,17 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     },
 
     snapshot(): string {
-      const out = bsk(["snapshot", ...quiet]);
-      snapshotText = out;
-      // 快照体积直接决定上下文压力（长流程易因上下文超限被中断）
-      debugLog("[bsk] snapshot 字符数=" + out.length);
-      return out;
+      return ensureSnapshot(SNAPSHOT_DEDUP_MS, "snapshot");
     },
 
     click(target: string): string {
+      markStale();
       const out = bsk(["click", target, ...quiet]);
       return `已点击 ${target}\n${out}`;
     },
 
     fill(target: string, value: string): string {
+      markStale();
       const out = bsk(["fill", target, "--value", value, ...quiet]);
       return `已在 ${target} 填入文本\n${out}`;
     },
@@ -260,6 +345,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       if (!existsSync(file)) {
         throw new Error(`待上传文件不存在：${file}`);
       }
+      markStale();
       const args = ["upload"];
       if (target) args.push(target);
       args.push("--file", file, ...quiet);
@@ -268,6 +354,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     },
 
     hover(target: string): string {
+      markStale();
       const out = bsk(["hover", target, ...quiet]);
       return `已悬停 ${target}\n${out}`;
     },
@@ -275,21 +362,36 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     scroll(target: string): string {
       // scroll-to 同时支持 @eN 引用与 CSS 选择器。
       // （早期实现用 evaluate + querySelector，遇到 @eN 会静默返回 element-not-found。）
+      markStale();
       const out = bsk(["scroll-to", target, ...quiet]);
       return `已滚动到 ${target}\n${out}`;
     },
 
     wait(ms: number): string {
-      // wait-ms 是 daemon 端 sleep，不接受 --session
+      // wait-ms 是 daemon 端 sleep，不接受 --session。
+      // 等待本身就是为了让页面变化（异步渲染/动画/弹窗），因此必须置为不新鲜：
+      // 回放的「每步重试前重新取快照」正是靠它生效的。
+      markStale();
       bsk(["wait-ms", String(ms)]);
       return `已等待 ${ms}ms`;
     },
 
     async assertText(expectation: string): Promise<string> {
-      const snap = bsk(["snapshot", ...quiet]);
-      snapshotText = snap;
-      const evidence = (verdict: string, why: string) =>
-        `断言「${expectation}」：${verdict}。${why}`;
+      // 断言要的是「当下」：只有在期间没有任何改页面动作、且间隔很短时才复用上一份快照
+      const snap = ensureSnapshot(SNAPSHOT_ASSERT_MS, "assert_text");
+      // 本次断言是否「靠语义判断才成立」，每次调用先重置：
+      // 只有字面未命中、由 Jev 复核判定成立的断言才为 true。
+      assertSemantic = false;
+      // 字面包含匹配即默认路径，也是 Jev 不可用时的回退；
+      // 结论与证据同时写进 assertOutcome，供报告直接取用（不依赖模型自述措辞）。
+      const literalHit = snap.includes(expectation);
+      const verdict = (pass: boolean, why: string): string => {
+        assertOutcome = { expectation, pass, evidence: why };
+        return `断言「${expectation}」：${pass ? "成立" : "不成立"}。${why}`;
+      };
+      const literalWhy = literalHit
+        ? `页面中包含「${expectation}」`
+        : `页面中未找到「${expectation}」`;
 
       // 防御：快照为空或明显不是已加载页面 → 断言不成立。
       // 浏览器页面还没打开时，bsk 返回的是空串/about:blank/错误信息，
@@ -297,22 +399,31 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       const snapLen = snap.trim().length;
       const SNAP_MIN_LEN = 30;
       if (snapLen < SNAP_MIN_LEN) {
-        return evidence(
-          "不成立",
+        return verdict(
+          false,
           `证据：页面快照为空或过短（${snapLen} 字符），页面可能尚未打开或未导航`,
         );
       }
 
-      // 当 Jev 客户端可用时，使用语义判断替代字符串包含匹配
+      // 1) 字面包含命中即成立：这是默认路径，也是绝大多数断言的真实情况。
+      //    命中时不再调用 Jev —— 省掉一次远端往返（超时上限 15s），
+      //    也避免引入「肉眼可见的文本被判成不成立」这类新的失败来源。
+      if (literalHit) return verdict(true, literalWhy);
+
+      // 2) 字面未命中才请 Jev 复核：这正是语义判断有价值的场景
+      //    （同义词/近义表达/格式差异导致的误报 FAIL）。
       if (jevClient?.enabled) {
         try {
           const prob = await jevClient.assertText(snap, expectation);
           const pass = prob >= jevClient.threshold;
-          const verdict = pass ? "成立" : "不成立";
-          const why = pass
-            ? `语义匹配度 ${(prob * 100).toFixed(1)}%，超过阈值 ${(jevClient.threshold * 100).toFixed(0)}%`
-            : `语义匹配度 ${(prob * 100).toFixed(1)}%，未达到阈值 ${(jevClient.threshold * 100).toFixed(0)}%`;
-          return evidence(verdict, why);
+          // 靠语义复核才成立的断言，回放时字符串匹配必然不成立，需要标记
+          assertSemantic = pass;
+          const pct = (prob * 100).toFixed(1);
+          const threshold = (jevClient.threshold * 100).toFixed(0);
+          return verdict(
+            pass,
+            `字面未命中，语义匹配度 ${pct}%，${pass ? "超过" : "未达到"}阈值 ${threshold}%`,
+          );
         } catch (err) {
           // Jev 调用失败：回退到原有的字符串包含逻辑。
           // 必须记录失败原因（超时/鉴权/网络等），否则用户只看到「Jev 不可用，已回退」，
@@ -321,22 +432,14 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
             "[bsk] Jev 断言失败，回退到字符串匹配：" +
               (err instanceof Error ? err.message : String(err)),
           );
-          return stringAssert(snap, expectation) + "（Jev 不可用，已回退）";
+          return verdict(literalHit, `${literalWhy}（Jev 不可用，已回退）`);
         }
       }
 
       // 默认：字符串包含匹配
-      return stringAssert(snap, expectation);
+      return verdict(false, literalWhy);
     },
   };
-}
-
-/** 字符串包含匹配（默认断言路径，也是 Jev 不可用时的回退）。 */
-function stringAssert(snapshotText: string, expectation: string): string {
-  const hit = snapshotText.includes(expectation);
-  return `断言「${expectation}」：${hit ? "成立" : "不成立"}。${
-    hit ? `页面中包含「${expectation}」` : `页面中未找到「${expectation}」`
-  }`;
 }
 
 /** 工具层上报的一次执行（供录制回放脚本）。 */
@@ -349,6 +452,10 @@ export interface BskToolExec {
   ok: boolean;
   /** 本次操作**之前**页面最后一次快照文本。 */
   lastSnapshot: string;
+  /** 断言是否靠 Jev 语义判断才成立（仅 assert_text 会上报该字段）。 */
+  semantic?: boolean;
+  /** 断言的结构化结果（仅 assert_text 成功时上报）；报告据此判定，而非解析模型措辞。 */
+  assert?: AssertOutcome;
 }
 
 export interface BskToolOptions {
@@ -374,7 +481,21 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     const before = ops.lastSnapshot();
     try {
       const text = await fn();
-      opts.onExec?.({ name, params, ok: true, lastSnapshot: before });
+      const assertion = name === "assert_text" ? ops.lastAssert() : null;
+      opts.onExec?.({
+        name,
+        params,
+        ok: true,
+        lastSnapshot: before,
+        // 逐条上报「这条断言是否靠语义判断才成立」：录制层据此精确标记，
+        // 而不是按「整场是否启用 Jev」一刀切（字面命中的断言回放同样能通过）。
+        ...(name === "assert_text"
+          ? { semantic: ops.lastAssertSemantic() }
+          : {}),
+        // 结构化断言结果（期望值 + 成立与否 + 证据）：报告直接取用，
+        // 不再从模型自述里反推（见 report.ts 的 buildReport）。
+        ...(assertion ? { assert: assertion } : {}),
+      });
       return ok(text);
     } catch (err) {
       opts.onExec?.({ name, params, ok: false, lastSnapshot: before });

@@ -296,24 +296,26 @@ describe("Recorder 录制", () => {
     );
   });
 
-  test("Jev 语义模式下录制的断言带 semantic 标记", () => {
-    const r = new Recorder(vars, { semantic: true });
+  test("靠 Jev 语义复核才成立的断言带 semantic 标记", () => {
+    const r = new Recorder(vars);
     r.noteTool({
       name: "assert_text",
       params: { expectation: "标题包含 Example" },
       ok: true,
       lastSnapshot: "",
+      semantic: true,
     });
     assert.equal(r.recorded[0].semantic, true);
   });
 
-  test("默认（字符串匹配）录制的断言不带 semantic 标记", () => {
+  test("字面匹配命中的断言不带 semantic 标记（回放同样能通过）", () => {
     const r = new Recorder(vars);
     r.noteTool({
       name: "assert_text",
       params: { expectation: "Example Domain" },
       ok: true,
       lastSnapshot: "",
+      semantic: false,
     });
     assert.equal(r.recorded[0].semantic, undefined);
   });
@@ -365,6 +367,7 @@ describe("回放失败语义（executeReplaySteps）", () => {
         calls.push(["assert_text", expectation]);
         return `断言「${expectation}」：成立。页面中包含「${expectation}」`;
       },
+      lastAssertSemantic: () => false,
     };
     return ops;
   }

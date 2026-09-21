@@ -72,7 +72,7 @@ bsk session start    # 可选：手动创建 session（不传 --session 时 page
 
 ### 4. Jev 语义断言（可选增强）
 
-> **什么是 Jev？** Jev 是 TypeSafe AI 推出的 [System One 模型](https://docs.typesafe.ai)，专为结构化决策设计。它不做文本生成，而是直接返回校准后的概率值（如匹配度 0.93）。适合替代原有的字符串包含匹配，做更精准的语义级断言。
+> **什么是 Jev？** Jev 是 TypeSafe AI 推出的 [System One 模型](https://docs.typesafe.ai)，专为结构化决策设计。它不做文本生成，而是直接返回校准后的概率值（如匹配度 0.93）。pageqa 用它做**字面匹配失败后的语义复核**，把「同义词 / 近义表达 / 格式差异」造成的误报 FAIL 纠正过来。
 
 **启用方式**：在 `~/.pageqa/config.json` 中添加 `jev` 字段，或设置环境变量：
 
@@ -109,7 +109,7 @@ bsk session start    # 可选：手动创建 session（不传 --session 时 page
 1. 访问 [console.typesafe.ai/settings/keys](https://console.typesafe.ai/settings/keys)（需等待早期访问权限）
 2. 或通过 Vercel AI Gateway 获取
 
-**工作原理**：启用后，`assert_text` 工具会将页面快照文本发送给 Jev，由 Jev 判断页面内容是否语义匹配断言期望。相比原有的字符串 `includes` 匹配，Jev 能处理同义词、近义表达、大小写变体等情况，大幅降低误判。
+**工作原理（按需调用）**：`assert_text` 先做字符串包含匹配——**字面命中即成立，不调用 Jev**（省掉一次远端往返，也避免把肉眼可见的文本判成不成立）；只有**字面未命中**时才把页面快照文本发给 Jev 做一次语义复核，由 Jev 判断页面内容是否语义匹配断言期望（匹配概率 ≥ `threshold` 即成立）。所以 Jev 只用在真正需要它的地方：同义词、近义表达、格式差异导致的误报 FAIL。每条断言最多一次 Jev 调用，长流程不会被逐条断言拖慢。
 
 **降级机制**：若 Jev API 调用失败（网络/超时/鉴权错误），会自动回退到原有的字符串包含匹配，确保测试不因 Jev 服务中断而失败。
 
@@ -120,7 +120,7 @@ bsk session start    # 可选：手动创建 session（不传 --session 时 page
    └─> pi-agent-core Agent（LLM → 可配置 OpenAI 兼容端点）
           └─> bsk 工具：navigate / snapshot / click / fill / hover / scroll / wait
                  └─> 真实浏览器（bsk 连接）
-          └─> assert_text ──→ Jev Noul API（可选，语义匹配）
+          └─> assert_text ──→ 字面命中即成立；未命中才问 Jev Noul API（可选，语义复核）
           └─> 结论与证据 → 报告（文本/JSON）+ 退出码
 ```
 
@@ -201,6 +201,27 @@ Token 消耗: 输入 446 / 输出 136 / 缓存读 6720 / 缓存写 0 / 合计 73
 - JSON 报告（`--json`）中为 `usage` 字段：`{ input, output, cacheRead, cacheWrite, reasoning, total, calls }`。
 - 若 LLM 端点未返回 usage（合计为 0），会在同一行标注「端点未返回 usage」，避免把 0 误读成真实消耗。
 
+### 快照瘦身与复用（省 token 与时间）
+
+长页面的一次快照几千至上万字符，而它在长流程里要被读几十次——既吃上下文，也吃推理时间。为此 pageqa 对快照做了两件事：
+
+**1）瘦身**：只有原文超过 8000 字符才启用，规则保守且不改变定位：
+
+- **带 `@eN` 的行永不截断、永不丢弃**（模型靠它点击，录制/回放的语义定位符也靠它解析 role/name）；
+- `@eN` 行的**祖先链永不丢弃**（祖先路径是同名元素消歧的依据，见「回放脚本」一节）；
+- 元信息行（`@vom`/`@view`/`@layers`/`L1 page`）保留；空行省略；
+- 其余文本行：超过 160 字符才截断（保留开头，断言目标通常很短）；瘦身后仍超 20000 字符时，再从最长的非关键行开始整行省略，短文本（标题/标签/状态提示）优先保留；
+- 结尾附一行说明（`[pageqa] 快照已瘦身：a → b 字符…`），让模型知道有些内容没看到，而不是以为页面就这么点内容。
+
+因此**模型看到的文本与定位解析用的文本是同一份**，role/name/祖先路径都不变；`--debug` 会打印每次瘦身的字符数变化。
+
+**2）复用**：所有会改动页面的动作（`navigate`/`click`/`fill`/`upload`/`hover`/`scroll`/`wait`）都会让上一份快照失效，因此复用只发生在**纯读取之后**：
+
+- 模型「刚 `snapshot` 完就 `assert_text`」→ 断言直接复用那份快照，省掉一次 bsk 往返（断言窗口 5s，`snapshot` 自身去重窗口 1s）；
+- 回放中「上一步是断言、下一步要定位元素」同理；而重试前会 `wait`，等待必然置为失效，所以「每次重试重新取快照」的既有行为保持不变。
+
+页面自身异步更新带来的偏差，靠短窗口兜住：窗口外一律重新抓取。
+
 ### 脚本占位符（运行时变量）
 
 脚本里可以写 `${timestamp}` 之类的占位符，CLI 在读取脚本时按本机当前时间展开。同一次运行内所有占位符共用同一时刻，所以「名称 + 时间戳」这类用例既不会重名，也不必每次手工改时间戳：
@@ -250,7 +271,7 @@ pageqa --replay examples/smoke.replay.json --semantic   # 断言改用 Jev 语�
   - **其它失败**（元素找到了但操作报错、断言不成立）→ 记为失败并**继续跑完**，一次拿到整条用例的完整健康报告；报告指出「回放第 n 步（kind）／对应用例第 k 步：<用例原文>」。退出码仍为非零，失败不会被吞掉。
   - **navigate 失败** → 后续步骤没有意义，直接中止。
   - 想回到「一失败就停」的旧行为：加 `--fail-fast`。
-- **断言默认是字符串包含**：零模型回放不碰任何远端服务。若录制时启用了 Jev，模型可能给出语义化断言（如「检出成功」「标题包含 Example」），脚本会把这类断言标记为语义断言：回放**开始前**就提示脚本里有几条这类断言（字符串匹配可能误报），失败时再提示「可加 `--semantic` 重试」。
+- **断言默认是字符串包含**：零模型回放不碰任何远端服务。录制时**靠 Jev 语义复核才成立**的断言（如「检出成功」「标题包含 Example」这类字面不出现在页面上的措辞）会逐条标记为语义断言：回放**开始前**就提示脚本里有几条这类断言（字面匹配必然不成立），失败时再提示「可加 `--semantic` 重试」。字面命中的断言不标记——回放用字符串匹配同样能通过。
 - **多场景**：一个脚本文件包含全部场景，逐个回放（各自独立 session 与浏览器窗口），任一场景失败则整体失败、退出码 `1`。
 - **源用例变更**：脚本记录源用例内容哈希，回放时若源文件已改动会在 stderr 提示（只警告、不失败），提示你重新生成脚本。
 - **PASS/FAIL 都会生成**：失败轨迹同样能导出，便于排查「模型这次到底做了什么」；但模型一步都没成功执行时脚本为空，回放会直接拒绝执行，不会伪装成「0 步全通过」。
@@ -283,7 +304,7 @@ pageqa --replay examples/smoke.replay.json --semantic   # 断言改用 Jev 语�
 ```
 
 - 覆盖的关键节点：脚本读取、LLM 就绪、bsk daemon 启动/就绪耗时、浏览器连接数、session、每一步工具调用（编号 + 名称 + 耗时 + 成败）、自动续跑、最终结论与总耗时。
-- 加 `--debug` 可看到更细的明细：每条 `bsk` 命令原文与耗时、快照字符数、上下文裁剪、Jev 请求详情。
+- 加 `--debug` 可看到更细的明细：每条 `bsk` 命令原文与耗时、快照体积与瘦身统计、快照复用、上下文裁剪、Jev 请求详情。
 - 需要把日志与报告分开处理时：报告在 stdout（`--json` 也走 stdout），日志始终在 stderr，`pageqa --json … > report.json` 即可不受日志干扰。
 
 ### CLI 选项
@@ -355,7 +376,7 @@ pageqa examples/element-plus-upload.md
 可用工具（`src/bsk/tools.ts`）：
 
 - `navigate(url)` 打开网页
-- `snapshot()` 读取页面 aria 树与可见文本（标题、段落、链接、按钮等）
+- `snapshot()` 读取页面 aria 树与可见文本（标题、段落、链接、按钮等）；返回前会做瘦身（见「快照瘦身与复用」），短期内无页面改动时直接复用上一份
 - `click(target)` / `fill(target, value)` / `hover(target)` 元素交互（target 用 `@eN` 引用或 CSS 选择器）
 - `upload(target, file)` 上传本地文件（target 为触发文件选择器的元素，省略则由 bsk 自动查找文件输入框）
 - `scroll(target)` / `wait(ms)` 滚动与等待
@@ -363,11 +384,13 @@ pageqa examples/element-plus-upload.md
 
 **长流程保护（自动续跑）**：一轮对话结束后，如果 agent 自报的进度没跑满（`步骤完成：k/n` 且 `k < n`），或者用例里写了断言但报告只解析到一部分，pageqa 会自动补一次「继续执行剩余步骤」的提示并继续跑，最多 5 轮；续跑后进度与断言数都没有推进就停止。这样可以避免模型做完一两步就自行收尾、却让报告看起来正常的情况。
 
+断言的准源是 `assert_text` 工具返回的结构化结果（期望值 + 成立/不成立 + 证据），而不是模型自述的措辞：模型常写成「…，断言成立。」，从文本反推既不可靠，也会把一条**全部通过**的用例报成「用例中的断言全部执行（实际 0/N）」的假失败。只有在拿不到工具结果时（回放、纯文本输入）才退回解析结论文本。
+
 ## 验证
 
 ```bash
 pnpm test            # 端到端冒烟：需 bsk daemon 已连接浏览器 + LLM 端点可用
-pnpm run test:unit   # 仅单元测试：不依赖浏览器与 LLM（报告解析 + 定位符/录制/回放脚本）
+pnpm run test:unit   # 仅单元测试：不依赖浏览器与 LLM（报告解析 + 定位符/录制/回放脚本 + 快照瘦身）
 ```
 
 冒烟测试覆盖：A1 打开+标题断言、A2 元素交互与断言、A3 失败可读原因与退出码、A4 文本/JSON 报告。需 bsk daemon 连接浏览器且 LLM 端点可用。
@@ -404,6 +427,7 @@ src/
   bsk/tools.ts   browserskill 操作层与工具层（含 upload 文件上传、录制上报）
   record.ts      录制层（把成功操作与断言记成可回放步骤）
   locator.ts     语义定位符（快照解析 + 回放时按 role/name/序号重定位）
+  snapshot.ts    快照瘦身（保留可交互节点与祖先链，截断长文本；降低上下文压力）
   replay.ts      回放脚本（格式、读写校验 + 零模型回放引擎）
   report.ts      报告解析、渲染与套件汇总（LLM 运行与回放共用）
 examples/
@@ -412,5 +436,5 @@ examples/
   element-plus-upload.md    文件上传用例（点击 Click to upload 上传本地图片）
   plm-product-bom.md        PLM 长流程用例（建产品→目录→物料→检出→待办同意→BOM 插入）
 tests/smoke.test.mjs 端到端验证
-tests/report.test.mjs / tests/replay.test.mjs 单元测试（无浏览器/LLM 依赖）
+tests/report.test.mjs / tests/replay.test.mjs / tests/snapshot.test.mjs 单元测试（无浏览器/LLM 依赖）
 ```
