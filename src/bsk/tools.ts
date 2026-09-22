@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { JevClient } from "../jev.js";
@@ -19,35 +19,96 @@ import { slimSnapshot } from "../snapshot.js";
 
 const BSK_TIMEOUT_MS = 60_000;
 
-function bsk(args: string[]): string {
-  // 调试模式打印每条 bsk 命令，便于定位「卡在哪条命令」；
-  // execFileSync 是阻塞的，所以命令执行期间不会再有其它的日志。
-  const done = timer();
-  debugLog("[bsk] $ bsk " + args.join(" "));
-  try {
-    const out = execFileSync("bsk", args, {
-      encoding: "utf-8",
-      timeout: BSK_TIMEOUT_MS,
-      windowsHide: true,
-    }).toString();
-    debugLog(`[bsk] $ bsk ${args[0] ?? ""} 完成（${done()}ms）`);
-    return out;
-  } catch (err) {
-    debugLog(`[bsk] $ bsk ${args[0] ?? ""} 失败（${done()}ms）`);
-    const e = err as { code?: string; signal?: string };
-    if (e.code === "ENOENT") {
-      throw new Error(
-        "未找到 bsk 命令：请先安装 browserskill 并确认 bsk 在 PATH 中",
-      );
-    }
-    if (e.code === "ETIMEDOUT" || e.signal === "SIGTERM") {
-      throw new Error(
-        `bsk 命令执行超时（${BSK_TIMEOUT_MS / 1000}s）：可能 bsk daemon 未启动或未连接浏览器。` +
-          `请先运行 \`bsk session start\` 并确认浏览器已连接，再重试。命令：bsk ${args.join(" ")}`,
-      );
-    }
-    throw err;
+/** 操作被调用方主动中止（交互模式下按 Esc）。 */
+export class BskAbortError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BskAbortError";
   }
+}
+
+/**
+ * bsk 命令的串行队列。
+ *
+ * 「一次只有一条 bsk 命令在飞」以前是 `execFileSync` 免费提供的——同步调用天然把并发
+ * 挡在门外。改成异步之后这条保证必须显式维护：两条命令并发执行会让 `@eN` 引用与页面
+ * 状态互相踩，而「页面此刻长什么样」恰恰是这一层所有操作的隐含前提。
+ */
+let commandChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * 执行一条 bsk 命令：**异步、可中止、全局串行**。
+ *
+ * 异步不是风格选择：`execFileSync` 会阻塞整个事件循环，交互模式下界面在这期间完全不
+ * 渲染、不收键，Esc 也停不下来（与 daemon 轮询必须异步是同一个原因，见 bskStatusJsonAsync）。
+ * `signal` 触发时直接 kill 子进程，否则「中止」只能等当前这条命令自己跑完（最坏 60s）。
+ */
+function bsk(args: string[], signal?: AbortSignal): Promise<string> {
+  // 上一条成功还是失败都要继续跑下一条：单条命令失败不该堵死整个队列。
+  const run = commandChain.then(
+    () => runBsk(args, signal),
+    () => runBsk(args, signal),
+  );
+  commandChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function runBsk(args: string[], signal?: AbortSignal): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const done = timer();
+    debugLog("[bsk] $ bsk " + args.join(" "));
+    if (signal?.aborted) {
+      reject(new BskAbortError(`操作已被中止，未执行：bsk ${args.join(" ")}`));
+      return;
+    }
+    let aborted = false;
+    const child = execFile(
+      "bsk",
+      args,
+      { encoding: "utf-8", timeout: BSK_TIMEOUT_MS, windowsHide: true },
+      (err, stdout) => {
+        signal?.removeEventListener("abort", onAbort);
+        // 必须先判中止：被 kill 出来的错误同样是 SIGTERM，后判会被误报成「命令超时」。
+        if (aborted) {
+          reject(new BskAbortError(`操作已被中止：bsk ${args.join(" ")}`));
+          return;
+        }
+        if (!err) {
+          debugLog(`[bsk] $ bsk ${args[0] ?? ""} 完成（${done()}ms）`);
+          resolve(String(stdout));
+          return;
+        }
+        debugLog(`[bsk] $ bsk ${args[0] ?? ""} 失败（${done()}ms）`);
+        const e = err as { code?: string; signal?: string };
+        if (e.code === "ENOENT") {
+          reject(
+            new Error(
+              "未找到 bsk 命令：请先安装 browserskill 并确认 bsk 在 PATH 中",
+            ),
+          );
+          return;
+        }
+        if (e.code === "ETIMEDOUT" || e.signal === "SIGTERM") {
+          reject(
+            new Error(
+              `bsk 命令执行超时（${BSK_TIMEOUT_MS / 1000}s）：可能 bsk daemon 未启动或未连接浏览器。` +
+                `请先运行 \`bsk session start\` 并确认浏览器已连接，再重试。命令：bsk ${args.join(" ")}`,
+            ),
+          );
+          return;
+        }
+        reject(err);
+      },
+    );
+    const onAbort = () => {
+      aborted = true;
+      child.kill();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -208,19 +269,23 @@ export interface BskOps {
   readonly session: string;
   /** 最近一次快照文本（每次 snapshot / assert_text 都会刷新）。 */
   lastSnapshot(): string;
-  navigate(url: string): string;
+  navigate(url: string, signal?: AbortSignal): Promise<string>;
   /** 读取页面快照（已瘦身）；期间无页面改动且间隔很短时复用上一份，不重新抓取。 */
-  snapshot(): string;
-  click(target: string): string;
-  fill(target: string, value: string): string;
-  upload(target: string | undefined, file: string): string;
-  hover(target: string): string;
-  scroll(target: string): string;
-  wait(ms: number): string;
+  snapshot(signal?: AbortSignal): Promise<string>;
+  click(target: string, signal?: AbortSignal): Promise<string>;
+  fill(target: string, value: string, signal?: AbortSignal): Promise<string>;
+  upload(
+    target: string | undefined,
+    file: string,
+    signal?: AbortSignal,
+  ): Promise<string>;
+  hover(target: string, signal?: AbortSignal): Promise<string>;
+  scroll(target: string, signal?: AbortSignal): Promise<string>;
+  wait(ms: number, signal?: AbortSignal): Promise<string>;
   /**
    * 断言页面是否包含期望文本：字面包含优先，字面未命中时（Jev 可用）才做语义复核。
    */
-  assertText(expectation: string): Promise<string>;
+  assertText(expectation: string, signal?: AbortSignal): Promise<string>;
   /** 最近一次 assertText 是否**靠 Jev 语义判断才成立**（供录制标记语义断言）。 */
   lastAssertSemantic(): boolean;
   /**
@@ -275,8 +340,8 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
   };
 
   /** 真正抓一次快照：瘦身后交给模型，并按需记录瘦身统计。 */
-  const takeSnapshot = (): string => {
-    const raw = bsk(["snapshot", ...quiet]);
+  const takeSnapshot = async (signal?: AbortSignal): Promise<string> => {
+    const raw = await bsk(["snapshot", ...quiet], signal);
     const slim = slimSnapshot(raw);
     if (slim.applied) {
       debugLog(
@@ -301,13 +366,17 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
    * 不新鲜，因此复用只可能发生在「纯读取之后」——最典型的是「刚 snapshot 完就断言」
    * 或回放里「上一步是断言、下一步要定位」。页面自身异步更新导致的偏差由窗口兜住。
    */
-  const ensureSnapshot = (maxAgeMs: number, label: string): string => {
+  const ensureSnapshot = async (
+    maxAgeMs: number,
+    label: string,
+    signal?: AbortSignal,
+  ): Promise<string> => {
     const age = Date.now() - snapshotAt;
     if (snapshotFresh && age <= maxAgeMs) {
       debugLog(`[bsk] ${label} 复用 ${age}ms 前的快照（期间页面未被改动）`);
       return snapshotText;
     }
-    return takeSnapshot();
+    return await takeSnapshot(signal);
   };
 
   /**
@@ -317,7 +386,11 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
    * 拿瘦身文本做 includes，针对长页面文本的断言会假未命中，且证据不会说明漏看。
    * 模型上下文仍吃瘦身文本，省 token 的收益不受影响。
    */
-  const ensureRawSnapshot = (maxAgeMs: number, label: string): string => {
+  const ensureRawSnapshot = async (
+    maxAgeMs: number,
+    label: string,
+    signal?: AbortSignal,
+  ): Promise<string> => {
     const age = Date.now() - snapshotAt;
     if (snapshotFresh && age <= maxAgeMs) {
       debugLog(
@@ -325,7 +398,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       );
       return snapshotRawText;
     }
-    takeSnapshot();
+    await takeSnapshot(signal);
     return snapshotRawText;
   };
 
@@ -335,35 +408,40 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     lastAssertSemantic: () => assertSemantic,
     lastAssert: () => assertOutcome,
 
-    navigate(url: string): string {
+    async navigate(url: string, signal?: AbortSignal): Promise<string> {
       markStale();
-      const out = bsk([
-        "navigate",
-        url,
-        ...quiet,
-        "--wait-until",
-        "domcontentloaded",
-      ]);
+      const out = await bsk(
+        ["navigate", url, ...quiet, "--wait-until", "domcontentloaded"],
+        signal,
+      );
       return `已导航到 ${url}\n${out}`;
     },
 
-    snapshot(): string {
-      return ensureSnapshot(SNAPSHOT_DEDUP_MS, "snapshot");
+    async snapshot(signal?: AbortSignal): Promise<string> {
+      return await ensureSnapshot(SNAPSHOT_DEDUP_MS, "snapshot", signal);
     },
 
-    click(target: string): string {
+    async click(target: string, signal?: AbortSignal): Promise<string> {
       markStale();
-      const out = bsk(["click", target, ...quiet]);
+      const out = await bsk(["click", target, ...quiet], signal);
       return `已点击 ${target}\n${out}`;
     },
 
-    fill(target: string, value: string): string {
+    async fill(
+      target: string,
+      value: string,
+      signal?: AbortSignal,
+    ): Promise<string> {
       markStale();
-      const out = bsk(["fill", target, "--value", value, ...quiet]);
+      const out = await bsk(["fill", target, "--value", value, ...quiet], signal);
       return `已在 ${target} 填入文本\n${out}`;
     },
 
-    upload(target: string | undefined, file: string): string {
+    async upload(
+      target: string | undefined,
+      file: string,
+      signal?: AbortSignal,
+    ): Promise<string> {
       if (!existsSync(file)) {
         throw new Error(`待上传文件不存在：${file}`);
       }
@@ -371,37 +449,44 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       const args = ["upload"];
       if (target) args.push(target);
       args.push("--file", file, ...quiet);
-      const out = bsk(args);
+      const out = await bsk(args, signal);
       return `已上传文件 ${file}\n${out}`;
     },
 
-    hover(target: string): string {
+    async hover(target: string, signal?: AbortSignal): Promise<string> {
       markStale();
-      const out = bsk(["hover", target, ...quiet]);
+      const out = await bsk(["hover", target, ...quiet], signal);
       return `已悬停 ${target}\n${out}`;
     },
 
-    scroll(target: string): string {
+    async scroll(target: string, signal?: AbortSignal): Promise<string> {
       // scroll-to 同时支持 @eN 引用与 CSS 选择器。
       // （早期实现用 evaluate + querySelector，遇到 @eN 会静默返回 element-not-found。）
       markStale();
-      const out = bsk(["scroll-to", target, ...quiet]);
+      const out = await bsk(["scroll-to", target, ...quiet], signal);
       return `已滚动到 ${target}\n${out}`;
     },
 
-    wait(ms: number): string {
+    async wait(ms: number, signal?: AbortSignal): Promise<string> {
       // wait-ms 是 daemon 端 sleep，不接受 --session。
       // 等待本身就是为了让页面变化（异步渲染/动画/弹窗），因此必须置为不新鲜：
       // 回放的「每步重试前重新取快照」正是靠它生效的。
       markStale();
-      bsk(["wait-ms", String(ms)]);
+      await bsk(["wait-ms", String(ms)], signal);
       return `已等待 ${ms}ms`;
     },
 
-    async assertText(expectation: string): Promise<string> {
+    async assertText(
+      expectation: string,
+      signal?: AbortSignal,
+    ): Promise<string> {
       // 断言要的是「当下」+「完整」：只有在期间没有任何改页面动作、且间隔很短时才复用，
       // 并且字面匹配基于瘦身前的完整快照（ensureRawSnapshot 里有原因说明）。
-      const snap = ensureRawSnapshot(SNAPSHOT_ASSERT_MS, "assert_text");
+      const snap = await ensureRawSnapshot(
+        SNAPSHOT_ASSERT_MS,
+        "assert_text",
+        signal,
+      );
       // 本次断言是否「靠语义判断才成立」，每次调用先重置：
       // 只有字面未命中、由 Jev 复核判定成立的断言才为 true。
       assertSemantic = false;
@@ -499,11 +584,12 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
   const exec = async (
     name: string,
     params: Record<string, unknown>,
-    fn: () => string | Promise<string>,
+    fn: (signal?: AbortSignal) => Promise<string>,
+    signal?: AbortSignal,
   ) => {
     const before = ops.lastSnapshot();
     try {
-      const text = await fn();
+      const text = await fn(signal);
       const assertion = name === "assert_text" ? ops.lastAssert() : null;
       opts.onExec?.({
         name,
@@ -534,9 +620,14 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     parameters: paramsOf({ url: { type: "string", description: "目标 URL" } }, [
       "url",
     ]),
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as NavParams;
-      return exec("navigate", { url: p.url }, () => ops.navigate(p.url));
+      return exec(
+        "navigate",
+        { url: p.url },
+        (s) => ops.navigate(p.url, s),
+        signal,
+      );
     },
   };
 
@@ -546,8 +637,8 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     description:
       "读取当前页面的 aria 语义树与可见文本（标题、段落、链接、按钮等）。用于读取内容、标题、文本并定位元素。",
     parameters: paramsOf({}),
-    execute: async () =>
-      exec("snapshot", {}, () => ops.snapshot()),
+    execute: async (_id: string, _params: unknown, signal?: AbortSignal) =>
+      exec("snapshot", {}, (s) => ops.snapshot(s), signal),
   };
 
   const click: AgentTool = {
@@ -558,9 +649,14 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       { target: { type: "string", description: "@eN 引用或 CSS 选择器" } },
       ["target"],
     ),
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as TargetParams;
-      return exec("click", { target: p.target }, () => ops.click(p.target));
+      return exec(
+        "click",
+        { target: p.target },
+        (s) => ops.click(p.target, s),
+        signal,
+      );
     },
   };
 
@@ -575,10 +671,13 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       },
       ["target", "value"],
     ),
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as FillParams;
-      return exec("fill", { target: p.target, value: p.value }, () =>
-        ops.fill(p.target, p.value),
+      return exec(
+        "fill",
+        { target: p.target, value: p.value },
+        (s) => ops.fill(p.target, p.value, s),
+        signal,
       );
     },
   };
@@ -603,12 +702,13 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       },
       ["file"],
     ),
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as UploadParams;
       return exec(
         "upload",
         p.target ? { target: p.target, file: p.file } : { file: p.file },
-        () => ops.upload(p.target, p.file),
+        (s) => ops.upload(p.target, p.file, s),
+        signal,
       );
     },
   };
@@ -621,9 +721,14 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       { target: { type: "string", description: "@eN 引用或 CSS 选择器" } },
       ["target"],
     ),
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as TargetParams;
-      return exec("hover", { target: p.target }, () => ops.hover(p.target));
+      return exec(
+        "hover",
+        { target: p.target },
+        (s) => ops.hover(p.target, s),
+        signal,
+      );
     },
   };
 
@@ -635,9 +740,14 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       { target: { type: "string", description: "@eN 引用或 CSS 选择器" } },
       ["target"],
     ),
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as TargetParams;
-      return exec("scroll", { target: p.target }, () => ops.scroll(p.target));
+      return exec(
+        "scroll",
+        { target: p.target },
+        (s) => ops.scroll(p.target, s),
+        signal,
+      );
     },
   };
 
@@ -646,10 +756,10 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     label: "Wait",
     description: "等待一段时间（毫秒）或等待页面导航完成。",
     parameters: paramsOf({ ms: { type: "number", description: "等待毫秒数" } }),
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = (params as WaitParams) ?? {};
       const ms = p.ms ?? 1000;
-      return exec("wait", { ms }, () => ops.wait(ms));
+      return exec("wait", { ms }, (s) => ops.wait(ms, s), signal);
     },
   };
 
@@ -664,10 +774,13 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       },
       ["expectation"],
     ),
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as ExpectParams;
-      return exec("assert_text", { expectation: p.expectation }, () =>
-        ops.assertText(p.expectation),
+      return exec(
+        "assert_text",
+        { expectation: p.expectation },
+        (s) => ops.assertText(p.expectation, s),
+        signal,
       );
     },
   };
@@ -707,13 +820,13 @@ interface ExpectParams {
 }
 
 /** 创建一个 bsk session；若已提供且仍在活跃列表中则复用，否则新建。 */
-export function ensureSession(existing?: string): string {
-  if (existing && isActiveSession(existing)) {
+export async function ensureSession(existing?: string): Promise<string> {
+  if (existing && (await isActiveSession(existing))) {
     debugLog(`[bsk] 复用已存在的 session ${existing}`);
     return existing;
   }
   debugLog("[bsk] 创建新的 session…");
-  const out = bsk(["session", "start", "--json"]);
+  const out = await bsk(["session", "start", "--json"]);
   try {
     const json = JSON.parse(out);
     if (json?.session_id) return json.session_id;
@@ -731,11 +844,11 @@ export function ensureSession(existing?: string): string {
  * 用例跑完（无论通过还是失败）都应调用，避免留下越来越多个浏览器窗口。
  * 清理失败只提示、不抛出：它不应该改变测试结论，也不该掩盖真正的失败原因。
  */
-export function closeSession(session: string): void {
+export async function closeSession(session: string): Promise<void> {
   const done = timer();
   try {
     debugLog(`[bsk] 关闭 session ${session}（同时关闭 Agent Window）…`);
-    bsk(["session", "stop", session, "--quiet"]);
+    await bsk(["session", "stop", session, "--quiet"]);
     debugLog(`[bsk] session ${session} 已关闭（${done()}ms）`);
     info(`[pageqa] 已关闭 bsk session=${session}（浏览器窗口已关闭）`);
   } catch (err) {
@@ -747,9 +860,9 @@ export function closeSession(session: string): void {
 }
 
 /** 检查给定 session 是否在 bsk 活跃列表里。 */
-function isActiveSession(id: string): boolean {
+async function isActiveSession(id: string): Promise<boolean> {
   try {
-    const out = bsk(["session", "list", "--json"]);
+    const out = await bsk(["session", "list", "--json"]);
     const list = JSON.parse(out);
     if (Array.isArray(list)) return list.some((s) => s?.session_id === id);
   } catch {

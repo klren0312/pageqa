@@ -14,6 +14,9 @@ importers:
       '@earendil-works/pi-ai':
         specifier: ^0.86.1
         version: 0.86.1(supports-color@7.2.0)(ws@8.21.3)
+      '@earendil-works/pi-tui':
+        specifier: ^0.87.0
+        version: 0.87.0
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -135,6 +138,10 @@ packages:
 
   '@earendil-works/pi-telemetry@0.86.1':
     resolution: {integrity: sha512-SOcEqOS3oVGgKeahs2jHB906d8hFjuLP+RBee8xKYMRgw5KAeWHNg+YABfL0ALlp3Bt6tW4b632MLghc3vnTog==}
+    engines: {node: '>=22.19.0'}
+
+  '@earendil-works/pi-tui@0.87.0':
+    resolution: {integrity: sha512-7gTC0XOgQfVWg4yGxwHINBpCnGl9p4KEC7PXIc8gAwc/cyxSW4VuFQrp+r1YD3oM+rBkoepKwAt6w6+VJ7BCaw==}
     engines: {node: '>=22.19.0'}
 
   '@esbuild/aix-ppc64@0.28.2':
@@ -559,6 +566,10 @@ packages:
     resolution: {integrity: sha512-zV/5HKTfCeKWnxG0Dmrw51hEWFGfcF2xiXqcA3+J90WDuP0SvoiSO5ORvcBsifmx/FoIjgQN3oNOGaQ5PhLFkg==}
     engines: {node: '>=18'}
 
+  get-east-asian-width@1.6.0:
+    resolution: {integrity: sha512-QRbvDIbx6YklUe6RxeTeleMR0yv3cYH6PsPZHcnVn7xv7zO1BHN8r0XETu8n6Ye3Q+ahtSarc3WgtNWmehIBfA==}
+    engines: {node: '>=18'}
+
   get-stream@6.0.1:
     resolution: {integrity: sha512-ts6Wi+2j3jQjqi70w5AlN8DFnkSwC+MqmxEzdEALB2qXZYV3X/b1CTfgPLGJNMeAWxdPfU8FO1ms3NUfaHCPYg==}
     engines: {node: '>=10'}
@@ -640,6 +651,11 @@ packages:
 
   long@5.3.2:
     resolution: {integrity: sha512-mNAgZ1GmyNhD7AuqnTG3/VQ26o760+ZYBPKjPvugO8+nLbYfX6TVpJPseBvopbdY+qpZ/lKUnmEc1LeZYS3QAA==}
+
+  marked@18.0.11:
+    resolution: {integrity: sha512-HnslJfsZkRPBDJRHvVtAaWlZHEpSu7u8LgQuJCELjRKuWR+hpq4A7sLq3p8HaI9ypVoXDXxV34CsQJEe1+J5Aw==}
+    engines: {node: '>= 20'}
+    hasBin: true
 
   merge-stream@2.0.0:
     resolution: {integrity: sha512-abv/qOcuPfk3URPfDzmZU1LKmuw8kT+0nIHvKrKgFrwifol/doWcdA4ZqsWQ8ENrFKkd67Mfpo/LovbIUsbt3w==}
@@ -1112,6 +1128,11 @@ snapshots:
 
   '@earendil-works/pi-telemetry@0.86.1': {}
 
+  '@earendil-works/pi-tui@0.87.0':
+    dependencies:
+      get-east-asian-width: 1.6.0
+      marked: 18.0.11
+
   '@esbuild/aix-ppc64@0.28.2':
     optional: true
 
@@ -1478,6 +1499,8 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  get-east-asian-width@1.6.0: {}
+
   get-stream@6.0.1: {}
 
   google-auth-library@10.9.1(supports-color@7.2.0):
@@ -1563,6 +1586,8 @@ snapshots:
       safe-buffer: 5.2.1
 
   long@5.3.2: {}
+
+  marked@18.0.11: {}
 
   merge-stream@2.0.0: {}
 

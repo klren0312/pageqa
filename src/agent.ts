@@ -20,6 +20,7 @@ import {
   parseProgress,
   renderSuiteText,
   renderText,
+  statusTag,
   summarizeSuite,
   type AssertionResult,
   type TestReport,
@@ -33,6 +34,11 @@ export interface AgentOptions {
   session?: string;
   systemPrompt?: string;
   debug?: boolean;
+  /**
+   * 中止信号（交互模式下用户按 Esc）。触发时调用 `Agent.abort()`，
+   * 该信号会一路贯穿到 bsk 工具的 `execute(..., signal)` 并 kill 掉正在跑的子进程。
+   */
+  abortSignal?: AbortSignal;
   /** 场景名（套件模式下由 `## 场景名` 提供），写进录制结果供回放脚本使用。 */
   scenarioName?: string;
   /** 本次运行展开 `${...}` 占位符用的取值，录制回放脚本时用于把具体值还原成占位符。 */
@@ -231,7 +237,7 @@ export async function runAgent(
   try {
     return await runAgentCore(input, opts, holder);
   } finally {
-    if (holder.id) closeSession(holder.id);
+    if (holder.id) await closeSession(holder.id);
   }
 }
 
@@ -254,6 +260,30 @@ interface AgentSession {
    */
   assertions: AssertionResult[];
   startedAt: number;
+  /** 调用方传入的中止信号（无则为 undefined）。 */
+  abortSignal?: AbortSignal;
+}
+
+/**
+ * 本轮是否被调用方主动中止（而非报错）。
+ *
+ * pi-agent-core 没有 `aborted` 事件，中止表现为「signal 被 abort」+「最后一条 assistant
+ * 消息的 stopReason 变成 aborted」（见其 `handleRunFailure`），因此两条线索都要看：
+ * 只看 signal 会漏掉「stream 自己按契约返回 aborted」，只看消息会漏掉「还没进到消息阶段
+ * 就被中止」。
+ */
+function wasAborted(
+  signal: AbortSignal | undefined,
+  agent: Agent,
+): boolean {
+  if (signal?.aborted) return true;
+  const messages = agent.state.messages;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; stopReason?: string };
+    if (m.role !== "assistant") continue;
+    return m.stopReason === "aborted";
+  }
+  return false;
 }
 
 /**
@@ -285,7 +315,7 @@ async function initializeAgent(
   info("[pageqa] 检查 bsk daemon 与浏览器连接…");
   await ensureBskReady();
   info("[pageqa] 创建/复用 bsk session…");
-  const session = ensureSession(opts.session);
+  const session = await ensureSession(opts.session);
   holder.id = session;
   log("[runAgent] bsk session=" + session);
   info(`[pageqa] bsk session=${session}`);
@@ -356,7 +386,26 @@ async function initializeAgent(
 
   subscribeProgress(agent, events, recorder);
 
-  return { agent, events, numbered, steps, recorder, assertions, startedAt };
+  // 用户在交互模式里按 Esc → 中止本轮运行。
+  // `Agent.abort()` 是 pi-agent-core 唯一的中断入口：它 abort 内部那个 AbortController，
+  // 该 signal 一路贯穿到工具的 `execute(..., signal)`，bsk 层据此 kill 掉正在跑的子进程。
+  // 若传入时就已经被中止（排队期间被取消），不注册监听——由调用方负责别开始执行。
+  if (opts.abortSignal && !opts.abortSignal.aborted) {
+    opts.abortSignal.addEventListener("abort", () => agent.abort(), {
+      once: true,
+    });
+  }
+
+  return {
+    agent,
+    events,
+    numbered,
+    steps,
+    recorder,
+    assertions,
+    startedAt,
+    abortSignal: opts.abortSignal,
+  };
 }
 
 /**
@@ -420,6 +469,13 @@ async function executeWithContinuations(
   const { agent, events, numbered } = session;
   const log = debugLog;
 
+  // 开始前就已被取消（排队时被 /cancel）→ 一步都不跑。
+  // 否则会真发起一轮 LLM 调用，白花钱还留下半截记录。
+  if (session.abortSignal?.aborted) {
+    info("[pageqa] 该场景在开始执行前已被取消，跳过");
+    return;
+  }
+
   log("[runAgent] 发送 prompt...");
   info("[pageqa] 已提交用例，等待模型与浏览器执行…");
   await agent.prompt(numbered);
@@ -430,6 +486,12 @@ async function executeWithContinuations(
   let lastSignature: string | null = null;
   for (let round = 0; round < MAX_CONTINUATIONS; round++) {
     if (agent.state.errorMessage) break;
+    // 被中止的轮次绝不「续跑」：续跑会立刻再发起一轮 LLM 调用，
+    // 而用户按下 Esc 表达的正是「我不想再等这个了」。
+    if (wasAborted(session.abortSignal, agent)) {
+      log("[runAgent] 本轮已被中止，停止续跑");
+      break;
+    }
     const transcriptSoFar = events.join("");
     const progress = parseProgress(transcriptSoFar);
     // 断言进度以工具结果为准（模型自述的措辞时好时坏，可能一条都解析不出来）；
@@ -497,11 +559,16 @@ function finalizeResult(
   );
   if (agentError) events.push("\n[agent-error] " + agentError + "\n");
 
+  const aborted = wasAborted(session.abortSignal, agent);
   const transcript = events.join("");
-  const report = buildReport(input, transcript, session.assertions);
+  const report = buildReport(input, transcript, session.assertions, {
+    cancelled: aborted,
+  });
   // 报告里标注回放脚本的落盘位置（真正写文件由 CLI 在运行结束后完成）
   if (opts.scriptPath) report.script = opts.scriptPath;
-  if (agentError) {
+  if (aborted) {
+    log("[runAgent] 本轮被用户中止，记为「已取消」：不进退出码、不写入回放脚本");
+  } else if (agentError) {
     report.status = "fail";
     report.assertions.push({
       expectation: "agent 正常执行完毕（未因错误中断）",
@@ -518,7 +585,7 @@ function finalizeResult(
   report.usage = usage;
   log("[runAgent] " + formatUsage(usage));
   info(
-    `[pageqa] 用例结束：${report.status === "pass" ? "PASS" : "FAIL"}，` +
+    `[pageqa] 用例结束：${statusTag(report.status)}，` +
       `断言 ${report.assertions.length} 条，耗时 ${((Date.now() - startedAt) / 1000).toFixed(1)}s`,
   );
 

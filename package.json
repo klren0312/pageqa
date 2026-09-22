@@ -16,7 +16,7 @@
     "start": "node dist/index.js",
     "pretest": "npm run build",
     "test": "node --test tests/smoke.test.mjs",
-    "test:unit": "npm run build && node --test tests/report.test.mjs tests/replay.test.mjs tests/snapshot.test.mjs",
+    "test:unit": "npm run build && node --test tests/report.test.mjs tests/replay.test.mjs tests/snapshot.test.mjs tests/tui.test.mjs",
     "prepublishOnly": "npm run build",
     "serve:smoke": "serve -l 18888 examples"
   },
@@ -36,11 +36,12 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.19.0"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.86.1",
-    "@earendil-works/pi-ai": "^0.86.1"
+    "@earendil-works/pi-ai": "^0.86.1",
+    "@earendil-works/pi-tui": "^0.87.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
