@@ -339,6 +339,22 @@ pageqa --replay examples/smoke.replay.json --semantic   # 断言改用 Jev 语�
 
 - 覆盖的关键节点：脚本读取、LLM 就绪、bsk daemon 启动/就绪耗时、浏览器连接数、session、每一步工具调用（编号 + 名称 + 耗时 + 成败 + **失败原因**）、自动续跑、最终结论与总耗时。
 - 工具失败会带上原因（如 `✗ #1 navigate：net::ERR_CONNECTION_REFUSED 169ms`），并写进报告的执行轨迹。没有它就无法区分「本地服务没起」「URL 写错」「选择器匹配不上」——三者的处理方式完全不同。
+- **`navigate` 失败会翻译成人话**（`src/bsk/navigate-diagnosis.ts`）。bsk 对任何导航失败都回同一套三段式文本：
+
+  ```text
+  error: browser rejected the underlying CDP call
+  hint: confirm the tab is still in a loaded state and retry; reloading the tab usually resets a stuck DevTools session
+  details: Page.navigate rejected: net::ERR_CONNECTION_REFUSED
+  ```
+
+  真正有用的只有第三行的 `net::ERR_*` 码，而它排在噪声后面；那句 `hint` 更是**在劝人重试**——实测中模型正是据此在「本机服务没起」时反复重试 `navigate`。pageqa 现在把这个码翻译成确切解释与下一步，并丢掉那句通用 hint：
+
+  ```text
+  无法打开 http://localhost:18888/smoke-test-page.html：连接被拒绝——目标端口没有服务在监听（net::ERR_CONNECTION_REFUSED）。
+  这是本机地址：请先启动该端口的服务再重试；服务没起来之前重复 navigate 不会成功
+  ```
+
+  边界刻意划得很死：**只翻译，不猜测**。认得 `net::ERR_*` 就解释；是 `net::ERR_*` 但没收录，就如实说「尚未收录、未做解释」并保留原始 `details:` 行；**完全没有 `net::ERR_*`**（bsk daemon 挂了、session 失效等）则原样抛出，一个字都不加工——硬套一个分类比不解释更糟，理由同「回放不猜元素」。
 - 加 `--debug` 可看到更细的明细：每条 `bsk` 命令原文与耗时、快照体积与瘦身统计、快照复用、上下文裁剪、Jev 请求详情。
 - 需要把日志与报告分开处理时：报告在 stdout（`--json` 也走 stdout），日志始终在 stderr，`pageqa --json … > report.json` 即可不受日志干扰。
 
@@ -467,6 +483,7 @@ src/
   llm.ts         LLM 后端（pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
   log.ts         进度日志（默认写 stderr；落点可通过 setSink 注入，交互模式接进界面视口）
   bsk/tools.ts   browserskill 操作层与工具层（异步、可中止、全局串行；含 upload 与录制上报）
+  bsk/navigate-diagnosis.ts  把导航失败翻译成人话（只翻译不猜测，认不出的原样透传）
   tui/app.ts     交互模式界面（pi-tui TuiAltScreen：滚动日志视口 + 固定输入框，延迟加载）
   tui/queue.ts   运行队列（场景串行执行、追加、取消、中止）
   tui/writeback.ts  追加场景写回源用例文件（纯 append，占位符原样保留）

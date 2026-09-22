@@ -4,6 +4,10 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { JevClient } from "../jev.js";
 import { debugLog, info, timer } from "../log.js";
 import { slimSnapshot } from "../snapshot.js";
+import {
+  diagnoseNavigateFailure,
+  readErrorText,
+} from "./navigate-diagnosis.js";
 
 /**
  * browserskill（`bsk`）工具层：把 bsk CLI 命令包装成 pi-agent-core 的 AgentTool。
@@ -410,11 +414,21 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
 
     async navigate(url: string, signal?: AbortSignal): Promise<string> {
       markStale();
-      const out = await bsk(
-        ["navigate", url, ...quiet, "--wait-until", "domcontentloaded"],
-        signal,
-      );
-      return `已导航到 ${url}\n${out}`;
+      try {
+        const out = await bsk(
+          ["navigate", url, ...quiet, "--wait-until", "domcontentloaded"],
+          signal,
+        );
+        return `已导航到 ${url}\n${out}`;
+      } catch (err) {
+        // 被中止不是「页面打不开」，别拿诊断层去解释它。
+        if (err instanceof BskAbortError) throw err;
+        const diagnosis = diagnoseNavigateFailure(url, readErrorText(err));
+        // 翻译不了就原样抛出：诊断层的价值来自「说得准」，硬套分类比不解释更糟。
+        if (!diagnosis) throw err;
+        debugLog("[bsk] navigate 失败已翻译为可读原因：" + diagnosis);
+        throw new Error(diagnosis);
+      }
     },
 
     async snapshot(signal?: AbortSignal): Promise<string> {
