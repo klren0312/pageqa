@@ -41,3 +41,13 @@
 点击「选择文件」按钮并上传本地文件 `D:\1project\page-test-agent\examples\smoke-test.md`
 等待 1 秒，让文件列表完成渲染
 断言页面中已出现上传的文件名
+
+## 手测追加
+
+打开 `http://localhost:18888/smoke-test-page.html`
+点击「表单页面 2」链接
+在「邮箱」输入框填写 `peopletest@test.com`
+点击「职业」下拉框，在展开的选项中点击选择 `工程师`
+点击「提交表单」按钮
+等待 1 秒，让表单提交完成
+断言页面中已出现成功消息

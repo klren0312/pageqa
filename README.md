@@ -337,7 +337,8 @@ pageqa --replay examples/smoke.replay.json --semantic   # 断言改用 Jev 语�
 08:55:02 [pageqa] 用例结束：PASS，断言 4 条，耗时 376.4s
 ```
 
-- 覆盖的关键节点：脚本读取、LLM 就绪、bsk daemon 启动/就绪耗时、浏览器连接数、session、每一步工具调用（编号 + 名称 + 耗时 + 成败）、自动续跑、最终结论与总耗时。
+- 覆盖的关键节点：脚本读取、LLM 就绪、bsk daemon 启动/就绪耗时、浏览器连接数、session、每一步工具调用（编号 + 名称 + 耗时 + 成败 + **失败原因**）、自动续跑、最终结论与总耗时。
+- 工具失败会带上原因（如 `✗ #1 navigate：net::ERR_CONNECTION_REFUSED 169ms`），并写进报告的执行轨迹。没有它就无法区分「本地服务没起」「URL 写错」「选择器匹配不上」——三者的处理方式完全不同。
 - 加 `--debug` 可看到更细的明细：每条 `bsk` 命令原文与耗时、快照体积与瘦身统计、快照复用、上下文裁剪、Jev 请求详情。
 - 需要把日志与报告分开处理时：报告在 stdout（`--json` 也走 stdout），日志始终在 stderr，`pageqa --json … > report.json` 即可不受日志干扰。
 
