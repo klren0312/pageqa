@@ -1,3 +1,11 @@
+# 用扁平的真实目录布局，而不是 pnpm 默认的 junction/symlink store。
+# 原因：本机无法遍历 Windows junction（重解析点），默认布局下
+# node_modules/<pkg> 会直接访问失败，表现为
+#   Error: Cannot find module '...\node_modules\typescript\bin\tsc'
+# （tsc / node 解析 @earendil-works/* 时同理）。
+# hoisted 布局下 node_modules 里都是真实目录，可规避该限制。
+nodeLinker: hoisted
+
 allowBuilds:
   '@google/genai': true
   esbuild: true
