@@ -7,9 +7,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
  *
  * 配置目录：~/.pageqa（Windows 为 %USERPROFILE%/.pageqa）
  * 配置文件：config.json，字段：
- *   - baseUrl: 反代/兼容 OpenAI 的 base URL
- *   - apiKey:  访问密钥
- *   - model:   模型 ID
+ *   - baseUrl:       反代/兼容 OpenAI 的 base URL
+ *   - apiKey:        访问密钥
+ *   - model:         模型 ID
+ *   - modelProvider: 模型所属 provider（自定义端点 `pageqa`，或内置 provider 如 `anthropic`）
  *
  * 优先级（高 -> 低）：
  *   环境变量 PAGEQA_LLM_*  >  用户配置文件  >  内置默认值
@@ -19,23 +20,41 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 import type { JevConfig } from "./jev.js";
 
+/**
+ * 自定义 OpenAI 兼容端点的 provider id。
+ *
+ * 之所以在配置层也定义一份：`modelProvider` 的默认值必须能在不 import 模型目录
+ * （会拉起一整棵内置 provider 依赖树）的前提下确定，因此这里不能反向依赖 models.ts。
+ * models.ts 会 re-export 同一个常量，两处必须保持一致。
+ */
+export const PAGEQA_PROVIDER_ID = "pageqa";
+
 export interface PageQaConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /**
+   * 模型所属 provider。默认 `pageqa`（自定义端点，走 baseUrl/apiKey）；
+   * 交互模式里 /login 登录内置 provider 后 /model 选定，会写回这里，下次启动即生效。
+   */
+  modelProvider: string;
   jev: JevConfig;
+  /** 界面/日志/报告语种（"zh" | "en"）；交互模式 /toggle-language 会写回这里。 */
+  locale?: string;
 }
 
 const DEFAULTS: PageQaConfig = {
   baseUrl: "http://127.0.0.1:3000/v1",
   apiKey: "codebuddy-proxy-key",
   model: "hunyuan-2.0-instruct",
+  modelProvider: PAGEQA_PROVIDER_ID,
   jev: {
     enabled: false,
     apiKey: "",
     model: "jev-latest",
     threshold: 0.5,
   },
+  locale: "zh",
 };
 
 export const CONFIG_DIR = join(homedir(), ".pageqa");
@@ -51,6 +70,10 @@ export function loadConfig(): PageQaConfig {
     apiKey:
       process.env.PAGEQA_LLM_API_KEY ?? fromFile.apiKey ?? DEFAULTS.apiKey,
     model: process.env.PAGEQA_LLM_MODEL ?? fromFile.model ?? DEFAULTS.model,
+    modelProvider:
+      process.env.PAGEQA_LLM_PROVIDER ??
+      fromFile.modelProvider ??
+      DEFAULTS.modelProvider,
     jev: {
       enabled: (() => {
         if (process.env.PAGEQA_JEV_ENABLED !== undefined) {
@@ -71,7 +94,67 @@ export function loadConfig(): PageQaConfig {
         return fromJev.threshold ?? DEFAULTS.jev.threshold;
       })(),
     },
+    locale: process.env.PAGEQA_LOCALE ?? fromFile.locale ?? DEFAULTS.locale,
   };
+}
+
+/**
+ * 只读地取配置文件里已保存的语种（**不会**创建文件）。
+ *
+ * 单独开这个口子，是为了让「按配置决定初始语种」这件事不必先落一个配置文件——
+ * `--help`、参数报错这类路径不该产生磁盘副作用。
+ */
+export function readSavedLocale(): string | undefined {
+  if (!existsSync(CONFIG_PATH)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as {
+      locale?: unknown;
+    };
+    return typeof parsed.locale === "string" ? parsed.locale : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 把配置片段合并写回用户配置文件（保留其它字段，缺省字段补默认值）。
+ *
+ * 交互模式里的 /toggle-language 与 /model 都走这里：它们改的是同一个文件的
+ * 不同字段，各写各的会互相覆盖（后写的那次会把文件读到的旧内容整份盖掉）。
+ */
+function updateUserConfig(patch: Record<string, unknown>): void {
+  ensureConfigDir();
+  let current: Record<string, unknown> = {};
+  if (existsSync(CONFIG_PATH)) {
+    try {
+      current = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      current = {};
+    }
+  }
+  const merged = { ...DEFAULTS, ...current, ...patch };
+  writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
+}
+
+/**
+ * 把语种持久化到用户配置文件（保留其它字段）。
+ * 供交互模式 /toggle-language 使用：切一次语言就记一次，下次启动直接生效。
+ */
+export function saveLocale(locale: string): void {
+  updateUserConfig({ locale });
+}
+
+/**
+ * 把选定的模型持久化为「启动默认」（保留其它字段）。
+ *
+ * 供交互模式 /model 的「设为默认」使用（对应 pi-coding-agent 里模型选择器的 Ctrl+S）：
+ * 只影响下次启动；本次会话的切换由 TUI 自己持有，不经过这里。
+ */
+export function saveModelSelection(provider: string, model: string): void {
+  updateUserConfig({ modelProvider: provider, model });
 }
 
 /** 读取用户配置文件；不存在则创建默认文件并返回默认值。 */
@@ -86,7 +169,9 @@ function readConfigFile(): Partial<PageQaConfig> {
       baseUrl: parsed.baseUrl ?? DEFAULTS.baseUrl,
       apiKey: parsed.apiKey ?? DEFAULTS.apiKey,
       model: parsed.model ?? DEFAULTS.model,
+      modelProvider: parsed.modelProvider ?? DEFAULTS.modelProvider,
       jev: parsed.jev ?? DEFAULTS.jev,
+      locale: parsed.locale ?? DEFAULTS.locale,
     };
   } catch {
     return { ...DEFAULTS };

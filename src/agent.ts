@@ -1,5 +1,12 @@
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
-import { createLlmBackend } from "./llm.js";
+import {
+  createModelCatalog,
+  hasProvider,
+  loadBuiltinProviders,
+  resolveModel,
+  type ModelCatalog,
+  type ModelChoice,
+} from "./models.js";
 import {
   closeSession,
   createBskTools,
@@ -29,6 +36,7 @@ import {
 import { Recorder } from "./record.js";
 import type { ScenarioRecording } from "./replay.js";
 import { restorePlaceholders, type RunVarValue } from "./vars.js";
+import { t } from "./i18n.js";
 
 export interface AgentOptions {
   session?: string;
@@ -45,6 +53,16 @@ export interface AgentOptions {
   vars?: RunVarValue[];
   /** 将要写入的回放脚本路径（仅用于在报告里标注，落盘由 CLI 负责）。 */
   scriptPath?: string;
+  /**
+   * 本次运行使用的模型（provider + model id）。
+   * 交互模式在 /model 切换后逐场景传入；缺省用配置文件里保存的默认选择。
+   */
+  model?: ModelChoice;
+  /**
+   * 共享的模型目录。交互模式注入同一个实例，使 /login 得到的凭据与刚切换的模型
+   * 对本场景立即生效；批处理模式不传，由 runAgent 自建（只含自定义端点）。
+   */
+  catalog?: ModelCatalog;
 }
 
 export interface AgentRunResult {
@@ -304,25 +322,51 @@ async function initializeAgent(
   // 就能映射回用例原文，报告可直接指出「停在哪一步、下一步该做什么」。
   const { numbered, steps } = numberSteps(input);
   info(
-    `[pageqa] 用例开始：${preview(input)}（${input.length} 字符，${steps.length} 个步骤）`,
+    t("log.caseStart", {
+      text: preview(input),
+      chars: input.length,
+      steps: steps.length,
+    }),
   );
 
-  log("[runAgent] 创建 LLM 后端...");
-  const { models, model } = createLlmBackend();
-  log("[runAgent] LLM 后端已创建，model=" + model.id);
-  info(`[pageqa] LLM 已就绪：model=${model.id}`);
+  log("[runAgent] 解析模型目录...");
+  // 批处理模式自建目录（只含自定义端点，保持启动开销不变）；交互模式复用 TUI 注入的实例，
+  // 这样 /model 的切换与 /login 的凭据都能在这次运行里立即生效。
+  const catalog = opts.catalog ?? (await createModelCatalog());
+  const choice = opts.model ?? catalog.defaultChoice;
+  // 选择的 provider 尚未注册时才补加载内置 provider：自定义端点路径不会为这棵依赖树买单。
+  if (!hasProvider(catalog, choice.provider)) {
+    log("[runAgent] 注册内置 provider（选择=" + choice.provider + "）...");
+    await loadBuiltinProviders(catalog);
+  }
+  const model = resolveModel(catalog, choice);
+  if (!model) {
+    throw new Error(
+      t("err.modelNotFound", {
+        provider: choice.provider,
+        model: choice.model,
+      }),
+    );
+  }
+  const models = catalog.models;
+  log("[runAgent] 模型已解析，model=" + choice.provider + "/" + model.id);
+  info(t("log.llmReady", { model: model.id }));
 
-  info("[pageqa] 检查 bsk daemon 与浏览器连接…");
+  info(t("log.checkDaemon"));
   await ensureBskReady();
-  info("[pageqa] 创建/复用 bsk session…");
+  info(t("log.createSession"));
   const session = await ensureSession(opts.session);
   holder.id = session;
   log("[runAgent] bsk session=" + session);
-  info(`[pageqa] bsk session=${session}`);
+  info(t("log.session", { id: session }));
 
   const jevClient = new JevClient(loadConfig().jev, debug);
   log("[runAgent] Jev enabled=" + jevClient.enabled);
-  info(`[pageqa] 语义断言（Jev）${jevClient.enabled ? "已启用" : "未启用"}`);
+  info(
+    t("log.jev", {
+      state: jevClient.enabled ? t("common.enabled") : t("common.disabled"),
+    }),
+  );
 
   // 录制器：始终收集本次运行的操作序列，是否落盘由 CLI 的 --emit-script 决定。
   // 「哪条断言靠 Jev 语义复核才成立」由工具层逐条上报（见 bsk/tools.ts），
@@ -350,9 +394,7 @@ async function initializeAgent(
       " " +
       tools.map((t) => t.name).join(", "),
   );
-  info(
-    `[pageqa] 工具已就绪：${tools.length} 个；用例已编号为 ${steps.length} 个步骤（报告按此定位卡点）`,
-  );
+  info(t("log.toolsReady", { n: tools.length, steps: steps.length }));
 
   const events: string[] = [];
   const agent = new Agent({
@@ -450,7 +492,7 @@ function subscribeProgress(
       log("[agent] 工具调用开始: " + e.toolName);
       toolCount += 1;
       toolStartedAt = Date.now();
-      info(`[pageqa] ▶ #${toolCount} ${e.toolName} …`);
+      info(t("log.toolStart", { n: toolCount, tool: e.toolName }));
     } else if (e.type === "tool_execution_end") {
       const cost = toolStartedAt ? Date.now() - toolStartedAt : 0;
       // 失败原因必须落进日志与执行轨迹。
@@ -466,8 +508,14 @@ function subscribeProgress(
         "[agent] 工具调用" + (e.isError ? "失败" : "完成") + ": " + e.toolName,
       );
       info(
-        `[pageqa] ${e.isError ? "✗" : "✓"} #${toolCount} ${e.toolName}` +
-          `${reason ? "：" + reason : ""}${e.isError ? "（将重试或报告）" : ""} ${cost}ms`,
+        t("log.toolEnd", {
+          mark: e.isError ? "✗" : "✓",
+          n: toolCount,
+          tool: e.toolName,
+          reason: reason ? "：" + reason : "",
+          retry: e.isError ? "（将重试或报告）" : "",
+          cost,
+        }),
       );
     } else if (
       e.type === "message_update" &&
@@ -475,7 +523,7 @@ function subscribeProgress(
     ) {
       if (!firstTextLogged) {
         firstTextLogged = true;
-        info("[pageqa] 模型已开始输出，正在推进步骤…");
+        info(t("log.modelOutput"));
       }
       events.push(e.assistantMessageEvent.delta);
       // 顺带给录制器喂文本：从「第 k 步完成」自述里跟踪进度，
@@ -499,12 +547,12 @@ async function executeWithContinuations(
   // 开始前就已被取消（排队时被 /cancel）→ 一步都不跑。
   // 否则会真发起一轮 LLM 调用，白花钱还留下半截记录。
   if (session.abortSignal?.aborted) {
-    info("[pageqa] 该场景在开始执行前已被取消，跳过");
+    info(t("log.cancelledBeforeStart"));
     return;
   }
 
   log("[runAgent] 发送 prompt...");
-  info("[pageqa] 已提交用例，等待模型与浏览器执行…");
+  info(t("log.caseSubmitted"));
   await agent.prompt(numbered);
   log("[runAgent] prompt 完成，等待 idle...");
   await agent.waitForIdle();
@@ -553,9 +601,14 @@ async function executeWithContinuations(
     events.push(note);
     log("[runAgent] " + note.trim());
     info(
-      `[pageqa] 步骤未跑完，发起第 ${round + 1} 次续跑（进度 ` +
-        `${progress ? `${progress.done}/${progress.total}` : "未声明"}，` +
-        `断言 ${parsed}/${expectedAssertions}）`,
+      t("log.continuation", {
+        n: round + 1,
+        progress: progress
+          ? `${progress.done}/${progress.total}`
+          : t("log.undeclared"),
+        a: parsed,
+        b: expectedAssertions,
+      }),
     );
     await agent.prompt(continuePrompt(progress));
     await agent.waitForIdle();
@@ -598,7 +651,7 @@ function finalizeResult(
   } else if (agentError) {
     report.status = "fail";
     report.assertions.push({
-      expectation: "agent 正常执行完毕（未因错误中断）",
+      expectation: t("report.agentErrorExpectation"),
       verdict: "fail",
       evidence: agentError,
     });
@@ -612,8 +665,11 @@ function finalizeResult(
   report.usage = usage;
   log("[runAgent] " + formatUsage(usage));
   info(
-    `[pageqa] 用例结束：${statusTag(report.status)}，` +
-      `断言 ${report.assertions.length} 条，耗时 ${((Date.now() - startedAt) / 1000).toFixed(1)}s`,
+    t("log.caseEnd", {
+      status: statusTag(report.status),
+      n: report.assertions.length,
+      dur: ((Date.now() - startedAt) / 1000).toFixed(1),
+    }),
   );
 
   return {
@@ -626,7 +682,7 @@ function finalizeResult(
     // 便于排查「模型这次到底做了什么」。
     recordings: [
       {
-        name: opts.scenarioName ?? "场景 1",
+        name: opts.scenarioName ?? t("common.scenarioDefault"),
         // 用例原文同样按占位符形式写进脚本：这份文本会被回放报告用来指出
         // 「对应用例第 k 步」，与用户的用例文件保持一致才不会看着像写死了值。
         caseSteps: (report.steps ?? []).map((s) =>
@@ -661,7 +717,7 @@ export function splitScenarios(script: string): Scenario[] {
     if (!inScenario) return;
     const body = currentLines.join("\n").trim();
     if (body.length > 0)
-      collected.push({ name: currentName || "场景 1", body });
+      collected.push({ name: currentName || t("common.scenarioDefault"), body });
     currentLines = [];
   };
   for (const line of lines) {
@@ -678,7 +734,7 @@ export function splitScenarios(script: string): Scenario[] {
   flush();
   return collected.length
     ? collected
-    : [{ name: "场景 1", body: script.trim() }];
+    : [{ name: t("common.scenarioDefault"), body: script.trim() }];
 }
 
 /** 批量运行多个场景并汇总报告。任一失败则整体失败。 */
@@ -690,12 +746,18 @@ export async function runSuite(
   const scenarios = splitScenarios(script);
   const results: AgentRunResult[] = [];
   info(
-    `[pageqa] 套件共 ${scenarios.length} 个场景：` +
-      scenarios.map((s) => s.name).join(" / "),
+    t("log.suiteStart", {
+      n: scenarios.length,
+      names: scenarios.map((s) => s.name).join(" / "),
+    }),
   );
   for (const [i, sc] of scenarios.entries()) {
     info(
-      `[pageqa] ═══ 场景 ${i + 1}/${scenarios.length}：${sc.name} ═══`,
+      t("log.suiteScenario", {
+        i: i + 1,
+        n: scenarios.length,
+        name: sc.name,
+      }),
     );
     const r = await runAgent(sc.body, {
       ...opts,
@@ -704,8 +766,11 @@ export async function runSuite(
     });
     results.push(r);
     info(
-      `[pageqa] ═══ 场景 ${i + 1}/${scenarios.length} 结束：` +
-        `${r.report.status === "pass" ? "PASS" : "FAIL"} ═══`,
+      t("log.suiteScenarioEnd", {
+        i: i + 1,
+        n: scenarios.length,
+        status: r.report.status === "pass" ? "PASS" : "FAIL",
+      }),
     );
   }
   // 汇总口径与回放模式共用同一实现（report.ts 的 summarizeSuite），两种模式报告结构一致。
