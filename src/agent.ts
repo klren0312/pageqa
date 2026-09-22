@@ -409,6 +409,26 @@ async function initializeAgent(
 }
 
 /**
+ * 从工具结果里抽出可读文本。工具失败时，pi-agent-core 会把 `error.message` 放进
+ * `result.content[0].text`（见其 agent-loop 的 `createErrorToolResult`），因此这里
+ * 拿到的就是**失败原因本身**。
+ */
+export function toolResultText(result: unknown): string {
+  const content = (result as { content?: unknown } | null | undefined)?.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => ((part as { text?: string } | null)?.text ?? "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** 压成单行并截断：失败原因往往是多行堆栈，不能整段灌进日志与轨迹。 */
+function clipOneLine(text: string, max = 160): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? oneLine.slice(0, max) + "…" : oneLine;
+}
+
+/**
  * 订阅 agent 事件，把工具调用与模型输出记入 events，并把进度回显到 stderr。
  *
  * 工具执行进度始终打印（默认可见），让长流程每跑一步都有回显；
@@ -432,15 +452,22 @@ function subscribeProgress(
       toolStartedAt = Date.now();
       info(`[pageqa] ▶ #${toolCount} ${e.toolName} …`);
     } else if (e.type === "tool_execution_end") {
-      // 工具失败必须显式记录，否则报告里看不出「某步其实报错了」
-      events.push((e.isError ? "[tool-error] " : "[tool-ok] ") + e.toolName);
+      const cost = toolStartedAt ? Date.now() - toolStartedAt : 0;
+      // 失败原因必须落进日志与执行轨迹。
+      // 只写「失败，将重试或报告」的话，交互模式下盯着视口也分不清是
+      // 「本地服务没起」「URL 写错」还是「选择器匹配不上」——而这三种的处理方式完全不同。
+      const reason = e.isError ? clipOneLine(toolResultText(e.result)) : "";
+      events.push(
+        (e.isError ? "[tool-error] " : "[tool-ok] ") +
+          e.toolName +
+          (reason ? "：" + reason : ""),
+      );
       log(
         "[agent] 工具调用" + (e.isError ? "失败" : "完成") + ": " + e.toolName,
       );
-      const cost = toolStartedAt ? Date.now() - toolStartedAt : 0;
       info(
         `[pageqa] ${e.isError ? "✗" : "✓"} #${toolCount} ${e.toolName}` +
-          `${e.isError ? "（失败，将重试或报告）" : ""} ${cost}ms`,
+          `${reason ? "：" + reason : ""}${e.isError ? "（将重试或报告）" : ""} ${cost}ms`,
       );
     } else if (
       e.type === "message_update" &&
