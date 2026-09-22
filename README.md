@@ -1,80 +1,83 @@
 # pageqa
 
-用自然语言驱动的页面测试 agent。基于 **pi-agent-core**（状态化 LLM agent）编排测试步骤，**browserskill（`bsk`）** 驱动真实浏览器执行，自然语言解析由可配置的 LLM 端点完成。最终产出可读文本报告与机器可读 JSON 报告，返回可接入 CI 的退出码。
+> 中文文档：[README.zh-CN.md](./README.zh-CN.md)
+
+A natural-language-driven page testing agent. It orchestrates test steps with **pi-agent-core** (a stateful LLM agent), drives a real browser via **browserskill (`bsk`)**, and parses natural language through a configurable LLM endpoint. It produces both a human-readable text report and a machine-readable JSON report, and returns an exit code that can feed directly into CI.
 
 <https://github.com/user-attachments/assets/d5315f93-7e02-4445-a7cf-506b3bfcaa2d>
 
-- 运行时：**Node.js + TypeScript**，以 npm 包分发、CLI 入口；仓库开发使用 **pnpm**（锁文件为 `pnpm-lock.yaml`）。
-- 浏览器驱动：**browserskill（`bsk`）**，连接一个已运行的真实浏览器（Chrome/Edge），支持公开页与登录态页面。
-- 自然语言驱动：**pi-agent-core** 状态化 agent，把自然语言意图解析为浏览器操作步骤并自动编排；LLM 后端通过可配置的 OpenAI 兼容端点接入（base URL / API Key / 模型均可配置）。
+- Runtime: **Node.js + TypeScript**, distributed as an npm package with a CLI entry point; the repo uses **pnpm** for development (lockfile is `pnpm-lock.yaml`).
+- Browser driver: **browserskill (`bsk`)**, which connects to an already-running real browser (Chrome/Edge) and supports both public pages and authenticated pages.
+- Natural-language driver: the **pi-agent-core** stateful agent parses natural-language intent into browser operation steps and orchestrates them automatically; the LLM backend plugs into a configurable OpenAI-compatible endpoint (base URL / API key / model are all configurable).
 
-## 前置
+## Prerequisites
 
-### 1. 安装并配置 browserskill（`bsk`）
+### 1. Install and configure browserskill (`bsk`)
 
-`bsk` 是连接真实浏览器（Chrome/Edge）的驱动，本项目通过它执行页面操作。
+`bsk` is the driver that connects to a real browser (Chrome/Edge); this project executes page operations through it.
 
-- 项目主页与安装方式：**<https://github.com/Tencent/BrowserSkill>**
-- 按仓库 README **安装 `bsk` CLI**（只需装一次）。
+- Project home and installation: **<https://github.com/Tencent/BrowserSkill>**
+- Install the `bsk` CLI per that repo's README (one-time setup).
 
-> **无需手动启动 daemon**：运行 `pageqa` 时会自动检查并在 daemon 未运行时后台启动它（`bsk daemon start`），每个进程只启动一次。你也可以用 `bsk status` 查看状态。
+> **No need to start the daemon manually**: when `pageqa` runs it automatically checks for and background-starts the daemon (`bsk daemon start`) if it is not running, once per process. You can also use `bsk status` to check status.
 
-**浏览器连接仍需你来做**（这是物理操作，pageqa 无法自动完成）：在浏览器中安装 bsk 扩展并完成连接。若启动时检测不到任何已连接浏览器，pageqa 会明确报错并提示你先连接，而不是卡死。
+**The browser connection is still up to you** (it is a physical action pageqa cannot automate): install the bsk extension in the browser and complete the connection. If no connected browser is detected at startup, pageqa reports it clearly and asks you to connect first, rather than hanging.
 
-验证安装与连接：
+Verify the install and connection:
 
 ```bash
-bsk status           # 查看 daemon 与已连接浏览器
-bsk session start    # 可选：手动创建 session（不传 --session 时 pageqa 会自动创建）
+bsk status           # view daemon and connected browsers
+bsk session start    # optional: manually create a session (pageqa auto-creates one if --session is omitted)
 ```
 
-> 提示：本工具的 `--session <id>` 即来自 `bsk session start` 返回的 `session_id`；不传时 CLI 会自动新建一个（前提已有浏览器连接）。
+> Tip: this tool's `--session <id>` comes from the `session_id` returned by `bsk session start`; if omitted the CLI auto-creates one (assuming a browser is already connected).
 
-> **重点提示：要执行「文件上传」用例，必须先给 bsk 浏览器扩展开启「允许访问文件网址（Allow access to file URLs）」，否则上传一定失败。**
+> **Important: to run "file upload" cases, you must enable "Allow access to file URLs" on the bsk browser extension first, otherwise uploads will always fail.**
 >
-> 开启方式（Edge / Chrome）：打开 `edge://extensions`（或 `chrome://extensions`）→ 找到 BrowserSkill 扩展 → 点「详细信息」→ 打开「允许访问文件网址」开关 → 回到扩展卡片点一次「重新加载」（必要时重启浏览器）。
+> How to enable (Edge / Chrome): open `edge://extensions` (or `chrome://extensions`) → find the BrowserSkill extension → click "Details" → toggle on "Allow access to file URLs" → back on the extension card, click "Reload" once (restart the browser if necessary).
 >
-> 未开启时的典型报错：`the upload trigger did not activate a file input`，以及 `the browser could not attach the staged file to the input ... {"code":-32000,"message":"Not allowed"}`。
+> Typical errors when not enabled: `the upload trigger did not activate a file input`, and `the browser could not attach the staged file to the input ... {"code":-32000,"message":"Not allowed"}`.
 >
-> 这是浏览器级设置，**pageqa 与 bsk 都无法自动开启**（Agent Window 也无法打开 `edge://` 页面），必须人工开一次；开启后本机所有上传用例都可用。
+> This is a browser-level setting that **neither pageqa nor bsk can enable automatically** (the Agent Window also cannot open `edge://` pages), so it must be done once by hand; afterwards all local upload cases become usable.
 
-### 2. LLM 后端（可配置 OpenAI 兼容端点）
+### 2. LLM backend (configurable OpenAI-compatible endpoint)
 
-自然语言解析依赖一个 OpenAI 兼容的 LLM 端点。端点地址、密钥与模型均可通过配置文件或环境变量设置：
+Natural-language parsing depends on an OpenAI-compatible LLM endpoint. The endpoint address, key, and model can all be set via config file or environment variables:
 
-- 默认地址：`http://127.0.0.1:3000/v1`（可被覆盖为任意 OpenAI 兼容端点）
-- 默认 Key：`codebuddy-proxy-key`
+- Default address: `http://127.0.0.1:3000/v1` (can be overridden to any OpenAI-compatible endpoint)
+- Default key: `codebuddy-proxy-key`
 
-可用环境变量覆盖（优先级高于配置文件）：
+Environment variables take precedence over the config file:
 
 - `PAGEQA_LLM_BASE_URL`
 - `PAGEQA_LLM_API_KEY`
 - `PAGEQA_LLM_MODEL`
 
-### 3. 用户级配置文件（可选但推荐）
+### 3. User-level config file (optional but recommended)
 
-工具会在**用户主目录**自动创建配置文件，持久化 LLM 设置，避免每次用环境变量：
+The tool auto-creates a config file in your **home directory** to persist LLM settings, so you don't have to set environment variables every time:
 
-- 配置目录：`~/.pageqa`（Windows：`%USERPROFILE%\.pageqa`）
-- 配置文件：`config.json`
+- Config directory: `~/.pageqa` (Windows: `%USERPROFILE%\.pageqa`)
+- Config file: `config.json`
 
 ```json
 {
   "baseUrl": "http://127.0.0.1:3000/v1",
   "apiKey": "codebuddy-proxy-key",
-  "model": "hunyuan-2.0-instruct"
+  "model": "hunyuan-2.0-instruct",
+  "locale": "zh"
 }
 ```
 
-- 首次运行（或执行 `pageqa --init-config`）会自动创建该文件，编辑即可切换模型/端点地址/密钥。
-- **优先级（高 → 低）**：环境变量 `PAGEQA_LLM_*`  >  用户配置文件 `config.json`  >  内置默认值。
-- 例如要改用其他兼容 OpenAI 的端点，把 `baseUrl`/`apiKey`/`model` 改掉即可，无需改代码。
+- The file is auto-created on first run (or by running `pageqa --init-config`); edit it to switch models / endpoint addresses / keys.
+- **Precedence (high → low)**: environment variables `PAGEQA_LLM_*` > user config file `config.json` > built-in defaults.
+- For example, to switch to another OpenAI-compatible endpoint, just change `baseUrl`/`apiKey`/`model` — no code changes needed.
 
-### 4. Jev 语义断言（可选增强）
+### 4. Jev semantic assertion (optional enhancement)
 
-> **什么是 Jev？** Jev 是 TypeSafe AI 推出的 [System One 模型](https://docs.typesafe.ai)，专为结构化决策设计。它不做文本生成，而是直接返回校准后的概率值（如匹配度 0.93）。pageqa 用它做**字面匹配失败后的语义复核**，把「同义词 / 近义表达 / 格式差异」造成的误报 FAIL 纠正过来。
+> **What is Jev?** Jev is the [System One model](https://docs.typesafe.ai) from TypeSafe AI, designed for structured decision-making. It does not generate text; instead it returns calibrated probability values directly (e.g. a match score of 0.93). pageqa uses it for **semantic re-checking after a literal match fails**, correcting false FAILs caused by "synonyms / near-synonyms / formatting differences".
 
-**启用方式**：在 `~/.pageqa/config.json` 中添加 `jev` 字段，或设置环境变量：
+**To enable**: add a `jev` field to `~/.pageqa/config.json`, or set environment variables:
 
 ```json
 {
@@ -90,256 +93,261 @@ bsk session start    # 可选：手动创建 session（不传 --session 时 page
 }
 ```
 
-| Jev 配置项 | 说明 | 默认值 |
+| Jev config | Description | Default |
 | --- | --- | --- |
-| `enabled` | 是否启用 Jev 语义断言 | `false` |
-| `apiKey` | TypeSafe API 密钥 | （无） |
-| `model` | Jev 模型 ID | `jev-latest` |
-| `threshold` | 语义匹配概率阈值（0~1） | `0.5` |
+| `enabled` | Whether to enable Jev semantic assertion | `false` |
+| `apiKey` | TypeSafe API key | (none) |
+| `model` | Jev model ID | `jev-latest` |
+| `threshold` | Semantic match probability threshold (0~1) | `0.5` |
 
-**环境变量覆盖**（优先级高于配置文件）：
+**Environment variable overrides** (higher precedence than the config file):
 
 - `PAGEQA_JEV_ENABLED=true`
 - `PAGEQA_JEV_API_KEY=<your-key>`
 - `PAGEQA_JEV_MODEL=jev-latest`
 - `PAGEQA_JEV_THRESHOLD=0.6`
 
-**获取 API Key**：
+**Getting an API key**:
 
-1. 访问 [console.typesafe.ai/settings/keys](https://console.typesafe.ai/settings/keys)（需等待早期访问权限）
-2. 或通过 Vercel AI Gateway 获取
+1. Visit [console.typesafe.ai/settings/keys](https://console.typesafe.ai/settings/keys) (early-access approval required)
+2. Or obtain one via the Vercel AI Gateway
 
-**工作原理（按需调用）**：`assert_text` 先做字符串包含匹配——**字面命中即成立，不调用 Jev**（省掉一次远端往返，也避免把肉眼可见的文本判成不成立）；只有**字面未命中**时才把页面快照文本发给 Jev 做一次语义复核，由 Jev 判断页面内容是否语义匹配断言期望（匹配概率 ≥ `threshold` 即成立）。所以 Jev 只用在真正需要它的地方：同义词、近义表达、格式差异导致的误报 FAIL。每条断言最多一次 Jev 调用，长流程不会被逐条断言拖慢。
+**How it works (called on demand)**: `assert_text` first does a string-contains match — **a literal hit is accepted without calling Jev** (saving a remote round-trip and avoiding judging visible text as not-matching); only on a **literal miss** is the page snapshot text sent to Jev for a semantic re-check, where Jev decides whether the page content semantically matches the assertion expectation (match probability ≥ `threshold` means pass). So Jev is used only where it is truly needed: false FAILs from synonyms, near-synonyms, or formatting differences. At most one Jev call per assertion, so long flows are not slowed down assertion-by-assertion.
 
-**降级机制**：若 Jev API 调用失败（网络/超时/鉴权错误），会自动回退到原有的字符串包含匹配，确保测试不因 Jev 服务中断而失败。
+**Degradation mechanism**: if the Jev API call fails (network / timeout / auth error), it automatically falls back to the original string-contains match, ensuring tests do not fail because the Jev service is down.
 
-**架构示意**：
+**Architecture sketch**:
 
 ```text
-自然语言意图
-   └─> pi-agent-core Agent（LLM → 可配置 OpenAI 兼容端点）
-          └─> bsk 工具：navigate / snapshot / click / fill / hover / scroll / wait
-                 └─> 真实浏览器（bsk 连接）
-          └─> assert_text ──→ 字面命中即成立；未命中才问 Jev Noul API（可选，语义复核）
-          └─> 结论与证据 → 报告（文本/JSON）+ 退出码
+Natural-language intent
+   └─> pi-agent-core Agent (LLM -> configurable OpenAI-compatible endpoint)
+          └─> bsk tools: navigate / snapshot / click / fill / hover / scroll / wait
+                 └─> real browser (connected by bsk)
+          └─> assert_text ──→ literal hit accepted; on miss ask Jev API (optional, semantic re-check)
+          └─> conclusion & evidence -> report (text/JSON) + exit code
 ```
 
-## 安装
+## Installation
 
-> **Node 版本要求：≥ 22.19**。交互模式依赖 `@earendil-works/pi-tui`，该包要求 `node >= 22.19.0`（`package.json` 的 `engines` 已声明此下限）。
+> **Node version requirement: ≥ 22.19**. Interactive mode depends on `@earendil-works/pi-tui`, which requires `node >= 22.19.0` (declared in `package.json`'s `engines`).
 
-本地开发（仓库使用 pnpm，请先安装：`npm install -g pnpm`）：
+Local development (the repo uses pnpm; install it first: `npm install -g pnpm`):
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm run build
 ```
 
-全局安装（发布后）：
+Global install (after publish):
 
 ```bash
-npm install -g pageqa   # 或 pnpm add -g pageqa
-pageqa --init-config   # 在用户目录创建配置文件 ~/.pageqa/config.json
+npm install -g pageqa   # or pnpm add -g pageqa
+pageqa --init-config   # create the config file ~/.pageqa/config.json in the user directory
 ```
 
-> 全局安装后首次运行也会自动创建配置文件；用 `--init-config` 可显式创建/重置。
+> The first run after a global install also auto-creates the config file; use `--init-config` to explicitly create/reset it.
 
-## 使用
+## Usage
 
 ```bash
-# 内联自然语言（多句按行分隔）
-pageqa --session <id> "打开 https://example.com
-并断言标题包含 Example"
+# inline natural language (multiple sentences separated by lines)
+pageqa --session <id> "Open https://example.com
+and assert the title contains Example"
 
-# 读取脚本文件（自动识别 `## ` 分隔的多个场景，逐个运行并汇总）
+# read a script file (auto-detects multiple scenarios separated by `## `, runs each and summarizes)
 pageqa examples/smoke.md
 
-# JSON 报告
+# JSON report
 pageqa --json examples/smoke.md
 
-# 强制按多场景套件运行（即使只有一个场景）
-pageqa --suite "打开 https://example.com 并断言标题包含 Example"
+# force multi-scenario suite mode (even for a single scenario)
+pageqa --suite "Open https://example.com and assert the title contains Example"
 ```
 
-### 多场景套件
+### Multi-scenario suite
 
-脚本（`.md`/`.txt`）中用 `## 场景名` 分隔多个独立测试场景，CLI 会逐个运行、分别给出结论，并汇总整体 PASS/FAIL 与总退出码（任一场景失败则整体失败）。
+Use `## scenario name` in a script (`.md`/`.txt`) to separate multiple independent test scenarios. The CLI runs each one, gives a verdict for each, and summarizes the overall PASS/FAIL and a single exit code (any scenario failure means overall failure).
 
-### 交互模式（跑用例的同时追加场景）
+### Interactive mode (add scenarios while a run is in progress)
 
-长流程单次可能跑十几分钟，而这段时间里想补一条用例只能干等。交互模式让用例继续跑的同时随时可以提交新场景：
+A long flow can take ten-plus minutes in one run, and during that time you could only wait idly if you wanted to add a case. Interactive mode lets the run keep going while you submit new scenarios at any time:
 
 ```bash
 pageqa --tui examples/smoke.md
 ```
 
-进入条件：在交互式终端（`stdin` 与 `stdout` 都是 TTY）里直接运行、且没给 `--json` 时**自动进入**；`--tui` / `--no-tui` 可显式开关，也可用 `PAGEQA_NO_TUI=1` 关闭。显式 `--tui` 但非 TTY 会直接报错，不静默降级（静默降级会让人以为界面坏了）。交互模式**必须传源用例文件**——追加场景要写回它，内联文本没有落点。
+Entry condition: it enters **automatically** when run in an interactive terminal (`stdin` and `stdout` are both a TTY) and `--json` is not given; `--tui` / `--no-tui` can force it on/off, or `PAGEQA_NO_TUI=1` can disable it. Explicit `--tui` in a non-TTY errors out immediately rather than silently degrading (silent degradation would make people think the UI is broken). Interactive mode **requires a source case file** — appended scenarios are written back to it, and inline text has no destination.
 
-界面是「上方可滚动日志 + 底部固定输入框」：进度日志、bsk 命令耗时、每一步成败都实时进视口，stdout 仍只留给最终报告。
+The UI is "scrollable log on top + fixed input box at the bottom": progress logs, bsk command timings, and each step's success/failure all stream into the viewport in real time, while stdout stays reserved for the final report.
 
-| 按键 | 作用 |
+| Key | Action |
 | --- | --- |
-| `Enter` | 提交（输入里写了 `## 标题` 就用它作场景名，否则取首行摘要） |
-| `Shift+Enter` | 换行（写多场景用例时用） |
-| `Esc` | 中止当前场景：记为「已取消」，不计入退出码、不写入回放脚本 |
-| `Ctrl+C` | 收工：中止当前 + 取消全部待办，然后输出汇总报告 |
+| `Enter` | Submit (if the input contains `## title`, it becomes the scenario name; otherwise the first-line summary is used) |
+| `Shift+Enter` | Newline (for writing multi-scenario cases) |
+| `Esc` | Abort the current scenario: recorded as "cancelled", not counted in the exit code, not written to the replay script |
+| `Ctrl+C` | Finish: abort current + cancel all pending, then output the summary report |
 
-命令：`/status`（查看运行队列）、`/cancel <n>`（取消一个尚未开始的待办）、`/help`、`/exit`。
+Commands: `/status` (view the run queue), `/cancel <n>` (cancel a not-yet-started pending item), `/model` (choose the model used by this session), `/login` (sign in a provider), `/logout` (remove a provider's local credentials), `/toggle-language` (switch the UI language between `zh`/`en` and persist it to the `locale` field of `~/.pageqa/config.json`, applied on the next start), `/help`, `/exit`. Typing `/` at the start of the input pops up a fuzzy-filtered command list, and `/cancel` additionally completes pending queue numbers (Tab accepts).
 
-要点：
+- **`/model` switches the model**: a selector pops up (`↑↓` to move, `Enter` applies to this session, `Ctrl+S` also persists it as the startup default in `config.json`, `Esc` cancels). The list covers two kinds of providers — the **custom endpoint** (`baseUrl`/`apiKey`/`model` in `config.json` is always available) and **built-in providers** (anthropic / openai / deepseek / github-copilot …, which appear only after `/login` or when the matching env var like `ANTHROPIC_API_KEY` is set). Switching affects only **later** scenarios; a running one is never interrupted. See `docs/adr/0004`.
+- **`/login` signs in**: pick a provider, then follow its login flow (API key or subscription OAuth); the authorization link / device code is printed to the screen, text/key prompts use the bottom input box, `Esc` cancels. Credentials are written to `~/.pageqa/auth.json`, which is **not** part of the git repo. After signing in, `/model` offers that provider's models.
+- **`/logout` removes credentials**: lists providers with local credentials, `Enter` removes the corresponding entry from `~/.pageqa/auth.json` (env-var and `config.json` auth are untouched).
+- **Startup default**: `modelProvider` + `model` in `~/.pageqa/config.json` decide which model is used on the next start; `/model` with `Ctrl+S` rewrites them. If the startup default points at a built-in provider that is later unsigned-in / retired, interactive mode warns and falls back to the custom endpoint's default model instead of failing the first scenario.
 
-- **追加场景会立即写回源用例文件**（纯 append，用例原文与运行时占位符原样保留，绝不写展开后的具体值）。因为「敲下来的就是你想留下的用例」，等跑完再写会让 Ctrl+C 把整条待办队列丢掉。因此 `pageqa --tui examples/smoke.md` 会改动该文件——本机试用时注意别把仓库弄脏。
-- **场景串行执行**：每个场景各自创建并关闭自己的 bsk session 与浏览器窗口（排队中的场景轮到它执行时才创建），不会几个窗口抢焦点；一个场景结束（通过／失败／已取消）后自动开始下一个。
-- **「已取消」是第三种终态**：Esc 表达的是「我不想再等这个了」，不是「这条用例挂了」，所以它不进退出码、也不写进回放脚本（半截轨迹录进去会让回放跑半个用例还可能报 PASS）。
-- **中止是真的中止**：按 Esc 会 kill 掉正在跑的 bsk 命令，而不是等它自己超时。这要求 bsk 操作层异步化（同步子进程会阻塞事件循环，界面在这期间完全不渲染、也收不到 Esc），理由见 `docs/adr/0003`。
-- **`--emit-script` 仍生效**：退出时把跑过的场景一次性写入一个脚本（已取消的不含在内），且脚本的源用例哈希基于**写回之后**的文件内容，因此第一次回放不会误报「源用例已变更」。
-- 不能与 `--json`（要独占 stdout）、`--replay`（秒级零模型，无需等待）、`--session`（与「场景各有独立 session」冲突）同时使用。
-- 批处理模式（管道、重定向、`--json`、CI）行为完全不变：`tests/smoke.test.mjs` 走管道 stdio，会自动降级。
+Key points:
 
-### 失败定位（步骤编号 + 执行轨迹）
+- **Appended scenarios are written back to the source case file immediately** (pure append; the case's original text and runtime placeholders are preserved verbatim — never the expanded concrete values). Because "what you type is the case you want to keep"; writing it after the run would let Ctrl+C discard the entire pending queue. Therefore `pageqa --tui examples/smoke.md` will modify that file — be careful not to dirty the repo when trying it locally.
+- **Scenarios run serially**: each scenario creates and closes its own bsk session and browser window (created only when its turn comes in the queue), so no windows fight for focus; after one scenario ends (pass / fail / cancelled) the next starts automatically.
+- **"Cancelled" is a third terminal state**: Esc means "I don't want to wait for this anymore", not "this case is broken", so it does not enter the exit code nor the replay script (half a trace recorded there would let replay run half a case and possibly report PASS).
+- **Aborting is a real abort**: pressing Esc kills the bsk command currently running, rather than waiting for it to time out. This requires the bsk operation layer to be async (a synchronous child process blocks the event loop, during which the UI does not render at all and cannot receive Esc) — rationale in `docs/adr/0003`.
+- **`--emit-script` still works**: on exit, the run scenarios are written to a script at once (cancelled ones excluded), and the script's source-case hash is based on the **post-writeback** file content, so the first replay won't falsely report "source case changed".
+- Cannot be combined with `--json` (needs exclusive stdout), `--replay` (sub-second, zero-model, no waiting), or `--session` (conflicts with "each scenario has its own session").
+- Batch mode (pipes, redirection, `--json`, CI) behavior is unchanged: `tests/smoke.test.mjs` goes through piped stdio and degrades automatically.
 
-长流程失败时，只看到「步骤完成：23/42」是没法改用例的——不知道卡在用例的哪一句。为此：
+### Failure diagnosis (step numbering + execution trace)
 
-1. **步骤由 pageqa 统一编号**：用例的每个非空行（忽略 `#`/`>` 说明行）会被编号为 `### 步骤 k：<原文>` 后再交给模型。模型必须按编号执行，并输出同一套编号的「第 k 步完成：…」「步骤完成：k/n」。因此 `k` 能直接映射回用例的某一行。
-2. **报告输出执行轨迹**：套件报告里每个场景会附上工具调用与步骤自述（末尾 25 条），失败原因与卡点一目了然。
-3. **未跑完时直接点名下一步**：完整性校验的失败项会给出「最后进展」和「未执行到的步骤（第 k/n 步）：<用例原文>」，照着它就能定位到要改的那句。
-4. JSON 报告额外提供 `steps`（用例步骤清单）与 `trace`（执行轨迹数组）字段；套件模式还提供 `scenarios[]`（逐场景的 `name/status/steps/trace/assertions`），便于 CI 侧做失败归因。
+On a long-flow failure, seeing only "steps done: 23/42" is useless for fixing the case — you don't know which line of the case it got stuck on. For this:
 
-失败时的报告片段示例：
+1. **pageqa numbers every step uniformly**: each non-empty line of the case (ignoring `#`/`>` comment lines) is numbered as `### step k: <original text>` before being handed to the model. The model must execute by number and output the same numbering as "step k done: …" / "steps done: k/n". So `k` maps directly back to a line of the case.
+2. **The report outputs the execution trace**: each scenario in the suite report appends tool calls and step self-descriptions (last 25), making the failure cause and the stuck point obvious at a glance.
+3. **Name the next unrun step directly when incomplete**: the integrity check's failure items give "last progress" and "unexecuted step (step k/n): <case original text>", so you can locate the line to fix by following it.
+4. The JSON report additionally provides `steps` (the case step list) and `trace` (execution trace array) fields; suite mode also provides `scenarios[]` (per-scenario `name/status/steps/trace/assertions`) for CI-side failure attribution.
+
+Example report fragment on failure:
 
 ```text
---- 场景 1：P1 产品 → 目录 → 物料 → … [FAIL] ---
-  - [PASS] 页面中已出现产品 `自动化测试产品202609210905` (证据：列表首行显示…)
-  - [FAIL] 全部步骤执行完成（23/36） (agent 自报的步骤完成度不足；最后进展：第 23 步完成：已点击「操作」下拉并选择「检出」；未执行到的步骤（第 24/36 步）：点击页面右侧菜单栏的「待办事项」，进入「待办列表」；轨迹末尾：[tool] snapshot → [tool-ok] click → [tool-error] click)
-  - [FAIL] 用例中的断言全部执行（实际 2/6） (…；最后进展：第 23 步完成…)
-  执行轨迹（末尾 25/25 条）:
+--- Scenario 1: P1 product → catalog → material → … [FAIL] ---
+  - [PASS] the product `自动化测试产品202609210905` already appears on the page (evidence: first list row shows…)
+  - [FAIL] all steps executed completely (23/36) (agent self-reported step completeness insufficient; last progress: step 23 done: clicked the "操作" dropdown and selected "检出"; unexecuted step (step 24/36): click the "待办事项" in the page's right-side menu bar, enter "待办列表"; trace tail: [tool] snapshot → [tool-ok] click → [tool-error] click)
+  - [FAIL] all assertions in the case executed (actual 2/6) (…; last progress: step 23 done…)
+  Execution trace (last 25/25):
     [tool] navigate
-    第 1 步完成：已打开产品列表页
+    step 1 done: opened the product list page
     [tool-ok] snapshot
     …
     [tool-error] click
-    第 23 步完成：已点击「操作」下拉并选择「检出」
+    step 23 done: clicked the "操作" dropdown and selected "检出"
 ```
 
-### Token 消耗
+### Token consumption
 
-每次运行结束后，报告**末尾**会给出本次运行的 LLM token 消耗（多场景套件在每个场景与末尾合计处各输出一行）：
+After each run, the report's **end** shows the LLM token consumption for that run (multi-scenario suites output one line per scenario and one at the total):
 
 ```text
 ---
-Token 消耗: 输入 446 / 输出 136 / 缓存读 6720 / 缓存写 0 / 合计 7302（LLM 调用 4 次）
+Token consumption: input 446 / output 136 / cache read 6720 / cache write 0 / total 7302 (4 LLM calls)
 ```
 
-- 数据来自各轮 assistant 消息的 `usage`（含自动续跑的轮次），`输入/输出/缓存读/缓存写` 为分项，`合计` 取端点返回的 `totalTokens`。
-- JSON 报告（`--json`）中为 `usage` 字段：`{ input, output, cacheRead, cacheWrite, reasoning, total, calls }`。
-- 若 LLM 端点未返回 usage（合计为 0），会在同一行标注「端点未返回 usage」，避免把 0 误读成真实消耗。
+- Data comes from the `usage` of each round's assistant message (including auto-retried rounds); `input/output/cache read/cache write` are the breakdown, and `total` is the endpoint's `totalTokens`.
+- In the JSON report (`--json`) it is the `usage` field: `{ input, output, cacheRead, cacheWrite, reasoning, total, calls }`.
+- If the LLM endpoint returns no usage (total is 0), the same line notes "endpoint returned no usage", avoiding misreading 0 as real consumption.
 
-### 快照瘦身与复用（省 token 与时间）
+### Snapshot slimming and reuse (save tokens and time)
 
-长页面的一次快照几千至上万字符，而它在长流程里要被读几十次——既吃上下文，也吃推理时间。为此 pageqa 对快照做了两件事：
+A single snapshot of a long page can be thousands to tens of thousands of characters, and it is read dozens of times in a long flow — eating both context and inference time. For this, pageqa does two things to snapshots:
 
-**1）瘦身**：只有原文超过 8000 字符才启用，规则保守且不改变定位：
+**1) Slimming**: only enabled when the original exceeds 8000 characters; rules are conservative and do not change locating:
 
-- **带 `@eN` 的行永不截断、永不丢弃**（模型靠它点击，录制/回放的语义定位符也靠它解析 role/name）；
-- `@eN` 行的**祖先链永不丢弃**（祖先路径是同名元素消歧的依据，见「回放脚本」一节）；
-- 元信息行（`@vom`/`@view`/`@layers`/`L1 page`）保留；空行省略；
-- 其余文本行：超过 160 字符才截断（保留开头）；瘦身后仍超 20000 字符时，再从最长的非关键行开始整行省略，短文本（标题/标签/状态提示）优先保留；
-- 结尾附一行说明（`[pageqa] 快照已瘦身：a → b 字符…`），让模型知道有些内容没看到，而不是以为页面就这么点内容。
+- Lines with `@eN` are **never truncated, never dropped** (the model relies on them to click, and the semantic locator for recording/replay also parses them for role/name);
+- the **ancestor chain** of `@eN` lines is **never dropped** (the ancestor path is the basis for disambiguating same-named elements, see "Replay script" below);
+- meta-info lines (`@vom`/`@view`/`@layers`/`L1 page`) are kept; blank lines are omitted;
+- other text lines: truncated only if they exceed 160 characters (head preserved); if still over 20000 characters after slimming, the longest non-critical lines are dropped entirely first, with short text (titles/labels/status hints) preserved preferentially;
+- a one-line note is appended at the end (`[pageqa] snapshot slimmed: a → b chars…`) so the model knows some content is unseen, rather than thinking the page is only that small.
 
-因此**模型看到的文本与定位解析用的文本是同一份**，role/name/祖先路径都不变；`--debug` 会打印每次瘦身的字符数变化。
+Therefore **the text the model sees and the text used for locator parsing are the same copy**, with role/name/ancestor path unchanged; `--debug` prints the character-count change of each slimming.
 
-**2）复用**：所有会改动页面的动作（`navigate`/`click`/`fill`/`upload`/`hover`/`scroll`/`wait`）都会让上一份快照失效，因此复用只发生在**纯读取之后**：
+**2) Reuse**: all actions that mutate the page (`navigate`/`click`/`fill`/`upload`/`hover`/`scroll`/`wait`) invalidate the previous snapshot, so reuse only happens **after pure reads**:
 
-- 模型「刚 `snapshot` 完就 `assert_text`」→ 断言直接复用那份快照，省掉一次 bsk 往返（断言窗口 5s，`snapshot` 自身去重窗口 1s）；注意断言的字面匹配用**瘦身前**的完整快照——瘦身只影响喂给模型的上下文，不影响断言所依据的页面全文；
-- 回放中「上一步是断言、下一步要定位元素」同理；而重试前会 `wait`，等待必然置为失效，所以「每次重试重新取快照」的既有行为保持不变。
+- the model does `snapshot` then immediately `assert_text` → the assertion reuses that snapshot directly, saving a bsk round-trip (assertion window 5s, `snapshot`'s own dedup window 1s); note the assertion's literal match uses the **pre-slimming** full snapshot — slimming only affects the context fed to the model, not the page full text the assertion relies on;
+- in replay, "previous step was an assertion, next step needs to locate an element" is the same; before a retry it does `wait`, which necessarily invalidates, so the existing behavior of "re-fetch a snapshot on every retry" is preserved.
 
-页面自身异步更新带来的偏差，靠短窗口兜住：窗口外一律重新抓取。
+Deviations from the page's own async updates are caught by the short window: anything outside the window is re-fetched.
 
-### 脚本占位符（运行时变量）
+### Script placeholders (runtime variables)
 
-脚本里可以写 `${timestamp}` 之类的占位符，CLI 在读取脚本时按本机当前时间展开。同一次运行内所有占位符共用同一时刻，所以「名称 + 时间戳」这类用例既不会重名，也不必每次手工改时间戳：
+You can write placeholders like `${timestamp}` in a script, and the CLI expands them by the machine's current time when reading the script. All placeholders within one run share the same moment, so cases like "name + timestamp" neither collide in name nor require manually editing the timestamp every time:
 
 ```md
-## P1 创建产品
+## P1 create product
 
-打开 https://example.com/product
-点击「新增」，填写产品名称 `自动化测试产品${timestamp}`
-断言页面包含 `自动化测试产品${timestamp}`
+Open https://example.com/product
+Click "新增", fill product name `自动化测试产品${timestamp}`
+Assert the page contains `自动化测试产品${timestamp}`
 ```
 
-| 占位符 | 展开结果 |
+| Placeholder | Expands to |
 | --- | --- |
-| `${timestamp}` | `yyyyMMddHHmm`，如 `202609191146` |
+| `${timestamp}` | `yyyyMMddHHmm`, e.g. `202609191146` |
 | `${date}` / `${time}` | `yyyyMMdd` / `HHmmss` |
 | `${datetime}` | `yyyyMMddHHmmss` |
-| `${timestamp:<格式>}` | 自定义格式，支持 `yyyy` `yy` `MM` `dd` `HH` `mm` `ss` `SSS`，如 `${timestamp:yyyy-MM-dd HH:mm}` |
+| `${timestamp:<format>}` | custom format, supports `yyyy` `yy` `MM` `dd` `HH` `mm` `ss` `SSS`, e.g. `${timestamp:yyyy-MM-dd HH:mm}` |
 
-未识别的占位符（如 `${PATH}`）原样保留，不会被替换。完整示例：`examples/plm-product-bom.md`。
+Unrecognized placeholders (e.g. `${PATH}`) are kept as-is and not replaced. Full example: `examples/plm-product-bom.md`.
 
-### 回放脚本（零模型重跑同一用例）
+### Replay script (rerun the same case with zero models)
 
-一条用例被 LLM 跑通一次后，它的操作序列就确定了。加 `--emit-script` 可以把这次的成功操作固化成**回放脚本**，之后用 `--replay` 零模型重跑：不再调用任何大模型，秒级完成，也不必再配置 LLM 端点。适合把「先用模型跑通一次、之后每天用脚本回归」接进 CI。
+Once a case is run through by the LLM once, its operation sequence is fixed. Add `--emit-script` to freeze this successful run into a **replay script**, then use `--replay` later to rerun with zero models: no LLM is called, it completes in sub-second, and no LLM endpoint needs to be configured. Ideal for wiring "run once with the model, then regress daily with the script" into CI.
 
 ```bash
-# 1) 先用 LLM 跑通一次，并生成脚本（不给路径时写到源用例同目录 examples/smoke.replay.json）
+# 1) first run through with the LLM and generate the script (writes to examples/smoke.replay.json next to the source case if no path given)
 pageqa --emit-script examples/smoke.md
 
-# 2) 之后每次零模型回放
+# 2) then each time, replay with zero models
 pageqa --replay examples/smoke.replay.json
-pageqa --replay examples/smoke.replay.json --json       # 机器可读报告，接 CI
-pageqa --replay examples/smoke.replay.json --semantic   # 断言改用 Jev 语义判断
+pageqa --replay examples/smoke.replay.json --json       # machine-readable report, for CI
+pageqa --replay examples/smoke.replay.json --semantic   # assertions use Jev semantic judgment
 ```
 
-要点：
+Key points:
 
-- **不存 `@eN`**：bsk 的 `@eN` 只在产生它的那次快照内有效，回放时编号会重排。脚本里存的是**语义定位符**（角色 + 可访问名 + 同名序号），回放时用当次快照重新解析，因此页面小幅调整（改文案、加前后缀、换节点类型）后通常仍能命中；解析不到时退回录制时的 target（是 CSS 就还能用），两者都失败就明确报错，而不是猜一个「最像的」元素——点错元素制造的是假通过。
-- **占位符保持可复用**：`自动化测试产品${timestamp}` 会以占位符形式写进脚本——包括**定位符里的名字**（列表里点「刚创建的那条」时，名字里同样带时间戳）与用例原文；回放时重新展开（同一次回放共用一个时刻），所以「创建 xxx${timestamp}」这类用例可以反复回放而不撞名。模型若自己编了值（没沿用占位符），则按录制当次的具体值冻结。
-- **旧脚本会自愈**：早期版本生成的脚本可能在定位符名或用例原文里残留录制当次的具体取值。脚本自带 `recordedValue` / `recordedExpectation` 作为证据，因此 `--replay` 加载时会据此把这些写死的取值还原成占位符（会打印一行「已把脚本里写死的录制取值还原为占位符」），**不必为一个字段重跑一次十几分钟的 LLM 用例**。本地文件路径（`upload` 的 `file`）与 `target`/`url` 刻意不改写。
-- **悬停触发的下拉菜单**：这类用例要写成「先悬停触发按钮、等菜单展开，再点菜单项」（agent 系统提示已内置该约定）。`hover` 会被正常录制与回放，脚本里能看到 `hover` 步骤；直接 click 触发按钮在回放时常常点不开菜单，或点到页面里另一个同名下拉（如详情页同时存在页面级与区域级的「操作」），导致后续步骤连锁失败。
-- **同名元素靠祖先路径消歧**：定位符除「角色 + 可访问名 + 同名序号」外还记录**祖先路径**（如 `menu "Dropdown List"`、`tabpanel "结构"`）。页面里同名元素很多时（多个「操作」下拉、每行一个「删除」），「同名第几个」会随元素数量变化而指错，而「在哪个区域下」更抗漂移。路径名做过截断（长到 60 字符）与层数限制（只留最深 3 层），避免 `main` 这类整页文本混进来。
-- **每步最多重试 3 次**（间隔 500ms，且每次重新取快照）：对齐 bsk 侧时序抖动（如 `el-upload` 首次触发失败、重试即成功）与页面动画/弹窗延迟。
-- **定位失败会说明原因**：报告区分三种情况——名字相近的元素存在（改名了）、该角色元素存在但名字都不同（多半点错了另一个同名菜单）、该角色元素一个都没有（菜单/弹窗并未打开）。
-- **失败语义分三类**：
-  - **元素未找到 → 跳过并继续，不算失败**。实测教训：录制期模型常顺手点一下「取 消」这类补救动作（提交后弹窗没关，补点一下），回放时页面更顺利、弹窗早已关闭，那个按钮根本不存在。若按失败即停，一条 65 步的用例会在第 12 步整条报废、拿不到后面 53 步的任何信息。跳过会**显式列在报告里**（`跳过 N 步（元素未找到）` 与执行轨迹中的 `[replay-skip]`），不会被悄悄略过。
-  - **其它失败**（元素找到了但操作报错、断言不成立）→ 记为失败并**继续跑完**，一次拿到整条用例的完整健康报告；报告指出「回放第 n 步（kind）／对应用例第 k 步：<用例原文>」。退出码仍为非零，失败不会被吞掉。
-  - **navigate 失败** → 后续步骤没有意义，直接中止。
-  - 想回到「一失败就停」的旧行为：加 `--fail-fast`。
-- **断言默认是字符串包含**：零模型回放不碰任何远端服务。录制时**靠 Jev 语义复核才成立**的断言（如「检出成功」「标题包含 Example」这类字面不出现在页面上的措辞）会逐条标记为语义断言：回放**开始前**就提示脚本里有几条这类断言（字面匹配必然不成立），失败时再提示「可加 `--semantic` 重试」。字面命中的断言不标记——回放用字符串匹配同样能通过。
-- **多场景**：一个脚本文件包含全部场景，逐个回放（各自独立 session 与浏览器窗口），任一场景失败则整体失败、退出码 `1`。
-- **源用例变更**：脚本记录源用例内容哈希，回放时若源文件已改动会在 stderr 提示（只警告、不失败），提示你重新生成脚本。
-- **PASS/FAIL 都会生成**：失败轨迹同样能导出，便于排查「模型这次到底做了什么」；但模型一步都没成功执行时脚本为空，回放会直接拒绝执行，不会伪装成「0 步全通过」。
-- **已取消的场景不入脚本**：交互模式下按 Esc 中止的场景只留下半截轨迹，写进脚本会让 `--replay` 跑半个用例还可能报 PASS——这是「假通过比报错危险得多」那条教训的翻版。
-- **输出路径写法**：`--emit-script ./replay`、`--emit-script reports/run1.json` 都可以（不必是 `.json` 结尾）。紧跟其后的 token 只有在「像路径」时才被当作输出路径——若它是 `.md`/`.txt` 或含空格的文本，则按用例输入处理，因此 `pageqa --emit-script examples/smoke.md` 也能正常工作。只接受一个用例输入，多给一个会直接报错。
+- **No `@eN` stored**: bsk's `@eN` is only valid within the snapshot that produced it; the numbering is re-laid at replay time. The script stores **semantic locators** (role + accessible name + same-name index), resolved against the current snapshot at replay time, so small page adjustments (changed copy, added prefix/suffix, swapped node type) usually still hit; when it cannot be resolved it falls back to the recorded `target` (still usable if it's a CSS selector), and if both fail it errors clearly rather than guessing "the most similar" element — clicking the wrong element manufactures a false pass.
+- **Placeholders stay reusable**: `自动化测试产品${timestamp}` is written into the script as a placeholder — including **the name inside the locator** (when clicking "the just-created one" in a list, the name also carries the timestamp) and the case original text; re-expanded at replay time (one run shares one moment), so cases like "create xxx${timestamp}" can be replayed repeatedly without name collisions. If the model made up its own value (didn't follow the placeholder), it is frozen to the recorded concrete value.
+- **Old scripts self-heal**: scripts generated by early versions may retain the recorded concrete values inside locator names or case original text. The script carries `recordedValue` / `recordedExpectation` as evidence, so `--replay` uses them to restore these hard-coded values back to placeholders on load (printing a line "restored the hard-coded recorded values in the script to placeholders"), **without re-running a ten-plus-minute LLM case for one field**. Local file paths (`upload`'s `file`) and `target`/`url` are deliberately not rewritten.
+- **Hover-triggered dropdowns**: write such cases as "first hover to trigger the button, wait for the menu to expand, then click the menu item" (the agent system prompt has this convention built in). `hover` is recorded and replayed normally, and you can see `hover` steps in the script; directly clicking the trigger button often fails to open the menu at replay, or clicks another same-named dropdown on the page (e.g. a page-level and a region-level "操作" exist simultaneously on a detail page), causing cascading failures in later steps.
+- **Same-named elements disambiguated by ancestor path**: besides "role + accessible name + same-name index", the locator also records the **ancestor path** (e.g. `menu "Dropdown List"`, `tabpanel "结构"`). When there are many same-named elements (multiple "操作" dropdowns, one "删除" per row), "which same-named one" drifts as element counts change, whereas "under which region" is more drift-resistant. Path names are truncated (to 60 chars) and depth-limited (only the deepest 3 levels) to avoid mixing in whole-page text like `main`.
+- **Each step retries at most 3 times** (500ms interval, re-fetching a snapshot each time): to align with bsk-side timing jitter (e.g. `el-upload` fails on first trigger, succeeds on retry) and page animation/popup delays.
+- **Locator failure explains the cause**: the report distinguishes three cases — a similarly-named element exists (renamed), elements of that role exist but all with different names (likely clicked the wrong same-named menu), or not a single element of that role exists (the menu/popup never opened).
+- **Failure semantics in three classes**:
+  - **Element not found → skip and continue, not a failure**. Lesson from practice: during recording the model often casually clicks a补救 action like "取消" (submit popup didn't close, so it clicks again); at replay the page is smoother, the popup already closed, and that button doesn't exist at all. If we stopped on failure, a 65-step case would be scrapped at step 12, getting no info from the remaining 53 steps. Skips are **explicitly listed in the report** (`skipped N steps (element not found)` and `[replay-skip]` in the trace), never silently omitted.
+  - **Other failures** (element found but operation errored, assertion not established) → recorded as failure and **continue to the end**, getting a complete health report for the whole case in one go; the report points to "replay step n (kind) / corresponding case step k: <case original text>". Exit code is still non-zero, failure is not swallowed.
+  - **navigate failure** → subsequent steps are meaningless, abort directly.
+  - Want the old "stop on first failure" behavior: add `--fail-fast`.
+- **Assertions default to string contains**: zero-model replay touches no remote service. Assertions that **relied on Jev semantic re-check to pass** at record time (phrasings like "检出成功" / "title contains Example" that don't literally appear on the page) are marked one by one as semantic assertions: before replay starts it warns how many such assertions are in the script (literal match will necessarily fail), and on failure prompts "try adding `--semantic`". Literal-hit assertions are not marked — replay passes them with string match too.
+- **Multi-scenario**: one script file contains all scenarios, replayed one by one (each with its own session and browser window); any scenario failure means overall failure, exit code `1`.
+- **Source case changed**: the script records the source case content hash; if the source file has been modified at replay time it warns on stderr (warning only, not a failure), reminding you to regenerate the script.
+- **Both PASS and FAIL are generated**: failure traces are also exportable, convenient for investigating "what the model actually did this time"; but when the model didn't successfully execute a single step the script is empty, and replay refuses to run directly rather than faking "0 steps all passed".
+- **Cancelled scenarios are not included in the script**: in interactive mode, scenarios aborted via Esc leave only a half trace; writing them into the script would let `--replay` run half a case and possibly report PASS — a rehash of the lesson that "false pass is far more dangerous than an error".
+- **Output path syntax**: `--emit-script ./replay`, `--emit-script reports/run1.json` both work (doesn't have to end in `.json`). The token immediately following is treated as an output path only when it "looks like a path" — if it's a `.md`/`.txt` or text with spaces, it's treated as case input, so `pageqa --emit-script examples/smoke.md` also works. Only one case input is accepted; giving a second errors out directly.
 
-### 运行进度日志
+### Run progress log
 
-长流程（建产品 → 建物料 → 检定 → 审批 …）单次可能跑十几分钟。为避免「终端没输出、不知道卡在哪一步」，pageqa 会把**带时间戳的进度日志实时输出到 stderr**（stdout 只保留最终报告，两者互不干扰）：
+A long flow (create product → create material → inspect → approve …) can take ten-plus minutes in one run. To avoid "no terminal output, don't know which step it's stuck on", pageqa outputs a **timestamped progress log to stderr in real time** (stdout keeps only the final report, the two don't interfere):
 
 ```text
-08:48:45 [pageqa] ===== 启动 =====
-08:48:45 [pageqa] 已读取脚本文件 examples/plm-product-bom.md（892 字符）
-08:48:45 [pageqa] 运行模式：单场景
-08:48:45 [pageqa] 用例开始：打开 http://localhost/#/plm/product/list …（892 字符）
-08:48:45 [pageqa] LLM 已就绪：model=hunyuan-2.0-instruct
-08:48:45 [pageqa] 检查 bsk daemon 与浏览器连接…
-08:48:45 [pageqa] bsk daemon 未运行，正在后台启动（首次可能需数秒）…
-08:48:47 [pageqa] bsk daemon 已就绪（1.6s）
-08:48:47 [pageqa] bsk 已连接浏览器 1 个
+08:48:45 [pageqa] ===== startup =====
+08:48:45 [pageqa] read script file examples/plm-product-bom.md (892 chars)
+08:48:45 [pageqa] run mode: single scenario
+08:48:45 [pageqa] case starts: open http://localhost/#/plm/product/list … (892 chars)
+08:48:45 [pageqa] LLM ready: model=hunyuan-2.0-instruct
+08:48:45 [pageqa] checking bsk daemon and browser connection…
+08:48:45 [pageqa] bsk daemon not running, background-starting (first time may take seconds)…
+08:48:47 [pageqa] bsk daemon ready (1.6s)
+08:48:47 [pageqa] bsk connected to 1 browser
 08:48:47 [pageqa] bsk session=abc123
-08:48:47 [pageqa] 已提交用例，等待模型与浏览器执行…
-08:48:48 [pageqa] 模型已开始输出，正在推进步骤…
+08:48:47 [pageqa] case submitted, waiting for model and browser to execute…
+08:48:48 [pageqa] model started outputting, advancing steps…
 08:48:49 [pageqa] ▶ #1 navigate …
 08:48:52 [pageqa] ✓ #1 navigate 2874ms
 08:48:52 [pageqa] ▶ #2 snapshot …
 08:48:53 [pageqa] ✓ #2 snapshot 412ms
 ...
-08:53:10 [pageqa] 步骤未跑完，发起第 1 次续跑（进度 12/16，断言 2/4）
-08:55:02 [pageqa] 用例结束：PASS，断言 4 条，耗时 376.4s
+08:53:10 [pageqa] steps not finished, initiating retry #1 (progress 12/16, assertions 2/4)
+08:55:02 [pageqa] case ended: PASS, 4 assertions, elapsed 376.4s
 ```
 
-- 覆盖的关键节点：脚本读取、LLM 就绪、bsk daemon 启动/就绪耗时、浏览器连接数、session、每一步工具调用（编号 + 名称 + 耗时 + 成败 + **失败原因**）、自动续跑、最终结论与总耗时。
-- 工具失败会带上原因（如 `✗ #1 navigate：net::ERR_CONNECTION_REFUSED 169ms`），并写进报告的执行轨迹。没有它就无法区分「本地服务没起」「URL 写错」「选择器匹配不上」——三者的处理方式完全不同。
-- **`navigate` 失败会翻译成人话**（`src/bsk/navigate-diagnosis.ts`）。bsk 对任何导航失败都回同一套三段式文本：
+- Key nodes covered: script read, LLM ready, bsk daemon start/ready timing, browser connection count, session, each step's tool call (number + name + timing + success/failure + **failure reason**), auto-retry, final conclusion and total elapsed time.
+- Tool failures carry the reason (e.g. `✗ #1 navigate: net::ERR_CONNECTION_REFUSED 169ms`) and are written into the report's execution trace. Without it you can't tell apart "local service not started" / "wrong URL" / "selector didn't match" — three cases with completely different handling.
+- **`navigate` failures are translated into plain language** (`src/bsk/navigate-diagnosis.ts`). bsk returns the same three-line text for any navigation failure:
 
   ```text
   error: browser rejected the underlying CDP call
@@ -347,158 +355,163 @@ pageqa --replay examples/smoke.replay.json --semantic   # 断言改用 Jev 语�
   details: Page.navigate rejected: net::ERR_CONNECTION_REFUSED
   ```
 
-  真正有用的只有第三行的 `net::ERR_*` 码，而它排在噪声后面；那句 `hint` 更是**在劝人重试**——实测中模型正是据此在「本机服务没起」时反复重试 `navigate`。pageqa 现在把这个码翻译成确切解释与下一步，并丢掉那句通用 hint：
+  Only the third line's `net::ERR_*` code is useful, and it's buried after the noise; that `hint` line is even **advising a retry** — in practice the model used it to retry `navigate` over and over when "the local service wasn't up". pageqa now translates that code into a definite explanation and next step, and drops that generic hint:
 
   ```text
-  无法打开 http://localhost:18888/smoke-test-page.html：连接被拒绝——目标端口没有服务在监听（net::ERR_CONNECTION_REFUSED）。
-  这是本机地址：请先启动该端口的服务再重试；服务没起来之前重复 navigate 不会成功
+  Cannot open http://localhost:18888/smoke-test-page.html: connection refused — no service is listening on the target port (net::ERR_CONNECTION_REFUSED).
+  This is a local address: please start the service on that port before retrying; retrying navigate before the service is up will not succeed
   ```
 
-  边界刻意划得很死：**只翻译，不猜测**。认得 `net::ERR_*` 就解释；是 `net::ERR_*` 但没收录，就如实说「尚未收录、未做解释」并保留原始 `details:` 行；**完全没有 `net::ERR_*`**（bsk daemon 挂了、session 失效等）则原样抛出，一个字都不加工——硬套一个分类比不解释更糟，理由同「回放不猜元素」。
-- 加 `--debug` 可看到更细的明细：每条 `bsk` 命令原文与耗时、快照体积与瘦身统计、快照复用、上下文裁剪、Jev 请求详情。
-- 需要把日志与报告分开处理时：报告在 stdout（`--json` 也走 stdout），日志始终在 stderr，`pageqa --json … > report.json` 即可不受日志干扰。
+  The boundary is drawn deliberately hard: **translate only, don't guess**. If it recognizes `net::ERR_*` it explains; if it's `net::ERR_*` but not catalogued, it honestly says "not yet catalogued, no explanation" and keeps the original `details:` line; if there is **no `net::ERR_*` at all** (bsk daemon down, session invalid, etc.) it throws the original verbatim, not a single character altered — force-fitting a category is worse than no explanation, for the same reason as "replay doesn't guess elements".
+- Add `--debug` to see finer detail: each `bsk` command verbatim and its timing, snapshot size and slimming stats, snapshot reuse, context trimming, Jev request details.
+- When you need to separate logs from the report: the report is on stdout (`--json` also goes to stdout), logs are always on stderr, so `pageqa --json … > report.json` is free of log interference.
 
-### CLI 选项
+### CLI options
 
-| 选项 | 说明 |
+| Option | Description |
 | --- | --- |
-| `--session <id>` | 指定已存在的 bsk session（默认自动创建） |
-| `--json` | 输出 JSON 报告 |
-| `--suite` | 强制按多场景套件运行 |
-| `--tui` | 强制进入交互模式（默认在交互式终端下自动进入，见「交互模式」） |
-| `--no-tui` | 不要交互模式（只想看滚动日志、或排障时用）；也可用 `PAGEQA_NO_TUI=1` |
-| `--emit-script [path]` | 运行结束后把成功操作固化成回放脚本（默认源用例同目录 `<用例名>.replay.json`；PASS/FAIL 都生成）。`path` 可选，写成路径形式（`./replay`、`reports/run1.json`；含空白用引号） |
-| `--replay <file>` | 零模型回放已有脚本（不调用任何大模型） |
-| `--semantic` | 回放时断言改用 Jev 语义判断（默认纯字符串匹配） |
-| `--fail-fast` | 回放时任一失败（含元素未找到）即停止该场景；默认跑完剩余步骤 |
-| `--init-config` | 在用户目录创建/重置配置文件 |
-| `--out <file>` | 将报告写入文件 |
-| `--debug` | 显示调试日志（bsk 命令与耗时、快照体积、上下文裁剪、Jev 请求详情） |
-| `-h, --help` | 帮助 |
+| `--session <id>` | Specify an existing bsk session (auto-created by default) |
+| `--locale <zh\|en>` | Display language for the UI / progress logs / report (default `zh`; `PAGEQA_LOCALE` env also works) |
+| `--json` | Output JSON report |
+| `--suite` | Force multi-scenario suite mode |
+| `--tui` | Force interactive mode (auto-enters in an interactive terminal by default, see "Interactive mode") |
+| `--no-tui` | Don't use interactive mode (when you only want the scrolling log, or for troubleshooting); `PAGEQA_NO_TUI=1` also works |
+| `--emit-script [path]` | After the run, freeze successful operations into a replay script (default: `<case name>.replay.json` next to the source case; both PASS and FAIL are generated). `path` is optional, written in path form (`./replay`, `reports/run1.json`; quote if it contains spaces) |
+| `--replay <file>` | Replay an existing script with zero models (no LLM called) |
+| `--semantic` | At replay, assertions use Jev semantic judgment (default pure string match) |
+| `--fail-fast` | At replay, any failure (including element not found) stops that scenario immediately; by default runs remaining steps |
+| `--init-config` | Create/reset the config file in the user directory |
+| `--out <file>` | Write the report to a file |
+| `--debug` | Show debug logs (bsk commands and timings, snapshot size, context trimming, Jev request details) |
+| `-h, --help` | Help |
 
-退出码：`0` 全部断言通过；`1` 任一断言失败/错误/无法执行。可直接接入 CI。
+Exit code: `0` all assertions passed; `1` any assertion failed / errored / could not execute. Can be wired directly into CI.
 
-### 自动关闭浏览器窗口
+### Auto-close browser window
 
-用例跑完后（无论 PASS、FAIL 还是中途报错），pageqa 都会执行 `bsk session stop <id>` 收尾：
+After a case finishes (whether PASS, FAIL, or errored midway), pageqa runs `bsk session stop <id>` to clean up:
 
-- 关掉本次自动化操作所在的浏览器窗口（bsk Agent Window），并归还借用过的用户标签页；
-- 多场景套件是逐个场景运行，因此每个场景结束后各自关闭自己的窗口，不会越跑越多；
-- `--session <id>` 传入的 session 也会在运行结束后被关闭（下次运行会重新创建）；
-- 关闭失败只在日志里提示，不会改变测试结论。
+- Closes the browser window where this automation operated (the bsk Agent Window), and returns any borrowed user tabs;
+- multi-scenario suites run scenario by scenario, so each scenario closes its own window afterward, not accumulating;
+- a `--session <id>`-passed session is also closed after the run (recreated next run);
+- a close failure is only noted in the log and does not change the test conclusion.
 
-### 文件上传
+### File upload
 
-脚本里直接写「点击某个上传按钮上传本地文件 `<绝对路径>`」，agent 会调用 `upload` 工具完成（可运行 `examples/element-plus-upload.md` 体验）：
+In a script, just write "click an upload button to upload a local file `<absolute path>`", and the agent calls the `upload` tool to complete it (run `examples/element-plus-upload.md` to try):
 
 ```md
-## U1 点击 Click to upload 上传图片
+## U1 click "Click to upload" to upload an image
 
-打开 https://element-plus.org/zh-CN/component/upload
-点击示例中的「Click to upload」按钮并上传本地文件 D:\Downloads\example.png
-等待 2 秒，让上传列表完成渲染
-断言页面中已出现上传的文件名 example.png
+Open https://element-plus.org/zh-CN/component/upload
+Click the "Click to upload" button in the example and upload the local file D:\Downloads\example.png
+Wait 2 seconds for the upload list to finish rendering
+Assert the uploaded file name example.png has appeared on the page
 ```
 
 ```bash
 pageqa examples/element-plus-upload.md
 ```
 
-要点（踩过的坑）：
+Key points (pitfalls hit before):
 
-- **先开扩展权限**：见「前置 → 1. 安装并配置 browserskill」中的重点提示。未开启时上传必然失败，报 `Not allowed`。
-- `target` 传**触发文件选择器的元素**（按钮的 `@eN` 或 CSS 选择器）；不要传隐藏的 `input[type=file]`——它没有可见几何，bsk 会拒绝点击并报 `target element has no visible geometry`。省略 `target` 时由 bsk 自动在页面中查找文件输入框。
-- **不要先 `click` 上传按钮再调用上传**：原生系统文件选择框无法被自动化操作，单独 click 会把流程挂住。`upload` 会自己点击触发元素并接管文件选择器。
-- 路径必须是**本机绝对路径且文件真实存在**：`upload` 会先校验，不存在直接报错，不会默默跳过。
-- 像 `el-upload` 这类「点击按钮 → 页面 JS 触发隐藏 input」的组件，首次尝试可能返回 `did not activate a file input`（时序问题，不是权限问题）；此时重试一次即可成功。
-- 上传动作成功不等于用例通过：**真伪仍由页面断言决定**。若站点把文件提交到外部接口而接口不可用（例如 element-plus 文档示例提交到 `run.mocky.io`，本机证书校验失败），组件会在上传失败后移除该文件，此时「断言文件出现在列表中」会如实报 FAIL——这是被测页面的真实行为，不是工具问题。
+- **Enable extension permission first**: see the important note in "Prerequisites → 1. Install and configure browserskill". Uploads always fail if not enabled, reporting `Not allowed`.
+- `target` is the element that **triggers the file picker** (the button's `@eN` or CSS selector); don't pass a hidden `input[type=file]` — it has no visible geometry and bsk rejects the click with `target element has no visible geometry`. Omitting `target` lets bsk auto-find the file input in the page.
+- **Don't `click` the upload button then call upload**: the native system file picker can't be automated, and a standalone click would hang the flow. `upload` clicks the trigger element itself and takes over the file picker.
+- The path must be a **local absolute path and the file must really exist**: `upload` validates first and errors out directly if not, never silently skipping.
+- Components like `el-upload` ("click button → page JS triggers hidden input") may return `did not activate a file input` on the first try (a timing issue, not a permission issue); retrying once then succeeds.
+- A successful upload does not mean the case passed: **truth is still decided by the page assertion**. If a site submits the file to an external interface that is unavailable (e.g. the element-plus doc example submits to `run.mocky.io`, whose cert validation fails locally), the component removes the file after the upload fails, and "assert the file appears in the list" will honestly report FAIL — this is the real behavior of the page under test, not a tool problem.
 
-## 工作原理
+## How it works
 
 ```
-自然语言意图
-   └─> pi-agent-core Agent（LLM: pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
-          └─> bsk 工具：navigate / snapshot / click / fill / upload / hover / scroll / wait / assert_text
-                 └─> 真实浏览器（bsk 连接）
-          └─> 结论与证据 -> 报告（文本/JSON）+ 退出码
-          └─> --emit-script：录制成功操作 -> 回放脚本（*.replay.json）
+Natural-language intent
+   └─> pi-agent-core Agent (LLM: pi-ai custom provider -> configurable OpenAI-compatible endpoint)
+          └─> bsk tools: navigate / snapshot / click / fill / upload / hover / scroll / wait / assert_text
+                 └─> real browser (connected by bsk)
+          └─> conclusion & evidence -> report (text/JSON) + exit code
+          └─> --emit-script: record successful operations -> replay script (*.replay.json)
 
-回放脚本 -> pageqa --replay -> bsk 操作层 -> 真实浏览器 -> 报告 + 退出码（全程不调用大模型）
+Replay script -> pageqa --replay -> bsk operation layer -> real browser -> report + exit code (no LLM called throughout)
 
-交互模式（pageqa --tui <用例文件>）
-   ├─> TUI：滚动日志视口（进度日志经 setSink 汇入）+ 底部固定输入框
-   ├─> 运行队列：串行执行；提交的新场景写回源用例文件后入队
-   └─> 退出 -> 恢复主屏 -> 汇总报告（stdout/--out）+ 退出码（已取消不计入）
+Interactive mode (pageqa --tui <case file>)
+   ├─> TUI: scrolling log viewport (progress log merged via setSink) + fixed bottom input box
+   ├─> run queue: serial execution; submitted new scenarios written back to the source case file then enqueued
+   └─> exit -> restore main screen -> summary report (stdout/--out) + exit code (cancelled not counted)
 ```
 
-可用工具（`src/bsk/tools.ts`）：
+Available tools (`src/bsk/tools.ts`):
 
-- `navigate(url)` 打开网页
-- `snapshot()` 读取页面 aria 树与可见文本（标题、段落、链接、按钮等）；返回前会做瘦身（见「快照瘦身与复用」），短期内无页面改动时直接复用上一份
-- `click(target)` / `fill(target, value)` / `hover(target)` 元素交互（target 用 `@eN` 引用或 CSS 选择器）
-- `upload(target, file)` 上传本地文件（target 为触发文件选择器的元素，省略则由 bsk 自动查找文件输入框）
-- `scroll(target)` / `wait(ms)` 滚动与等待
-- `assert_text(expectation)` 断言页面是否包含指定文本，返回「成立/不成立」与证据
+- `navigate(url)` open a web page
+- `snapshot()` read the page's aria tree and visible text (titles, paragraphs, links, buttons, etc.); before returning it slims (see "Snapshot slimming and reuse"), and reuses the previous copy when no page change in the short term
+- `click(target)` / `fill(target, value)` / `hover(target)` element interactions (target referenced by `@eN` or CSS selector)
+- `upload(target, file)` upload a local file (target is the element that triggers the file picker; omitted means bsk auto-finds the file input)
+- `scroll(target)` / `wait(ms)` scroll and wait
+- `assert_text(expectation)` assert whether the page contains the specified text, returning "established / not established" and evidence
 
-**长流程保护（自动续跑）**：一轮对话结束后，如果 agent 自报的进度没跑满（`步骤完成：k/n` 且 `k < n`），或者用例里写了断言但报告只解析到一部分，pageqa 会自动补一次「继续执行剩余步骤」的提示并继续跑，最多 5 轮；续跑后进度与断言数都没有推进就停止。这样可以避免模型做完一两步就自行收尾、却让报告看起来正常的情况。
+**Long-flow protection (auto-retry)**: after one conversation round, if the agent's self-reported progress isn't full (`steps done: k/n` with `k < n`), or the case had assertions but the report only parsed some, pageqa automatically appends a "continue remaining steps" prompt and keeps going, at most 5 rounds; it stops if progress and assertion count don't advance after a retry. This avoids the case where the model finishes one or two steps and wraps up on its own, yet the report looks normal.
 
-断言的准源是 `assert_text` 工具返回的结构化结果（期望值 + 成立/不成立 + 证据），而不是模型自述的措辞：模型常写成「…，断言成立。」，从文本反推既不可靠，也会把一条**全部通过**的用例报成「用例中的断言全部执行（实际 0/N）」的假失败。只有在拿不到工具结果时（回放、纯文本输入）才退回解析结论文本。
+The authoritative source for assertions is the structured result returned by the `assert_text` tool (expected value + established/not + evidence), not the model's self-described wording: models often write "…, assertion established.", and reverse-inferring from text is both unreliable and would report an **all-passed** case as a false failure of "all assertions in the case executed (actual 0/N)". Only when the tool result is unavailable (replay, plain-text input) does it fall back to parsing the conclusion text.
 
-## 验证
+## Verification
 
 ```bash
-pnpm test            # 端到端冒烟：需 bsk daemon 已连接浏览器 + LLM 端点可用
-pnpm run test:unit   # 仅单元测试：不依赖浏览器与 LLM（报告解析 + 定位符/录制/回放脚本 + 快照瘦身）
+pnpm test            # end-to-end smoke: needs bsk daemon connected to a browser + an available LLM endpoint
+pnpm run test:unit   # unit tests only: no browser or LLM dependency (report parsing + locator/recording/replay script + snapshot slimming)
 ```
 
-冒烟测试覆盖：A1 打开+标题断言、A2 元素交互与断言、A3 失败可读原因与退出码、A4 文本/JSON 报告。需 bsk daemon 连接浏览器且 LLM 端点可用。
+Smoke tests cover: A1 open + title assertion, A2 element interaction and assertion, A3 readable failure reason and exit code, A4 text/JSON report. Requires bsk daemon connected to a browser and an available LLM endpoint.
 
-也可直接运行套件脚本：
+You can also run the suite script directly:
 
 ```bash
 pageqa examples/smoke.md --json
 ```
 
-## CI 集成
+## CI integration
 
-**`.github/workflows/ci.yml`**：在 `master`/`main` 的 push 与 PR 上运行，流程为 pnpm 冻结锁文件安装（`pnpm install --frozen-lockfile`）→ `pnpm run build` → `pnpm run test:unit`。
+**`.github/workflows/ci.yml`**: runs on push and PR to `master`/`main`, with the flow pnpm frozen-lockfile install (`pnpm install --frozen-lockfile`) → `pnpm run build` → `pnpm run test:unit`.
 
-端到端冒烟（`examples/smoke.md`）需要 bsk daemon、已连接的真实浏览器与可用的 LLM 端点，GitHub 托管 runner 上不具备这些条件，因此不在仓库 CI 中运行。若要在自己的 CI 里跑端到端，用环境变量注入 LLM 端点（`PAGEQA_LLM_BASE_URL` / `PAGEQA_LLM_API_KEY` / `PAGEQA_LLM_MODEL`，建议放仓库 Secrets）：
+End-to-end smoke (`examples/smoke.md`) needs a bsk daemon, a connected real browser, and an available LLM endpoint, which GitHub-hosted runners don't have, so it is not run in the repo CI. To run end-to-end in your own CI, inject the LLM endpoint via environment variables (`PAGEQA_LLM_BASE_URL` / `PAGEQA_LLM_API_KEY` / `PAGEQA_LLM_MODEL`, recommended in repo Secrets):
 
 ```bash
 pnpm run build
 node dist/index.js --json examples/smoke.md
 ```
 
-任一断言失败会返回非零退出码，可直接作为 CI 门禁。
+Any assertion failure returns a non-zero exit code, usable directly as a CI gate.
 
-**`.github/workflows/release.yml`**：推送 `v*` tag 时触发，`check` job 先冻结锁文件安装并构建，随后通过 npm **OIDC 可信发布**（依赖 `id-token: write`，无需 `NPM_TOKEN`）发布到 npm 并自动创建 GitHub Release。发布产物附带 SLSA provenance 证明，因此 `package.json` 中的 `repository` 字段必须与仓库地址一致，不可删除。
+**`.github/workflows/release.yml`**: triggered on pushing a `v*` tag; the `check` job first does frozen-lockfile install and build, then publishes to npm via npm **OIDC trusted publishing** (relies on `id-token: write`, no `NPM_TOKEN` needed) and auto-creates a GitHub Release. The published artifact carries a SLSA provenance attestation, so the `repository` field in `package.json` must match the repo URL and must not be deleted.
 
-## 目录
+## Directory
 
 ```text
 src/
-  index.ts       CLI 入口
-  agent.ts       编排器（pi-agent-core Agent + bsk 工具 + 报告）
-  llm.ts         LLM 后端（pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
-  log.ts         进度日志（默认写 stderr；落点可通过 setSink 注入，交互模式接进界面视口）
-  bsk/tools.ts   browserskill 操作层与工具层（异步、可中止、全局串行；含 upload 与录制上报）
-  bsk/navigate-diagnosis.ts  把导航失败翻译成人话（只翻译不猜测，认不出的原样透传）
-  tui/app.ts     交互模式界面（pi-tui TuiAltScreen：滚动日志视口 + 固定输入框，延迟加载）
-  tui/queue.ts   运行队列（场景串行执行、追加、取消、中止）
-  tui/writeback.ts  追加场景写回源用例文件（纯 append，占位符原样保留）
-  tui/theme.ts   交互界面配色（库不提供默认主题，自持 16 色 + truecolor 探测）
-  record.ts      录制层（把成功操作与断言记成可回放步骤）
-  locator.ts     语义定位符（快照解析 + 回放时按 role/name/序号重定位）
-  snapshot.ts    快照瘦身（保留可交互节点与祖先链，截断长文本；降低上下文压力）
-  replay.ts      回放脚本（格式、读写校验 + 零模型回放引擎）
-  report.ts      报告解析、渲染与套件汇总（LLM 运行与回放共用）
+  index.ts       CLI entry
+  agent.ts       orchestrator (pi-agent-core Agent + bsk tools + report)
+  llm.ts         LLM backend (pi-ai custom provider -> configurable OpenAI-compatible endpoint)
+  log.ts         progress log (writes stderr by default; sink injectable via setSink, interactive mode merges into the UI viewport)
+  bsk/tools.ts   browserskill operation layer and tool layer (async, abortable, globally serial; includes upload and recording reporting)
+  bsk/navigate-diagnosis.ts  translate navigation failures into plain language (translate only, don't guess; pass through verbatim if unrecognized)
+  tui/app.ts     interactive mode UI (pi-tui TuiAltScreen: scrolling log viewport + fixed input box, lazily loaded)
+  tui/queue.ts   run queue (scenario serial execution, append, cancel, abort)
+  tui/writeback.ts  write appended scenarios back to the source case file (pure append, placeholders preserved verbatim)
+  tui/theme.ts   interactive UI colors (the lib provides no default theme, self-holding 16-color + truecolor detection)
+  record.ts      recording layer (record successful operations and assertions as replayable steps)
+  locator.ts     semantic locator (snapshot parsing + replay-time relocation by role/name/index)
+  snapshot.ts    snapshot slimming (keep interactive nodes and ancestor chains, truncate long text; reduce context pressure)
+  replay.ts      replay script (format, read/write validation + zero-model replay engine)
+  report.ts      report parsing, rendering, and suite summary (shared by LLM runs and replay)
 examples/
-  smoke.md                  示例套件（A1–A3）
-  github-star.md            GitHub Star 用例
-  element-plus-upload.md    文件上传用例（点击 Click to upload 上传本地图片）
-  plm-product-bom.md        PLM 长流程用例（建产品→目录→物料→检出→待办同意→BOM 插入）
-tests/smoke.test.mjs 端到端验证
+  smoke.md                   example suite (A1–A3)
+  github-star.md            GitHub Star case
+  element-plus-upload.md    file upload case (click "Click to upload" to upload a local image)
+  plm-product-bom.md        PLM long-flow case (create product→catalog→material→inspect→todo approve→BOM insert)
+tests/smoke.test.mjs  end-to-end verification
 tests/report.test.mjs / tests/replay.test.mjs / tests/snapshot.test.mjs / tests/tui.test.mjs
-  单元测试（无浏览器/LLM/TTY 依赖）：报告解析、定位符与回放、快照瘦身、追加场景写回、运行队列、「已取消」判定、日志落点
+  unit tests (no browser/LLM/TTY dependency): report parsing, locator and replay, snapshot slimming, appended-scenario writeback, run queue, "cancelled" judgment, log sink
 ```
+
+---
+
+> **i18n**: The UI, progress logs, report rendering, and navigation-failure diagnoses are localized through `src/i18n.ts` (a `{ zh, en }` catalog + `t(key, vars)` with `{var}` interpolation). Pick the language with `--locale <zh|en>` or the `PAGEQA_LOCALE` env var; the default is `zh`. It deliberately does **not** follow `LANG`/`LC_ALL`, so the same case yields the same report language locally and in CI. Missing keys fall back to English and then to the key itself, so a partial translation never crashes the run. The data contract (JSON report fields, exit codes) is language-neutral and is not localized. Developer `--debug` internals (`[runAgent]` / `[agent]` traces) and the LLM system prompt / step-numbering protocol remain Chinese on purpose — they are the wire format the agent and the parser agree on.

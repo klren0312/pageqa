@@ -1,16 +1,19 @@
-import { createModels, createProvider, type Model, type Api } from "@earendil-works/pi-ai";
+import { createProvider, type Provider } from "@earendil-works/pi-ai";
 import * as openaiCompletions from "@earendil-works/pi-ai/api/openai-completions";
-import { loadConfig } from "./config.js";
+import { loadConfig, PAGEQA_PROVIDER_ID, type PageQaConfig } from "./config.js";
 
 /**
- * LLM 后端：基于 @earendil-works/pi-ai 构造一个指向可配置的 OpenAI 兼容端点的自定义 provider。
+ * 自定义 LLM provider：基于 @earendil-works/pi-ai 构造一个指向可配置 OpenAI 兼容端点的 provider。
+ *
+ * 这是 pageqa 的**默认**后端（配置里的 baseUrl/apiKey/model）。交互模式接入的内置
+ * provider（anthropic / openai / deepseek …，见 models.ts）是叠加在它之上的额外选择，
+ * 因此这里的 provider 永远注册在最前面，pageqa 的 `modelProvider` 指向它。
  *
  * 配置优先级（高 -> 低）：环境变量 PAGEQA_LLM_*  >  用户配置文件（~/.pageqa/config.json）  >  内置默认值。
  * 首次运行会自动在用户主目录创建配置文件，便于用户修改模型/端点地址/密钥。
  */
 
-const PROVIDER_ID = "pageqa";
-
+/** 内置预设模型：给出精确的上下文窗口与输出上限（未收录的模型见 resolveModels 的保守兜底）。 */
 interface LlmModelConfig {
   id: string;
   name: string;
@@ -54,28 +57,27 @@ function staticApiKeyAuth(apiKey: string, baseUrl: string) {
   };
 }
 
-export interface LlmBackend {
-  models: ReturnType<typeof createModels>;
-  model: Model<Api>;
-}
-
-export function createLlmBackend(): LlmBackend {
-  const cfg = loadConfig();
-  const DEFAULT_BASE_URL = cfg.baseUrl;
-  const DEFAULT_API_KEY = cfg.apiKey;
-  const DEFAULT_MODEL = cfg.model;
-  const models = createModels();
-  const registered = resolveModels(DEFAULT_MODEL);
-  const provider = createProvider({
-    id: PROVIDER_ID,
+/**
+ * 由配置文件构造自定义端点 provider。
+ *
+ * 抽成独立函数（原先内联在 createLlmBackend 里）是为了让模型目录能在同一个
+ * `Models` 集合里同时容纳「自定义端点」与「内置 provider」，见 models.ts。
+ */
+export function createPageqaProvider(
+  cfg: PageQaConfig = loadConfig(),
+): Provider {
+  const baseUrl = cfg.baseUrl;
+  const registered = resolveModels(cfg.model);
+  return createProvider({
+    id: PAGEQA_PROVIDER_ID,
     name: "OpenAI Compatible (自定义端点)",
-    auth: { apiKey: staticApiKeyAuth(DEFAULT_API_KEY, DEFAULT_BASE_URL) },
+    auth: { apiKey: staticApiKeyAuth(cfg.apiKey, baseUrl) },
     models: registered.map((m) => ({
       id: m.id,
       name: m.name,
       api: "openai-completions",
-      provider: PROVIDER_ID,
-      baseUrl: DEFAULT_BASE_URL,
+      provider: PAGEQA_PROVIDER_ID,
+      baseUrl,
       input: ["text"],
       reasoning: false,
       contextWindow: m.contextWindow,
@@ -92,13 +94,4 @@ export function createLlmBackend(): LlmBackend {
     })),
     api: openaiCompletions,
   });
-  models.setProvider(provider);
-
-  const model = models.getModel(PROVIDER_ID, DEFAULT_MODEL);
-  if (!model) {
-    throw new Error(
-      `未找到模型 ${DEFAULT_MODEL}（provider=${PROVIDER_ID}）。请检查 ~/.pageqa/config.json 中的 model 与 baseUrl 配置。`,
-    );
-  }
-  return { models, model };
 }

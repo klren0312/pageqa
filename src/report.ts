@@ -1,3 +1,5 @@
+import { t } from "./i18n.js";
+
 export interface AssertionResult {
   expectation: string;
   verdict: "pass" | "fail";
@@ -115,24 +117,18 @@ export function mergeUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
 export function formatUsage(usage?: TokenUsage, mode?: TestReport["mode"]): string {
   // 回放模式没有也不该有 token 消耗：直接写明「未调用大模型」，
   // 否则「合计 0」会被误读成端点没返回 usage。
-  if (mode === "replay") return "Token 消耗: 未调用大模型（回放模式）";
-  if (!usage) return "Token 消耗: 不可用（未采集到用量）";
-  const line =
-    "Token 消耗: 输入 " +
-    usage.input +
-    " / 输出 " +
-    usage.output +
-    " / 缓存读 " +
-    usage.cacheRead +
-    " / 缓存写 " +
-    usage.cacheWrite +
-    " / 合计 " +
-    usage.total +
-    "（LLM 调用 " +
-    usage.calls +
-    " 次）";
+  if (mode === "replay") return t("report.usage.replay");
+  if (!usage) return t("report.usage.unavailable");
+  const line = t("report.usage.line", {
+    in: usage.input,
+    out: usage.output,
+    cr: usage.cacheRead,
+    cw: usage.cacheWrite,
+    total: usage.total,
+    calls: usage.calls,
+  });
   return usage.calls > 0 && usage.total === 0
-    ? line + "（端点未返回 usage）"
+    ? line + t("report.usage.noUsage")
     : line;
 }
 
@@ -180,10 +176,12 @@ export function buildReport(
     const progress = parseProgress(transcript);
     return {
       status: "cancelled",
-      cancelReason:
-        (progress
-          ? `用户中止了该场景（已完成 ${progress.done}/${progress.total} 步）`
-          : "用户中止了该场景") + "，剩余步骤未执行",
+      cancelReason: progress
+        ? t("report.cancelWithProgress", {
+            done: progress.done,
+            total: progress.total,
+          })
+        : t("report.cancel"),
       assertions,
       summary: extractSummary(transcript),
       transcript,
@@ -198,11 +196,14 @@ export function buildReport(
   if (expected > 0 && assertions.length < expected) {
     status = "fail";
     assertions.push({
-      expectation: `用例中的断言全部执行（实际 ${assertions.length}/${expected}）`,
+      expectation: t("report.assertIncomplete", {
+        got: assertions.length,
+        expected,
+      }),
       verdict: "fail",
       evidence: [
-        "解析到的断言少于用例中的断言数量，疑似步骤未执行完就结束",
-        lastNote ? `最后进展：${lastNote}` : null,
+        t("report.assertIncompleteEvidence1"),
+        lastNote ? t("report.assertIncompleteEvidence2", { note: lastNote }) : null,
         tailTextOf(trace, 3),
       ]
         .filter(Boolean)
@@ -217,13 +218,20 @@ export function buildReport(
     const nextStep =
       steps.length === progress.total ? steps[progress.done] : undefined;
     assertions.push({
-      expectation: `全部步骤执行完成（${progress.done}/${progress.total}）`,
+      expectation: t("report.stepsIncomplete", {
+        done: progress.done,
+        total: progress.total,
+      }),
       verdict: "fail",
       evidence: [
-        "agent 自报的步骤完成度不足",
-        lastNote ? `最后进展：${lastNote}` : null,
+        t("report.stepsIncompleteEvidence1"),
+        lastNote ? t("report.stepsIncompleteEvidence2", { note: lastNote }) : null,
         nextStep
-          ? `未执行到的步骤（第 ${progress.done + 1}/${progress.total} 步）：${nextStep}`
+          ? t("report.stepsIncompleteEvidence3", {
+              next: progress.done + 1,
+              total: progress.total,
+              step: nextStep,
+            })
           : null,
         tailTextOf(trace, 3),
       ]
@@ -312,7 +320,7 @@ export function lastStepNote(trace: string[]): string | null {
 /** 轨迹末尾若干条，拼成「轨迹末尾：…」的说明文本。 */
 function tailTextOf(trace: string[], n: number): string | null {
   if (trace.length === 0) return null;
-  return `轨迹末尾：${trace.slice(-n).join(" → ")}`;
+  return t("report.traceTail", { tail: trace.slice(-n).join(" → ") });
 }
 
 /** 截断过长的一行，避免报告被单条长文本撑爆。 */
@@ -402,7 +410,7 @@ function verdictTag(v: "pass" | "fail"): string {
  * 很容易被当成某种失败的同义词。
  */
 export function statusTag(s: "pass" | "fail" | "cancelled"): string {
-  return s === "pass" ? "PASS" : s === "fail" ? "FAIL" : "已取消";
+  return s === "pass" ? "PASS" : s === "fail" ? "FAIL" : t("common.cancelled");
 }
 
 /** 渲染一条断言：`  - [PASS] 期望 (证据)`。 */
@@ -414,19 +422,19 @@ export function assertionLine(a: AssertionResult): string {
 /** 渲染单场景文本报告。 */
 export function renderText(r: TestReport): string {
   const lines: string[] = [];
-  lines.push("=== 页面测试报告 ===");
-  if (r.mode === "replay") lines.push("模式: 回放（未调用大模型）");
-  lines.push("结论: " + statusTag(r.status));
-  if (r.cancelReason) lines.push("中止: " + r.cancelReason);
-  lines.push("断言数: " + r.assertions.length);
+  lines.push(t("report.title"));
+  if (r.mode === "replay") lines.push(t("report.modeReplay"));
+  lines.push(t("report.conclusion", { status: statusTag(r.status) }));
+  if (r.cancelReason) lines.push(t("report.cancelled", { reason: r.cancelReason }));
+  lines.push(t("report.assertCount", { n: r.assertions.length }));
   for (const a of r.assertions) lines.push(assertionLine(a));
   // 跳过必须显式列出：它不计入失败，但「哪些步骤没按脚本执行」是判断回放可信度的关键
   if (r.skipped?.length) {
-    lines.push(`跳过 ${r.skipped.length} 步（元素未找到，当前页面状态下不需要该步）:`);
+    lines.push(t("report.skipped", { n: r.skipped.length }));
     for (const s of r.skipped) lines.push("  - " + s);
   }
-  if (r.summary) lines.push("摘要: " + r.summary);
-  if (r.script) lines.push("回放脚本: " + r.script);
+  if (r.summary) lines.push(t("report.summary", { text: r.summary }));
+  if (r.script) lines.push(t("report.script", { path: r.script }));
   lines.push("---");
   lines.push(r.transcript.trim());
   lines.push("---");
@@ -463,13 +471,11 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
       })),
     ),
     summary:
-      "共 " +
-      members.length +
-      " 个场景，通过 " +
-      passed +
-      " 个" +
+      t("report.suiteSummaryBase", { n: members.length, passed }) +
       // 只在真有场景被中止时才追加：没有中止时输出与历史报告逐字一致。
-      (cancelled > 0 ? "，已取消 " + cancelled + " 个" : ""),
+      (cancelled > 0
+        ? t("report.suiteSummaryCancelled", { cancelled })
+        : ""),
     transcript: members
       .map((m) => "## " + m.name + "\n" + m.report.transcript.trim())
       .join("\n\n"),
@@ -491,40 +497,39 @@ export function renderSuiteText(
   scenarios: { name: string }[],
 ): string {
   const lines: string[] = [];
-  lines.push("=== 页面测试套件报告 ===");
-  if (summary.mode === "replay") lines.push("模式: 回放（未调用大模型）");
-  lines.push("整体结论: " + statusTag(summary.status));
-  lines.push("场景数: " + members.length);
+  lines.push(t("report.titleSuite"));
+  if (summary.mode === "replay") lines.push(t("report.modeReplay"));
+  lines.push(t("report.overall", { status: statusTag(summary.status) }));
+  lines.push(t("report.scenarioCount", { n: members.length }));
   members.forEach((m, i) => {
     lines.push("");
     lines.push(
-      "--- 场景 " +
-        (i + 1) +
-        "：" +
-        (scenarios[i]?.name ?? "") +
-        " [" +
-        statusTag(m.report.status) +
-        "] ---",
+      t("report.scenarioHeader", {
+        i: i + 1,
+        n: members.length,
+        name: scenarios[i]?.name ?? "",
+        status: statusTag(m.report.status),
+      }),
     );
     if (m.report.cancelReason) lines.push("  " + m.report.cancelReason);
     for (const a of m.report.assertions) lines.push(assertionLine(a));
     if (m.report.skipped?.length) {
-      lines.push(`  跳过 ${m.report.skipped.length} 步（元素未找到，详见执行轨迹）`);
+      lines.push(t("report.skippedSuite", { n: m.report.skipped.length }));
     }
-    if (m.report.summary) lines.push("  摘要: " + m.report.summary);
+    if (m.report.summary) lines.push("  " + t("report.summary", { text: m.report.summary }));
     // 执行轨迹：套件模式下不再只给一个「23/42」，把工具调用与步骤自述还原出来，
     // 使用者才能判断「卡在用例的哪一步、该改哪一句」。
     const trace = m.report.trace ?? [];
     if (trace.length > 0) {
       const shown = trace.slice(-TRACE_TAIL_LINES);
-      lines.push(`  执行轨迹（末尾 ${shown.length}/${trace.length} 条）:`);
-      for (const t of shown) lines.push("    " + t);
+      lines.push(t("report.traceTitle", { shown: shown.length, total: trace.length }));
+      for (const step of shown) lines.push("    " + step);
     }
     lines.push("  " + formatUsage(m.usage, m.report.mode ?? summary.mode));
   });
   lines.push("");
-  lines.push("汇总: " + summary.summary);
-  if (summary.script) lines.push("回放脚本: " + summary.script);
+  lines.push(t("report.summaryLine", { text: summary.summary ?? "" }));
+  if (summary.script) lines.push(t("report.script", { path: summary.script }));
   lines.push("---");
   lines.push(formatUsage(summary.usage, summary.mode));
   return lines.join("\n");

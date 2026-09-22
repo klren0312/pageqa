@@ -29,63 +29,64 @@
  * ——这与 ADR-0001「不做猜一个最像的元素」是同一条理由。
  */
 
-/** 一类失败的解释与下一步。 */
+import { t } from "../i18n.js";
+
+/** 一类失败的解释与下一步；文案存 i18n 键，渲染时按当前语种取。 */
 interface Diagnosis {
-  /** 发生了什么。 */
-  what: string;
-  /** 下一步做什么（非本机地址时用）。 */
-  next: string;
-  /** 本机地址有更确定的下一步时用它。 */
-  localNext?: string;
+  /** 发生了什么（i18n 键）。 */
+  whatKey: string;
+  /** 下一步做什么（非本机地址时用；i18n 键）。 */
+  nextKey: string;
+  /** 本机地址有更确定的下一步时用它（i18n 键）。 */
+  localNextKey?: string;
 }
 
 /** 能给出确切解释的浏览器错误码。未列出的绝不硬套。 */
 const EXACT: Record<string, Diagnosis> = {
   ERR_CONNECTION_REFUSED: {
-    what: "连接被拒绝——目标端口没有服务在监听",
-    next: "确认目标服务已启动、地址与端口写对了；服务未运行前重复 navigate 不会成功",
-    localNext:
-      "这是本机地址：请先启动该端口的服务再重试；服务没起来之前重复 navigate 不会成功",
+    whatKey: "nav.ERR_CONNECTION_REFUSED.what",
+    nextKey: "nav.ERR_CONNECTION_REFUSED.next",
+    localNextKey: "nav.ERR_CONNECTION_REFUSED.localNext",
   },
   ERR_UNSAFE_PORT: {
-    what: "浏览器把该端口列为不安全端口，直接拒绝了访问",
-    next: "换一个端口：Chrome/Edge 会拦掉一批低位端口（如 1、21、25、110），换个高位端口即可",
+    whatKey: "nav.ERR_UNSAFE_PORT.what",
+    nextKey: "nav.ERR_UNSAFE_PORT.next",
   },
   ERR_NAME_NOT_RESOLVED: {
-    what: "域名解析不了",
-    next: "检查域名拼写、DNS 是否可达；内网域名通常需要先连上 VPN",
+    whatKey: "nav.ERR_NAME_NOT_RESOLVED.what",
+    nextKey: "nav.ERR_NAME_NOT_RESOLVED.next",
   },
   ERR_NAME_RESOLUTION_FAILED: {
-    what: "域名解析失败",
-    next: "检查域名拼写、DNS 是否可达；内网域名通常需要先连上 VPN",
+    whatKey: "nav.ERR_NAME_RESOLUTION_FAILED.what",
+    nextKey: "nav.ERR_NAME_RESOLUTION_FAILED.next",
   },
   ERR_CONNECTION_TIMED_OUT: {
-    what: "连接超时——主机不可达",
-    next: "确认网络能到目标；也可能是被防火墙拦掉，或目标地址本身不通",
+    whatKey: "nav.ERR_CONNECTION_TIMED_OUT.what",
+    nextKey: "nav.ERR_CONNECTION_TIMED_OUT.next",
   },
   ERR_TIMED_OUT: {
-    what: "连接超时——主机不可达",
-    next: "确认网络能到目标；也可能是被防火墙拦掉，或目标地址本身不通",
+    whatKey: "nav.ERR_TIMED_OUT.what",
+    nextKey: "nav.ERR_TIMED_OUT.next",
   },
   ERR_CONNECTION_RESET: {
-    what: "连接被对端重置",
-    next: "目标服务可能正在重启或崩溃；确认它能正常响应后再试",
+    whatKey: "nav.ERR_CONNECTION_RESET.what",
+    nextKey: "nav.ERR_CONNECTION_RESET.next",
   },
   ERR_HTTP_RESPONSE_CODE_FAILURE: {
-    what: "服务器返回了错误状态码，页面没能加载",
-    next: "确认该 URL 在浏览器里直接打开是正常的；也可能是所在网络有代理/网关拦截",
+    whatKey: "nav.ERR_HTTP_RESPONSE_CODE_FAILURE.what",
+    nextKey: "nav.ERR_HTTP_RESPONSE_CODE_FAILURE.next",
   },
   ERR_ABORTED: {
-    what: "导航被中止",
-    next: "多见于页面自身触发了新的跳转或关闭；确认目标 URL 是否稳定",
+    whatKey: "nav.ERR_ABORTED.what",
+    nextKey: "nav.ERR_ABORTED.next",
   },
   ERR_EMPTY_RESPONSE: {
-    what: "服务器没有返回任何内容",
-    next: "确认目标服务在正常响应（可用浏览器直接打开该地址核对）",
+    whatKey: "nav.ERR_EMPTY_RESPONSE.what",
+    nextKey: "nav.ERR_EMPTY_RESPONSE.next",
   },
   ERR_ADDRESS_UNREACHABLE: {
-    what: "目标地址不可达",
-    next: "确认主机在线、地址与端口写对了",
+    whatKey: "nav.ERR_ADDRESS_UNREACHABLE.what",
+    nextKey: "nav.ERR_ADDRESS_UNREACHABLE.next",
   },
 };
 
@@ -94,15 +95,15 @@ const BY_PREFIX: { prefix: string; diagnosis: Diagnosis }[] = [
   {
     prefix: "ERR_CERT_",
     diagnosis: {
-      what: "TLS 证书校验不通过",
-      next: "自签或内网证书需要先在浏览器里信任；也可确认是否该改用 http",
+      whatKey: "nav.ERR_CERT_.what",
+      nextKey: "nav.ERR_CERT_.next",
     },
   },
   {
     prefix: "ERR_SSL_",
     diagnosis: {
-      what: "TLS 握手失败",
-      next: "确认目标是否支持 https、证书是否已信任",
+      whatKey: "nav.ERR_SSL_.what",
+      nextKey: "nav.ERR_SSL_.next",
     },
   },
 ];
@@ -172,14 +173,18 @@ export function diagnoseNavigateFailure(
     // 没收录的码：只报码，不编解释；把 bsk 的原始 details 留下以便排查。
     const detail = detailsLine(rawError);
     return (
-      `无法打开 ${url}：浏览器报 ${code}（此错误码尚未收录，未做解释）。` +
-      (detail ? `原始信息：${detail}` : "") +
-      (local
-        ? "\n这是本机地址：请确认该端口的服务已启动。"
-        : "")
+      t("nav.notFound", { url, code }) +
+      (detail ? t("nav.notFoundDetail", { detail }) : "") +
+      (local ? "\n" + t("nav.local") : "")
     );
   }
 
-  const steer = (local && found.localNext) || found.next;
-  return `无法打开 ${url}：${found.what}（net::${code}）。\n${steer}`;
+  const steer =
+    local && found.localNextKey ? t(found.localNextKey) : t(found.nextKey);
+  return t("nav.failLine", {
+    url,
+    what: t(found.whatKey),
+    code,
+    steer,
+  });
 }
