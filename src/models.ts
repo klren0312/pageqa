@@ -22,6 +22,7 @@ import {
 import { loadConfig, PAGEQA_PROVIDER_ID, type PageQaConfig } from "./config.js";
 import { FileCredentialStore } from "./auth.js";
 import { createPageqaProvider } from "./llm.js";
+import { t } from "./i18n.js";
 
 export { PAGEQA_PROVIDER_ID };
 
@@ -102,6 +103,72 @@ export function resolveModel(
   choice: ModelChoice,
 ): Model<Api> | undefined {
   return catalog.models.getModel(choice.provider, choice.model);
+}
+
+/**
+ * 探活请求的输出上限。
+ *
+ * 探活只要证明「端点会回话」，不需要它写文章：给一个小上限既是省钱，也是让探活快速返回。
+ */
+const PROBE_MAX_TOKENS = 16;
+
+/**
+ * 探活超时。
+ *
+ * 端点挂着不回（不是连接被拒，而是包被丢掉）时必须能快速失败——否则界面会停在
+ * 「运行中」，用户分不清是模型在思考还是端点已经死了。
+ */
+const PROBE_TIMEOUT_MS = 20_000;
+
+/** 探活结果。失败时 `reason` 是可直接展示给用户的原因。 */
+export type ModelProbe = { ok: true } | { ok: false; reason: string };
+
+/**
+ * 探活：确认这个模型现在真的能发起一次请求。
+ *
+ * 刻意走**与真实运行同一条路**（同一个 provider 的 `streamSimple`，同一套鉴权、端点与
+ * 兼容参数），而不是自己发一个 HTTP 探测：探活通过、真跑不通的裂缝正是最坑人的那种。
+ * 覆盖的失败面：端点没起（连接被拒）、baseUrl/apiKey 写错（401）、模型名不存在（404）、
+ * 网络不通（超时）。
+ *
+ * 注意 pi-ai 的失败**不抛异常**：请求出错时它 resolve 一条 `stopReason: "error"` 的消息
+ * （见其 `api/lazy.ts` 的 `createSetupErrorMessage`），因此这里必须显式检查那个字段，
+ * 只看有没有 throw 会把「连不上」当成「通了」。
+ */
+export async function probeModel(
+  catalog: ModelCatalog,
+  model: Model<Api>,
+  opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<ModelProbe> {
+  const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+  try {
+    const reply = await catalog.models.completeSimple(
+      model,
+      {
+        messages: [{ role: "user", content: "ping", timestamp: Date.now() }],
+      },
+      { signal, maxTokens: PROBE_MAX_TOKENS, timeoutMs },
+    );
+    if (reply.stopReason === "error") {
+      return {
+        ok: false,
+        reason: reply.errorMessage ?? t("err.modelProbeNoReason"),
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    // 超时单独说人话：Node 的「The operation was aborted due to timeout」对用户毫无信息量。
+    // 用户自己按 Esc 造成的中止不算超时，交给调用方按「已取消」处理。
+    if (timeout.aborted && !opts.signal?.aborted) {
+      return { ok: false, reason: t("err.modelProbeTimeout", { ms: timeoutMs }) };
+    }
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 /** 模型目录里是否已经有这个 provider。 */

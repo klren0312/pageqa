@@ -1,8 +1,14 @@
-import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+  Agent,
+  type AgentEvent,
+  type AgentMessage,
+} from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import {
   createModelCatalog,
   hasProvider,
   loadBuiltinProviders,
+  probeModel,
   resolveModel,
   type ModelCatalog,
   type ModelChoice,
@@ -30,6 +36,7 @@ import {
   statusTag,
   summarizeSuite,
   type AssertionResult,
+  type RawUsage,
   type TestReport,
   type TokenUsage,
 } from "./report.js";
@@ -63,6 +70,14 @@ export interface AgentOptions {
    * 对本场景立即生效；批处理模式不传，由 runAgent 自建（只含自定义端点）。
    */
   catalog?: ModelCatalog;
+  /**
+   * 每次 LLM 调用后的用量回调：参数是**本次运行到目前为止**的累计（不是增量）。
+   *
+   * 交互模式用它把 token 消耗实时显示在状态栏上——一条长流程跑十几分钟，「已经烧了多少」
+   * 与「跑到哪一步」一样是用户要知道的事；而 `usage` 只在 `runAgent` 返回时才可得
+   * （那时场景已经跑完了，看不出消耗是怎么长起来的）。
+   */
+  onUsage?: (usage: TokenUsage) => void;
 }
 
 export interface AgentRunResult {
@@ -246,6 +261,9 @@ interface SessionHolder {
  *
  * 无论用例通过、失败还是中途抛错，结束后都会关闭本次的 bsk session，
  * 从而关掉自动化操作的那个浏览器窗口（Agent Window）。
+ *
+ * 开跑前先探活模型：不通则抛 `ModelUnreachableError`，**一条用例都不执行**
+ * （探活在 bsk 就绪检查与建 session 之前，因此连浏览器窗口都不会开）。
  */
 export async function runAgent(
   input: string,
@@ -305,8 +323,54 @@ function wasAborted(
 }
 
 /**
+ * 模型不可达（跑用例前的探活失败）。
+ *
+ * 单独一个类型是为了让调用方能把它与「用例失败」区分开——两者的处置完全不同：
+ * 批处理据此给出干净报错（而不是一坨栈）并退出非零；交互模式据此停掉整条队列。
+ */
+export class ModelUnreachableError extends Error {
+  constructor(
+    /** provider id（来自本次的模型选择）。 */
+    readonly provider: string,
+    /** 模型 id。 */
+    readonly model: string,
+    /** 探活失败原因（端点或网络的原话）。 */
+    readonly reason: string,
+  ) {
+    super(t("err.modelUnreachable", { provider, model, msg: reason }));
+    this.name = "ModelUnreachableError";
+  }
+}
+
+/**
+ * 场景开跑前的探活闸门。
+ *
+ * 不通就抛 `ModelUnreachableError`，调用方据此**不执行这个场景**：批处理直接退出非零，
+ * 交互模式停掉整条队列。这比「先跑起来、再让每个场景各自失败」诚实——一次「连不上」
+ * 被摊成 N 个「用例失败」时，报告里全是假失败，真正的原因被埋在最上面一行里，
+ * 而且每个场景还各自白开一次浏览器窗口。
+ *
+ * 用户按了 Esc 造成的中止**不算**不可达：那是「我不想再等这个了」，交给原有的取消路径收尾。
+ */
+async function ensureModelReachable(
+  catalog: ModelCatalog,
+  choice: ModelChoice,
+  model: Model<Api>,
+  opts: AgentOptions,
+): Promise<void> {
+  if (opts.abortSignal?.aborted) return;
+  const probe = await probeModel(catalog, model, { signal: opts.abortSignal });
+  if (probe.ok) return;
+  if (opts.abortSignal?.aborted) {
+    debugLog("[runAgent] 探活期间被中止，按「已取消」处理");
+    return;
+  }
+  throw new ModelUnreachableError(choice.provider, model.id, probe.reason);
+}
+
+/**
  * 阶段一：准备运行环境。
- * 完成 LLM 后端创建、bsk 就绪检查、session 创建、工具组装、Agent 实例化与事件订阅。
+ * 完成 LLM 后端创建、模型探活、bsk 就绪检查、session 创建、工具组装、Agent 实例化与事件订阅。
  */
 async function initializeAgent(
   input: string,
@@ -350,6 +414,12 @@ async function initializeAgent(
   }
   const models = catalog.models;
   log("[runAgent] 模型已解析，model=" + choice.provider + "/" + model.id);
+
+  // ── 连通性探活：模型不通就一条用例都不跑 ──
+  // 位置很关键：必须在 bsk 就绪检查与建 session **之前**。模型连不上却先把浏览器窗口
+  // 开起来，既白等十几秒，也留下一个「看起来跑起来了」的现场。
+  info(t("log.checkModel", { model: model.id }));
+  await ensureModelReachable(catalog, choice, model, opts);
   info(t("log.llmReady", { model: model.id }));
 
   info(t("log.checkDaemon"));
@@ -426,7 +496,7 @@ async function initializeAgent(
     },
   });
 
-  subscribeProgress(agent, events, recorder);
+  subscribeProgress(agent, events, recorder, opts.onUsage);
 
   // 用户在交互模式里按 Esc → 中止本轮运行。
   // `Agent.abort()` 是 pi-agent-core 唯一的中断入口：它 abort 内部那个 AbortController，
@@ -471,22 +541,44 @@ function clipOneLine(text: string, max = 160): string {
 }
 
 /**
+ * 从 agent 事件里取**本次 LLM 调用**的用量。
+ *
+ * 只有 assistant 消息带 usage；`turn_end` 也会为别的角色（user / toolResult）触发，
+ * 不过滤掉就会把 `calls` 记多（`addUsage` 无条件 +1），得到「调用次数比真实多、
+ * 合计又对不上」的假数字——报告里最不能出现的就是这种看起来精确的错数。
+ */
+export function turnUsage(event: AgentEvent): RawUsage | null {
+  if (event.type !== "turn_end") return null;
+  const message = event.message as { role?: string; usage?: RawUsage };
+  if (message.role !== "assistant" || !message.usage) return null;
+  return message.usage;
+}
+
+/**
  * 订阅 agent 事件，把工具调用与模型输出记入 events，并把进度回显到 stderr。
  *
  * 工具执行进度始终打印（默认可见），让长流程每跑一步都有回显；
  * 避免出现「终端长时间无输出、不知道卡在哪一步」的观感。
+ * 每轮 LLM 调用后再把累计用量交给 `onUsage`，供界面实时显示 token 消耗。
  */
 function subscribeProgress(
   agent: Agent,
   events: string[],
   recorder: Recorder,
+  onUsage?: (usage: TokenUsage) => void,
 ): void {
   const log = debugLog;
   let toolCount = 0;
   let toolStartedAt = 0;
   let firstTextLogged = false;
+  let liveUsage = emptyUsage();
 
   agent.subscribe((e) => {
+    const turn = turnUsage(e);
+    if (turn) {
+      liveUsage = addUsage(liveUsage, turn);
+      onUsage?.(liveUsage);
+    }
     if (e.type === "tool_execution_start") {
       events.push("[tool] " + e.toolName);
       log("[agent] 工具调用开始: " + e.toolName);

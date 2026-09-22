@@ -23,9 +23,11 @@ const {
   listLoginOptions,
   listLogoutOptions,
   listModelOptions,
+  probeModel,
   resolveModel,
   PAGEQA_PROVIDER_ID,
 } = await import("../dist/models.js");
+const { ModelUnreachableError } = await import("../dist/agent.js");
 
 /**
  * 测试替身：pi-ai 的 CredentialStore 只有 4 个方法，自持一份内存实现即可，
@@ -114,5 +116,113 @@ describe("模型目录（自定义端点 + 内置 provider）", () => {
     assert.deepEqual(await listLogoutOptions(catalog), [
       { provider: "anthropic", providerName: "anthropic", type: "api_key" },
     ]);
+  });
+});
+
+/**
+ * 探活是「跑用例前的闸门」：不通就不执行用例。
+ *
+ * 这里钉死两条容易踩空的事实：
+ * 1. pi-ai 请求失败时**不抛异常**，而是 resolve 一条 `stopReason: "error"` 的消息
+ *    （见其 `api/lazy.ts`），只看有没有 throw 会把「连不上」当成「通了」；
+ * 2. 「端点挂死」要翻成人话（超时），而**用户按 Esc** 的中止不能被算成「模型不可达」。
+ */
+describe("模型探活（跑用例前的连通性检查）", () => {
+  const model = {
+    id: "unit-test-model",
+    provider: PAGEQA_PROVIDER_ID,
+    api: "openai-completions",
+  };
+  /** probeModel 只用到 catalog.models.completeSimple，因此给一个最小替身。 */
+  const catalogWith = (completeSimple) => ({ models: { completeSimple } });
+
+  test("端点正常回话 → 判定可达", async () => {
+    const probe = await probeModel(
+      catalogWith(async () => ({ stopReason: "stop", content: [] })),
+      model,
+    );
+    assert.deepEqual(probe, { ok: true });
+  });
+
+  test("解析出 stopReason=error 的消息也算不可达（pi-ai 失败不抛异常）", async () => {
+    const probe = await probeModel(
+      catalogWith(async () => ({
+        stopReason: "error",
+        errorMessage: "Connection error.",
+      })),
+      model,
+    );
+    assert.equal(probe.ok, false);
+    assert.equal(probe.reason, "Connection error.");
+  });
+
+  test("端点没给出原因时不空着，给一句可读兜底", async () => {
+    const probe = await probeModel(
+      catalogWith(async () => ({ stopReason: "error" })),
+      model,
+    );
+    assert.equal(probe.ok, false);
+    assert.ok(probe.reason.length > 0);
+  });
+
+  test("探活请求带中止信号与极小输出上限（不通就快速失败、也不费钱）", async () => {
+    let seen;
+    await probeModel(
+      catalogWith(async (_m, _ctx, opts) => {
+        seen = opts;
+        return { stopReason: "stop" };
+      }),
+      model,
+      { timeoutMs: 1234 },
+    );
+    assert.ok(seen.signal instanceof AbortSignal);
+    assert.equal(seen.timeoutMs, 1234);
+    assert.ok(seen.maxTokens > 0 && seen.maxTokens <= 32);
+  });
+
+  test("端点挂死不回话 → 超时说人话，而不是把 Node 的 aborted 原文抛给用户", async () => {
+    const hanging = (_m, _ctx, opts) =>
+      new Promise((_resolve, reject) => {
+        opts.signal.addEventListener("abort", () =>
+          reject(new Error("The operation was aborted due to timeout")),
+        );
+      });
+    const probe = await probeModel(catalogWith(hanging), model, {
+      timeoutMs: 20,
+    });
+    assert.equal(probe.ok, false);
+    assert.match(probe.reason, /20/);
+    assert.doesNotMatch(probe.reason, /aborted/i);
+  });
+
+  test("用户按 Esc 的中止不算「模型不可达」（那是「我不想再等这个了」）", async () => {
+    const controller = new AbortController();
+    const hanging = (_m, _ctx, opts) =>
+      new Promise((_resolve, reject) => {
+        opts.signal.addEventListener("abort", () =>
+          reject(new Error("Aborted")),
+        );
+      });
+    const pending = probeModel(catalogWith(hanging), model, {
+      signal: controller.signal,
+      timeoutMs: 5000,
+    });
+    controller.abort();
+    const probe = await pending;
+    assert.equal(probe.ok, false);
+    assert.equal(probe.reason, "Aborted");
+  });
+
+  test("ModelUnreachableError 的报错可读且可被类型区分（批处理与交互模式据此分支）", () => {
+    const err = new ModelUnreachableError(
+      PAGEQA_PROVIDER_ID,
+      "unit-test-model",
+      "Connection error.",
+    );
+    assert.ok(err instanceof Error);
+    assert.equal(err.name, "ModelUnreachableError");
+    assert.match(err.message, /unit-test-model/);
+    assert.match(err.message, /Connection error\./);
+    assert.equal(err.reason, "Connection error.");
   });
 });

@@ -1,24 +1,42 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { splitScenarios } from "../dist/agent.js";
 import { debugLog, info, setDebug, setSink } from "../dist/log.js";
 import {
   buildReport,
   emptyUsage,
+  renderSuiteText,
   statusTag,
   summarizeSuite,
 } from "../dist/report.js";
+import { groupRecordingsBySource } from "../dist/replay.js";
+import {
+  buildPickPrompt,
+  displayPath,
+  parsePick,
+  resolveCaseFile,
+} from "../dist/tui/case-source.js";
 import { ScenarioQueue } from "../dist/tui/queue.js";
 import {
+  arrowKeysBelongToLog,
+  KEYBINDINGS,
+  WHEEL_SCROLL_LINES,
+} from "../dist/tui/keys.js";
+import {
   appendScenarioToCaseFile,
+  loadCaseScenarios,
   scenarioNameFromBody,
   scenariosFromInput,
 } from "../dist/tui/writeback.js";
 
 // 纯单元测试：不依赖浏览器、LLM 与真实 TTY。
+
+/** 队列测试里的用例来源：都当作来自同一个用例文件。 */
+const FILE_ORIGIN = { kind: "file", path: "case.md" };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -124,6 +142,90 @@ describe("追加场景写回源用例文件", () => {
   });
 });
 
+describe("日志视口的滚动设置", () => {
+  const kb = new KeybindingsManager(TUI_KEYBINDINGS, KEYBINDINGS);
+
+  test("逐行滚动绑到 Ctrl+↑/Ctrl+↓（pi-tui 默认没有键位，按了等于没反应）", () => {
+    assert.equal(kb.matches("\x1b[1;5A", "tui.altScreen.lineUp"), true);
+    assert.equal(kb.matches("\x1b[1;5B", "tui.altScreen.lineDown"), true);
+    // 上下方向键仍归编辑器（移动光标/自动补全），滚动不许把它们抢走
+    assert.equal(kb.matches("\x1b[A", "tui.altScreen.lineUp"), false);
+    assert.equal(kb.matches("\x1b[B", "tui.altScreen.lineDown"), false);
+    assert.deepEqual(kb.getKeys("tui.editor.cursorUp"), ["up"]);
+    assert.deepEqual(kb.getKeys("tui.editor.cursorDown"), ["down"]);
+  });
+
+  test("历史输入挪到 Ctrl+P/Ctrl+N（↑/↓ 要让给日志滚动）", () => {
+    assert.equal(kb.matches("\x10", "tui.editor.historyPrevious"), true);
+    assert.equal(kb.matches("\x0e", "tui.editor.historyNext"), true);
+    assert.equal(kb.matches("\x1b[A", "tui.editor.historyPrevious"), false);
+    assert.equal(kb.matches("\x1b[B", "tui.editor.historyNext"), false);
+  });
+
+  test("只覆盖 altScreen 与历史键位，编辑器的编辑键（Ctrl+U/Ctrl+D/Ctrl+W…）一个不碰", () => {
+    for (const id of Object.keys(KEYBINDINGS)) {
+      assert.match(id, /^tui\.(altScreen|editor\.history)/);
+    }
+    assert.deepEqual(kb.getKeys("tui.editor.deleteToLineStart"), ["ctrl+u"]);
+    assert.deepEqual(kb.getKeys("tui.editor.deleteCharForward"), [
+      "delete",
+      "ctrl+d",
+    ]);
+    assert.deepEqual(kb.getKeys("tui.editor.deleteWordBackward"), [
+      "ctrl+w",
+      "alt+backspace",
+    ]);
+  });
+
+  test("翻页与首尾仍归视口（回归保护：这两个键是「日志能滚」的底线）", () => {
+    assert.deepEqual(kb.getKeys("tui.altScreen.pageUp"), ["pageUp"]);
+    assert.deepEqual(kb.getKeys("tui.altScreen.pageDown"), ["pageDown"]);
+    assert.deepEqual(kb.getKeys("tui.altScreen.bottom"), ["end"]);
+  });
+
+  test("我们自己的键位之间不冲突（同键双绑会让按键归属含糊）", () => {
+    assert.deepEqual(kb.getConflicts(), []);
+  });
+
+  test("滚轮一格不止一行：默认 1 行滚起来像没反应", () => {
+    assert.ok(WHEEL_SCROLL_LINES >= 3, `实际 ${WHEEL_SCROLL_LINES}`);
+  });
+});
+
+/**
+ * 「滚轮滚不动日志、反而翻出输入框历史」的根因：一部分终端把滚轮翻译成 ↑/↓ 送进来
+ * （VS Code / xterm.js 的全屏缓冲就是这样）。两者字节相同、无法区分，只能按上下文分派。
+ */
+describe("↑/↓ 归谁：日志视口还是输入框", () => {
+  const state = (over) => ({
+    text: "",
+    overlayOpen: false,
+    autocompleteShowing: false,
+    ...over,
+  });
+
+  test("输入框为空 → 归日志（滚轮因此能滚）", () => {
+    assert.equal(arrowKeysBelongToLog(state({ text: "" })), true);
+    assert.equal(arrowKeysBelongToLog(state({ text: "   \n " })), true);
+  });
+
+  test("输入框有内容 → 归输入框（Ctrl+P 调出的历史文本同样如此，↑/↓ 继续当历史浏览）", () => {
+    assert.equal(arrowKeysBelongToLog(state({ text: "打开 x" })), false);
+    assert.equal(arrowKeysBelongToLog(state({ text: "上一次提交的用例" })), false);
+  });
+
+  test("浮层/联想列表在等方向键时一律让路（否则选不中条目）", () => {
+    assert.equal(
+      arrowKeysBelongToLog(state({ overlayOpen: true })),
+      false,
+    );
+    assert.equal(
+      arrowKeysBelongToLog(state({ autocompleteShowing: true })),
+      false,
+    );
+  });
+});
+
 describe("运行队列", () => {
   test("场景串行执行，一个结束自动开始下一个", async () => {
     const order = [];
@@ -139,8 +241,8 @@ describe("运行队列", () => {
       return "pass";
     }, () => {});
 
-    q.add("A", "a", false);
-    q.add("B", "b", false);
+    q.add("A", "a", FILE_ORIGIN);
+    q.add("B", "b", FILE_ORIGIN);
     q.pump();
     await waitIdle(q);
 
@@ -156,10 +258,10 @@ describe("运行队列", () => {
       return "pass";
     }, () => {});
 
-    q.add("A", "a", false);
+    q.add("A", "a", FILE_ORIGIN);
     q.pump();
     await sleep(2);
-    q.add("B", "b", true); // 追加：此时 A 还在跑
+    q.add("B", "b", { kind: "added", path: "case.md" }); // 追加：此时 A 还在跑
     q.pump();
     await waitIdle(q);
 
@@ -197,9 +299,9 @@ describe("运行队列", () => {
       return state;
     }, () => {});
 
-    q.add("A", "a", false);
-    q.add("B", "b", false);
-    q.add("C", "c", false);
+    q.add("A", "a", FILE_ORIGIN);
+    q.add("B", "b", FILE_ORIGIN);
+    q.add("C", "c", FILE_ORIGIN);
     q.pump();
     await sleep(5);
 
@@ -214,6 +316,30 @@ describe("运行队列", () => {
     );
   });
 
+  test("执行器里停掉整条队列：当前记为失败、剩余记为「已取消」，且不再开下一条", async () => {
+    // 对应「模型不可达」：这条路必须能真的停下来——继续跑只会把一次配置错误
+    // 摊成一堆「用例失败」，每个还要白开一次浏览器。
+    const ran = [];
+    const q = new ScenarioQueue(async (item) => {
+      ran.push(item.name);
+      q.cancelAllWaiting("模型不可达，已停止执行");
+      return "fail";
+    }, () => {});
+
+    q.add("A", "a", FILE_ORIGIN);
+    q.add("B", "b", FILE_ORIGIN);
+    q.add("C", "c", FILE_ORIGIN);
+    q.pump();
+    await waitIdle(q);
+
+    assert.deepEqual(ran, ["A"]);
+    assert.deepEqual(
+      q.all().map((i) => i.state),
+      ["fail", "cancelled", "cancelled"],
+    );
+    assert.equal(q.all()[1].cancelNote, "模型不可达，已停止执行");
+  });
+
   test("执行抛错不会让队列停摆：记为失败后继续下一个", async () => {
     const order = [];
     const q = new ScenarioQueue(async (item) => {
@@ -222,8 +348,8 @@ describe("运行队列", () => {
       return "pass";
     }, () => {});
 
-    q.add("A", "a", false);
-    q.add("B", "b", false);
+    q.add("A", "a", FILE_ORIGIN);
+    q.add("B", "b", FILE_ORIGIN);
     q.pump();
     await waitIdle(q);
 
@@ -354,5 +480,184 @@ describe("日志落点可注入", () => {
       setDebug(false);
       setSink(null);
     }
+  });
+});
+
+describe("运行时加载用例文件：/run 的候选解析", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pageqa-case-"));
+  const write = (rel, text) => {
+    const p = join(dir, rel);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, text);
+  };
+  write("examples/smoke.md", "## A\n\n打开 x\n");
+  write("examples/smoke-mobile.md", "## B\n\n打开 y\n");
+  write("examples/plm-product-bom.md", "## C\n\n打开 z\n");
+  write("docs/adr/0001-x.md", "## D\n\n打开 d\n");
+  write("notes.txt", "## E\n\n打开 e\n");
+  write("node_modules/pkg/hidden.md", "## F\n\n打开 f\n");
+  write(".private/secret.md", "## G\n\n打开 g\n");
+
+  test("精确路径存在就直接命中，不再自作聪明", () => {
+    assert.deepEqual(resolveCaseFile("examples/smoke.md", dir), {
+      kind: "one",
+      path: join(dir, "examples/smoke.md"),
+    });
+    // `./` 前缀与反斜杠写法都要认（Windows 上从资源管理器粘过来就是反斜杠）
+    assert.equal(resolveCaseFile("./examples/smoke.md", dir).kind, "one");
+    assert.equal(resolveCaseFile("examples\\smoke.md", dir).kind, "one");
+  });
+
+  test("目录 → 取该目录下的全部用例文件", () => {
+    const hit = resolveCaseFile("examples", dir);
+    assert.equal(hit.kind, "many");
+    assert.deepEqual(
+      hit.candidates.map((p) => displayPath(p, dir)).sort(),
+      [
+        "examples/plm-product-bom.md",
+        "examples/smoke-mobile.md",
+        "examples/smoke.md",
+      ],
+    );
+  });
+
+  test("关键字唯一命中就直接加载（不必敲全路径）", () => {
+    const hit = resolveCaseFile("plm", dir);
+    assert.equal(hit.kind, "one");
+    assert.equal(displayPath(hit.path, dir), "examples/plm-product-bom.md");
+  });
+
+  test("关键字命中多个 → 交给上层挑选，浅层优先且顺序稳定", () => {
+    const hit = resolveCaseFile("smoke", dir);
+    assert.equal(hit.kind, "many");
+    assert.deepEqual(
+      hit.candidates.map((p) => displayPath(p, dir)),
+      ["examples/smoke-mobile.md", "examples/smoke.md"],
+    );
+  });
+
+  test(".txt 也算用例文件（与 CLI 的判据一致）", () => {
+    const hit = resolveCaseFile("notes", dir);
+    assert.equal(hit.kind, "one");
+    assert.equal(displayPath(hit.path, dir), "notes.txt");
+  });
+
+  test("跳过 node_modules 与点目录，但普通子目录要能找到", () => {
+    assert.equal(resolveCaseFile("hidden", dir).kind, "none");
+    assert.equal(resolveCaseFile("secret", dir).kind, "none");
+    const hit = resolveCaseFile("0001", dir);
+    assert.equal(hit.kind, "one");
+    assert.equal(displayPath(hit.path, dir), "docs/adr/0001-x.md");
+  });
+
+  test("找不到就如实说找不到（不猜）", () => {
+    assert.deepEqual(resolveCaseFile("nope-nothing", dir), { kind: "none" });
+    assert.deepEqual(resolveCaseFile("   ", dir), { kind: "none" });
+  });
+});
+
+describe("让模型从候选里挑用例文件", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pageqa-pick-"));
+  const candidates = [
+    join(dir, "examples/smoke.md"),
+    join(dir, "examples/plm-product-bom.md"),
+  ];
+
+  test("提示里只给文件名，不给文件内容", () => {
+    const prompt = buildPickPrompt("跑一下 plm 那个长流程", candidates, dir);
+    assert.match(prompt, /1\. examples\/smoke\.md/);
+    assert.match(prompt, /2\. examples\/plm-product-bom\.md/);
+    assert.match(prompt, /只回答/);
+  });
+
+  test("只认候选范围内的序号：0、越界、含糊回答一律当作挑不出来", () => {
+    assert.equal(parsePick("2", candidates), candidates[1]);
+    assert.equal(parsePick("我选第 2 个", candidates), candidates[1]);
+    assert.equal(parsePick("0", candidates), undefined);
+    assert.equal(parsePick("3", candidates), undefined);
+    assert.equal(parsePick("不知道", candidates), undefined);
+  });
+});
+
+describe("加载用例文件（/run）", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pageqa-load-"));
+
+  test("与启动时同一个 splitScenarios：切分与命名完全一致", () => {
+    const p = join(dir, "case.md");
+    const text = "## A\n\n打开 a\n\n## B\n\n打开 b\n";
+    writeFileSync(p, text);
+    assert.deepEqual(loadCaseScenarios(p), splitScenarios(text));
+    assert.deepEqual(
+      loadCaseScenarios(p).map((s) => s.name),
+      ["A", "B"],
+    );
+  });
+});
+
+describe("回放脚本按来源拆分", () => {
+  const rec = (name, sourcePath) =>
+    sourcePath === undefined
+      ? { name, caseSteps: [], steps: [] }
+      : { name, caseSteps: [], steps: [], sourcePath };
+
+  test("同来源进同一组，无来源的场景单独成组（键为 null）", () => {
+    const groups = groupRecordingsBySource([
+      rec("A", "examples/smoke.md"),
+      rec("B", "examples/plm.md"),
+      rec("C", "examples/smoke.md"),
+      rec("D"),
+    ]);
+    assert.equal(groups.size, 3);
+    assert.deepEqual(
+      groups.get("examples/smoke.md").map((r) => r.name),
+      ["A", "C"],
+    );
+    assert.deepEqual(
+      groups.get("examples/plm.md").map((r) => r.name),
+      ["B"],
+    );
+    assert.deepEqual(
+      groups.get(null).map((r) => r.name),
+      ["D"],
+    );
+  });
+
+  test("只有一个来源时与历史行为同构（仍然只出一份脚本）", () => {
+    const groups = groupRecordingsBySource([rec("A", "x.md"), rec("B", "x.md")]);
+    assert.equal(groups.size, 1);
+    assert.equal(groups.get("x.md").length, 2);
+  });
+});
+
+describe("报告标注场景来源", () => {
+  const member = (name, origin) => ({
+    name,
+    origin,
+    report: { status: "pass", assertions: [], transcript: "" },
+    usage: emptyUsage(),
+  });
+
+  test("文本报告与 JSON 都点出场景来自哪个文件", () => {
+    const members = [member("A", "examples/smoke.md"), member("B", "追加")];
+    const summary = summarizeSuite(members);
+    assert.deepEqual(
+      summary.scenarios.map((s) => s.origin),
+      ["examples/smoke.md", "追加"],
+    );
+    const text = renderSuiteText(summary, members, summary.scenarios);
+    assert.match(
+      text,
+      /--- 场景 1\/2：A（来源: examples\/smoke\.md） \[PASS\] ---/,
+    );
+    assert.match(text, /--- 场景 2\/2：B（来源: 追加） \[PASS\] ---/);
+  });
+
+  test("没有来源时报告与历史逐字一致（批处理不受影响）", () => {
+    const members = [member("A", undefined)];
+    const summary = summarizeSuite(members);
+    assert.equal(summary.scenarios[0].origin, undefined);
+    const text = renderSuiteText(summary, members, [{ name: "A" }]);
+    assert.match(text, /--- 场景 1\/1：A \[PASS\] ---/);
+    assert.doesNotMatch(text, /来源/);
   });
 });

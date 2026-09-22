@@ -50,8 +50,13 @@ const catalogs: Record<Locale, Catalog> = {
       "[pageqa] 回放脚本已生成：{path}（{scenes} 个场景，共 {steps} 步；已取消的场景不含在内）",
     "log.replayNext": "[pageqa] 下次可零模型回放：pageqa --replay {path}",
     "log.wroteBackScenarios": "[pageqa] 已写回 {n} 个追加场景到 {path}",
+    "log.lostScenarios":
+      "[pageqa] 本次有 {n} 个追加场景没有落点、未写入任何文件（关掉就没了）",
+    "log.scriptSkippedNoScenarios":
+      "[pageqa] 本次没有跑过任何场景，未生成回放脚本",
     "log.caseStart": "[pageqa] 用例开始：{text}（{chars} 字符，{steps} 个步骤）",
     "log.llmReady": "[pageqa] LLM 已就绪：model={model}",
+    "log.checkModel": "[pageqa] 检查模型连通性：{model}…",
     "log.checkDaemon": "[pageqa] 检查 bsk daemon 与浏览器连接…",
     "log.createSession": "[pageqa] 创建/复用 bsk session…",
     "log.session": "[pageqa] bsk session={id}",
@@ -79,6 +84,11 @@ const catalogs: Record<Locale, Catalog> = {
     "err.modelNotFound":
       "找不到模型 {provider}/{model}：该 provider 未注册或模型 id 不存在。\n  交互模式下可用 /model 重新选择（或 /login 登录 provider）；批处理模式请检查 ~/.pageqa/config.json 的 modelProvider 与 model 字段。",
     "err.localeRequired": "{arg} 需要一个语种参数（zh 或 en）",
+    "err.modelUnreachable": "模型不可达：{provider}/{model}：{msg}",
+    "err.modelUnreachableHint":
+      "本次没有执行任何用例。修好端点后重试：交互模式用 /model 换一个模型（或 /login 登录 provider）；批处理模式检查 ~/.pageqa/config.json 的 baseUrl 与 apiKey（本地反代没起也会这样）。",
+    "err.modelProbeTimeout": "探活请求 {ms} 毫秒内没有响应",
+    "err.modelProbeNoReason": "端点未给出失败原因",
     "err.outRequired": "--out 需要一个文件路径参数",
     "err.replayRequired": "--replay 需要一个回放脚本路径",
     "err.extraPositional":
@@ -97,7 +107,9 @@ const catalogs: Record<Locale, Catalog> = {
     "err.tuiWithSession":
       "--tui 不能与 --session 同时使用：交互模式下每个场景各自建一个 bsk session（场景拥有独立 session 与浏览器窗口是既有约定，不能给单个 session 塞多个场景）",
     "err.tuiNeedsFile":
-      "--tui 需要源用例文件：追加场景要写回该文件，内联文本没有落点。请传入一个 .md/.txt 用例文件（只想临时试一条请改批处理模式）",
+      "--tui 不能与内联文本一起用：追加场景要写回一个用例文件，内联文本没有落点。想临时试一条请去掉 --tui 走批处理；想开一个可以随时加载用例文件的会话，请无参运行 pageqa",
+    "err.emitMultiSource":
+      "回放脚本与用例文件是一对一的，而本次运行有 {n} 个来源（{paths}），一个脚本装不下：请去掉 --emit-script 的路径，让每个来源各自贴着源用例写出，或分两次运行",
     "err.tuiNeedsTty":
       "--tui 需要交互式终端（stdin 与 stdout 都必须是 TTY）。在管道/重定向下请去掉 --tui（会自动走批处理）",
     "err.execFailed": "执行失败: {msg}",
@@ -109,10 +121,12 @@ const catalogs: Record<Locale, Catalog> = {
     // ── 交互模式（src/tui/app.ts）──
     "tui.title": "pageqa 交互模式",
     "tui.hint":
-      "Enter 提交 · Shift+Enter 换行 · Esc 中止当前场景 · Ctrl+C 收工 · /help 查看命令 · /model 切换模型",
+      "Enter 提交 · Shift+Enter 换行 · Esc 中止当前场景 · ↑↓/PgUp/PgDn 滚日志 · Ctrl+P 历史 · Ctrl+C 收工 · /help",
     "tui.help":
-      "命令：\n  /status        查看运行队列\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择本次会话使用的模型（Ctrl+S 设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /toggle-language  切换界面语种并保存到配置（zh ⇄ en）\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+C         收工：中止当前 + 取消全部待办，然后输出汇总报告",
+      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择本次会话使用的模型（Ctrl+S 设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /toggle-language  切换界面语种并保存到配置（zh ⇄ en）\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（输入/输出/缓存读/缓存写/合计/调用次数，每轮 LLM 调用后刷新）",
+    "tui.scroll.paused": "↓ 已暂停跟随 · End 回到底部",
     "tui.appended": "（追加）",
+    "tui.originAdded": "追加",
     "tui.queueEmpty": "运行队列为空",
     "tui.shuttingDown": "正在收尾…",
     "tui.allDone": "已全部结束，可继续追加场景",
@@ -128,17 +142,39 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.wroteBack": "已写回源用例文件：## {name}",
     "tui.writeBackFail":
       "写回源用例文件失败（该场景仍会执行）：{msg}",
+    "tui.notWrittenBack":
+      "未写回（本次没有落点）：## {name}（关掉就没了）",
     "tui.queued":
       "已加入运行队列 #{id}：{name}（用例已写回 {path}）",
+    "tui.queuedNoTarget":
+      "已加入运行队列 #{id}：{name}（未写回任何文件）",
     "tui.cancelOk": '已取消待办 #{id}「{name}」',
     "tui.cancelNotFound":
       "没有找到可取消的待办 #{arg}（已开始执行的场景请用 Esc 中止）",
     "tui.unknownCmd":
-      "未知命令：/{cmd}（可用：/help /status /cancel <n> /model /login /logout /toggle-language /exit）",
+      "未知命令：/{cmd}（可用：/help /status /run <文件> /cancel <n> /model /login /logout /toggle-language /exit）",
     "tui.languageSwitched": "界面语种已切换为 {locale}（已保存到配置）",
     "tui.languageSwitchFailed":
       "界面语种已切换为 {locale}（写入配置失败：{msg}）",
+    "tui.run.usage":
+      "用法：/run <用例文件路径或关键字>（如 /run examples/smoke.md、/run plm）",
+    "tui.run.searching": "正在查找用例文件：{hint}",
+    "tui.run.notFound":
+      "没有找到匹配的用例文件：{hint}\n  可以给一个 .md/.txt 路径，或一个文件名关键字（查找会跳过 node_modules/.git 等目录）",
+    "tui.run.overflow": "（另有 {n} 个匹配未列出）",
+    "tui.run.ambiguous": "匹配到 {n} 个用例文件，先交给模型挑选：{paths}",
+    "tui.run.picked": "已按模型的选择加载：{path}",
+    "tui.run.pickFailed": "模型没能挑出唯一文件（{msg}），改为手动选择",
+    "tui.run.pickTitle": "选择要加载的用例文件（{hint}）",
+    "tui.run.loaded": "已加载 {n} 个场景：{path}",
+    "tui.run.empty": "该文件里没有可用场景：{path}",
+    "tui.run.readFailed": "读取用例文件失败：{path}（{msg}）",
+    "tui.run.targetSwitched": "写回落点已切换为 {path}",
+    "tui.noSource": "未指定用例文件（用 /run <路径或关键字> 加载一个）",
+    "tui.target": "落点 {path}",
+    "tui.noTarget": "落点：无（追加场景不会写回任何文件）",
     "tui.cmd.status": "查看运行队列",
+    "tui.cmd.run": "加载一个已有用例文件并加入运行队列",
     "tui.cmd.cancel": "取消一个尚未开始的待办",
     "tui.cmd.model": "选择本次会话使用的模型",
     "tui.cmd.login": "登录一个 provider（API Key 或订阅登录）",
@@ -167,6 +203,10 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.model.empty":
       "没有可用模型：自定义端点未配置，且没有任何已登录的 provider。请先用 /login 登录。",
     "tui.model.loadFailed": "加载模型列表失败：{msg}",
+    "tui.model.expectation": "模型可连通（不通则不执行用例）",
+    "tui.model.stopRun":
+      "已停止执行剩余 {n} 个场景：模型不通时继续跑，只会把一次配置错误摊成一堆「用例失败」，每个还要白开一次浏览器。",
+    "tui.model.stopNote": "模型不可达，已停止执行",
     "tui.login.title": "选择要登录的 provider（Esc 取消）",
     "tui.login.methodTitle": "选择 {provider} 的登录方式（Esc 取消）",
     "tui.login.methodOauth": "订阅登录：{label}",
@@ -197,6 +237,9 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.logout.failed": "移除 {provider} 的凭据失败：{msg}",
     "tui.logout.loadFailed": "读取已保存凭据失败：{msg}",
     "tui.shutdown": "收工：{reason}",
+    "tui.signalReason": "Ctrl+C（终端信号）",
+    "tui.shutdownNow":
+      "再按一次 Ctrl+C：不再等队列停下，立刻收尾（汇总报告照打）",
     "tui.abortingCurrent": "正在中止当前场景…",
     "tui.cancelledWaiting": "已取消 {n} 个未开始的待办",
     "tui.abortTimeout":
@@ -204,7 +247,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.abortScene":
       '已请求中止场景「{name}」，剩余步骤不再执行',
     "tui.enterHint":
-      "输入一段自然语言用例并回车即可追加场景（会写回源用例文件）；/help 查看命令。",
+      "输入一段自然语言用例并回车即可追加场景（有落点时写回该文件）；/run <用例文件> 加载已有用例；/help 查看命令。",
     "tui.interactiveStart": "交互模式：{n} 个初始场景已入队",
     "tui.sourceFile": "源用例文件：{path}（追加场景会写回这里）",
     "tui.running": "运行中 {i}/{n}（{duration}）",
@@ -223,6 +266,7 @@ const catalogs: Record<Locale, Catalog> = {
     "report.cancelled": "中止: {reason}",
     "report.assertCount": "断言数: {n}",
     "report.scenarioCount": "场景数: {n}",
+    "report.scenarioOrigin": "（来源: {origin}）",
     "report.skipped":
       "跳过 {n} 步（元素未找到，当前页面状态下不需要该步）:",
     "report.skippedSuite":
@@ -454,9 +498,14 @@ const catalogs: Record<Locale, Catalog> = {
       "[pageqa] next time, replay with zero models: pageqa --replay {path}",
     "log.wroteBackScenarios":
       "[pageqa] wrote back {n} appended scenario(s) to {path}",
+    "log.lostScenarios":
+      "[pageqa] {n} appended scenario(s) had no write-back target and were not written to any file (they are gone once you exit)",
+    "log.scriptSkippedNoScenarios":
+      "[pageqa] no scenario ran this session, no replay script generated",
     "log.caseStart":
       "[pageqa] case starts: {text} ({chars} chars, {steps} steps)",
     "log.llmReady": "[pageqa] LLM ready: model={model}",
+    "log.checkModel": "[pageqa] checking model connectivity: {model}…",
     "log.checkDaemon":
       "[pageqa] checking bsk daemon and browser connection…",
     "log.createSession": "[pageqa] creating/reusing bsk session…",
@@ -488,6 +537,11 @@ const catalogs: Record<Locale, Catalog> = {
     "err.modelNotFound":
       "model {provider}/{model} not found: the provider is not registered or the model id does not exist.\n  In interactive mode use /model to pick again (or /login to sign in a provider); in batch mode check the modelProvider and model fields in ~/.pageqa/config.json.",
     "err.localeRequired": "{arg} needs a locale argument (zh or en)",
+    "err.modelUnreachable": "model unreachable: {provider}/{model}: {msg}",
+    "err.modelUnreachableHint":
+      "no scenario was executed. Fix the endpoint and retry: in interactive mode use /model to pick another model (or /login to sign in a provider); in batch mode check baseUrl and apiKey in ~/.pageqa/config.json (a stopped local proxy looks exactly like this).",
+    "err.modelProbeTimeout": "the probe got no response within {ms} ms",
+    "err.modelProbeNoReason": "the endpoint reported no failure reason",
     "err.outRequired": "--out needs a file path argument",
     "err.replayRequired": "--replay needs a replay script path",
     "err.extraPositional":
@@ -507,7 +561,9 @@ const catalogs: Record<Locale, Catalog> = {
     "err.tuiWithSession":
       "--tui cannot be used with --session: in interactive mode each scenario creates its own bsk session (scenarios owning independent sessions and browser windows is an established convention; a single session can't hold multiple scenarios)",
     "err.tuiNeedsFile":
-      "--tui needs a source case file: appended scenarios are written back to it, and inline text has nowhere to go. Pass a .md/.txt case file (use batch mode to try a one-off case)",
+      "--tui cannot be used with inline text: appended scenarios are written back to a case file, and inline text has nowhere to go. Drop --tui to run it in batch mode, or run pageqa with no arguments to open a session you can load case files into",
+    "err.emitMultiSource":
+      "a replay script maps one-to-one to a case file, but this run had {n} source(s) ({paths}) and a single script cannot hold them: drop the path from --emit-script so each source is written next to its own case file, or run twice",
     "err.tuiNeedsTty":
       "--tui needs an interactive terminal (both stdin and stdout must be TTY). Under a pipe/redirect, drop --tui (it auto-falls back to batch mode)",
     "err.execFailed": "execution failed: {msg}",
@@ -520,10 +576,12 @@ const catalogs: Record<Locale, Catalog> = {
     // ── interactive mode ──
     "tui.title": "pageqa interactive mode",
     "tui.hint":
-      "Enter submit · Shift+Enter newline · Esc abort current scenario · Ctrl+C finish · /help for commands · /model to switch model",
+      "Enter submit · Shift+Enter newline · Esc abort current scenario · ↑↓/PgUp/PgDn scroll log · Ctrl+P history · Ctrl+C finish · /help",
     "tui.help":
-      "commands:\n  /status        view the run queue\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model used by this session (Ctrl+S sets the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /toggle-language  switch the UI language and save to config (zh ⇄ en)\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+C         finish: abort current + cancel all pending, then output the summary report",
+      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model used by this session (Ctrl+S sets the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /toggle-language  switch the UI language and save to config (zh ⇄ en)\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (input / output / cache read / cache write / total / call count, refreshed after each LLM call)",
+    "tui.scroll.paused": "↓ follow paused · End to jump to bottom",
     "tui.appended": " (appended)",
+    "tui.originAdded": "appended",
     "tui.queueEmpty": "run queue is empty",
     "tui.shuttingDown": "winding down…",
     "tui.allDone": "all done, you can keep adding scenarios",
@@ -539,17 +597,43 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.wroteBack": "written back to source case file: ## {name}",
     "tui.writeBackFail":
       "failed to write back to source case file (scenario still runs): {msg}",
+    "tui.notWrittenBack":
+      "not written back (no write-back target this session): ## {name} (it is gone once you exit)",
     "tui.queued":
       "added to run queue #{id}: {name} (case written back to {path})",
+    "tui.queuedNoTarget":
+      "added to run queue #{id}: {name} (not written back to any file)",
     "tui.cancelOk": 'cancelled pending #{id} "{name}"',
     "tui.cancelNotFound":
       "no cancellable pending item #{arg} (for an already-running scenario use Esc to abort)",
     "tui.unknownCmd":
-      "unknown command: /{cmd} (available: /help /status /cancel <n> /model /login /logout /toggle-language /exit)",
+      "unknown command: /{cmd} (available: /help /status /run <file> /cancel <n> /model /login /logout /toggle-language /exit)",
     "tui.languageSwitched": "UI language switched to {locale} (saved to config)",
     "tui.languageSwitchFailed":
       "UI language switched to {locale} (failed to write config: {msg})",
+    "tui.run.usage":
+      "usage: /run <case file path or keyword> (e.g. /run examples/smoke.md, /run plm)",
+    "tui.run.searching": "looking for a case file: {hint}",
+    "tui.run.notFound":
+      "no matching case file: {hint}\n  give a .md/.txt path, or a filename keyword (the search skips node_modules/.git and similar directories)",
+    "tui.run.overflow": "({n} more match(es) not listed)",
+    "tui.run.ambiguous":
+      "{n} case files matched; asking the model to pick first: {paths}",
+    "tui.run.picked": "loaded the model's pick: {path}",
+    "tui.run.pickFailed":
+      "the model did not pick a single file ({msg}), falling back to manual selection",
+    "tui.run.pickTitle": "Choose a case file to load ({hint})",
+    "tui.run.loaded": "loaded {n} scenario(s): {path}",
+    "tui.run.empty": "that file has no usable scenario: {path}",
+    "tui.run.readFailed": "failed to read the case file: {path} ({msg})",
+    "tui.run.targetSwitched": "write-back target switched to {path}",
+    "tui.noSource":
+      "no case file specified (load one with /run <path or keyword>)",
+    "tui.target": "target {path}",
+    "tui.noTarget": "target: none (appended scenarios are not written anywhere)",
     "tui.cmd.status": "view the run queue",
+    "tui.cmd.run":
+      "load an existing case file and add it to the run queue",
     "tui.cmd.cancel": "cancel a not-yet-started pending item",
     "tui.cmd.model": "choose the model used by this session",
     "tui.cmd.login": "sign in a provider (API key or subscription login)",
@@ -580,6 +664,11 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.model.empty":
       "no available models: the custom endpoint is unconfigured and no provider is signed in. Run /login first.",
     "tui.model.loadFailed": "failed to load the model list: {msg}",
+    "tui.model.expectation":
+      "the model is reachable (no scenario runs when it is not)",
+    "tui.model.stopRun":
+      "stopped the remaining {n} scenario(s): running on with a dead model only turns one config error into a pile of \"scenario failed\", each paying for a browser window that is thrown away.",
+    "tui.model.stopNote": "model unreachable, run stopped",
     "tui.login.title": "Select a provider to sign in (Esc to cancel)",
     "tui.login.methodTitle":
       "Choose how to sign in to {provider} (Esc to cancel)",
@@ -612,6 +701,9 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.logout.failed": "failed to remove credentials for {provider}: {msg}",
     "tui.logout.loadFailed": "failed to read stored credentials: {msg}",
     "tui.shutdown": "finishing: {reason}",
+    "tui.signalReason": "Ctrl+C (terminal signal)",
+    "tui.shutdownNow":
+      "Ctrl+C again: not waiting for the queue, finishing now (the summary is still printed)",
     "tui.abortingCurrent": "aborting current scenario…",
     "tui.cancelledWaiting": "cancelled {n} not-yet-started pending item(s)",
     "tui.abortTimeout":
@@ -619,7 +711,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.abortScene":
       'requested abort of scenario "{name}", remaining steps will not run',
     "tui.enterHint":
-      "type a natural-language case and press Enter to append a scenario (written back to the source case file); /help for commands.",
+      "type a natural-language case and press Enter to append a scenario (written back to the write-back target, if any); /run <case file> loads an existing case; /help for commands.",
     "tui.interactiveStart": "interactive mode: {n} initial scenario(s) queued",
     "tui.sourceFile":
       "source case file: {path} (appended scenarios are written back here)",
@@ -640,6 +732,7 @@ const catalogs: Record<Locale, Catalog> = {
     "report.cancelled": "cancelled: {reason}",
     "report.assertCount": "assertions: {n}",
     "report.scenarioCount": "scenarios: {n}",
+    "report.scenarioOrigin": " (origin: {origin})",
     "report.skipped":
       "skipped {n} step(s) (element not found, not needed in current page state):",
     "report.skippedSuite":

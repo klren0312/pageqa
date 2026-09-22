@@ -54,6 +54,8 @@ export interface ScenarioDetail {
   steps: string[];
   trace: string[];
   assertions: AssertionResult[];
+  /** 场景来源标注（用例文件路径，或「追加」）；批处理模式不设此字段。 */
+  origin?: string;
 }
 
 /** 单次 LLM 调用的原始用量（pi-ai 的 `Usage`，字段允许缺失）。 */
@@ -398,6 +400,14 @@ export interface SuiteMember {
   name: string;
   report: TestReport;
   usage: TokenUsage;
+  /**
+   * 场景来源标注（用例文件路径，或「追加」）。
+   *
+   * 一次交互会话可以混合多个用例文件与手敲的场景，「跑 FAIL 的这个场景来自哪里」
+   * 与「卡在第几步」是同一类定位信息——尤其当来源是运行中 `/run` 进来的，
+   * 用户手里根本没打开那个文件（见 ADR-0005 决策四）。
+   */
+  origin?: string;
 }
 
 function verdictTag(v: "pass" | "fail"): string {
@@ -485,6 +495,8 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
       steps: m.report.steps ?? [],
       trace: m.report.trace ?? [],
       assertions: m.report.assertions,
+      // 只有调用方给出了来源才写这个字段：批处理模式的 JSON 与历史逐字一致。
+      ...(m.origin ? { origin: m.origin } : {}),
     })),
     usage,
   };
@@ -494,7 +506,7 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
 export function renderSuiteText(
   summary: TestReport,
   members: { report: TestReport; usage: TokenUsage }[],
-  scenarios: { name: string }[],
+  scenarios: { name: string; origin?: string }[],
 ): string {
   const lines: string[] = [];
   lines.push(t("report.titleSuite"));
@@ -502,12 +514,19 @@ export function renderSuiteText(
   lines.push(t("report.overall", { status: statusTag(summary.status) }));
   lines.push(t("report.scenarioCount", { n: members.length }));
   members.forEach((m, i) => {
+    const scenario = scenarios[i];
     lines.push("");
     lines.push(
       t("report.scenarioHeader", {
         i: i + 1,
         n: members.length,
-        name: scenarios[i]?.name ?? "",
+        // 来源跟在场景名之后（带「来源：」前缀，避免与后面的 [PASS] 混成两组方括号），
+        // 绝不挤掉场景名：一次会话可能来自多个用例文件，「这个名字是哪个文件里的」
+        // 是定位失败场景的前提（见 ADR-0005 决策四）。
+        name: scenario?.origin
+          ? scenario.name +
+            t("report.scenarioOrigin", { origin: scenario.origin })
+          : (scenario?.name ?? ""),
         status: statusTag(m.report.status),
       }),
     );

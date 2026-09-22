@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { toolResultText } from "../dist/agent.js";
+import { toolResultText, turnUsage } from "../dist/agent.js";
 import { extractTrace } from "../dist/report.js";
 
 // 纯单元测试：不依赖浏览器与 LLM。
@@ -44,5 +44,50 @@ describe("工具失败原因", () => {
     assert.equal(trace.length, 1);
     assert.match(trace[0], /^\[tool-error\] navigate/);
     assert.match(trace[0], /ERR_CONNECTION_REFUSED/);
+  });
+});
+
+// TUI 状态栏的 token 消耗靠这条流：每轮 LLM 调用后把「本次运行到目前为止」的累计推给界面。
+// 钉死的是「只有 assistant 消息带 usage」——不过滤就会把 user/toolResult 也计一次调用，
+// 得到「调用次数比真实多、合计又对不上」的假数字。
+describe("运行中实时上报 token 用量", () => {
+  test("取 assistant 消息的 usage", () => {
+    assert.deepEqual(
+      turnUsage({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          usage: { input: 10, output: 2, totalTokens: 12 },
+        },
+      }),
+      { input: 10, output: 2, totalTokens: 12 },
+    );
+  });
+
+  test("user / toolResult / 没有 usage 的 assistant 都不算一次调用", () => {
+    assert.equal(turnUsage({ type: "turn_end", message: { role: "user" } }), null);
+    assert.equal(
+      turnUsage({ type: "turn_end", message: { role: "toolResult" } }),
+      null,
+    );
+    assert.equal(
+      turnUsage({ type: "turn_end", message: { role: "assistant" } }),
+      null,
+    );
+  });
+
+  test("其它事件不产生用量（只有 turn_end 代表一轮 LLM 调用结束）", () => {
+    assert.equal(
+      turnUsage({ type: "tool_execution_start", toolName: "navigate" }),
+      null,
+    );
+    assert.equal(
+      turnUsage({
+        type: "message_update",
+        message: { role: "assistant", usage: { input: 1 } },
+      }),
+      null,
+    );
+    assert.equal(turnUsage({ type: "turn_start" }), null);
   });
 });
