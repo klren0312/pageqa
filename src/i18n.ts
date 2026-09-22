@@ -123,7 +123,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.hint":
       "Enter 提交 · Shift+Enter 换行 · Esc 中止当前场景 · ↑↓/PgUp/PgDn 滚日志 · Ctrl+P 历史 · Ctrl+C 收工 · /help",
     "tui.help":
-      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择本次会话使用的模型（Ctrl+S 设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /toggle-language  切换界面语种并保存到配置（zh ⇄ en）\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（输入/输出/缓存读/缓存写/合计/调用次数，每轮 LLM 调用后刷新）",
+      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择本次会话使用的模型（Ctrl+S 设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /toggle-language  切换界面语种并保存到配置（zh ⇄ en）\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（输入/输出/缓存读/缓存写/合计/调用次数，每轮 LLM 调用后刷新）",
     "tui.scroll.paused": "↓ 已暂停跟随 · End 回到底部",
     "tui.appended": "（追加）",
     "tui.originAdded": "追加",
@@ -135,6 +135,11 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.writtenBack": "已写回 {n}",
     "tui.state.queued": "待办",
     "tui.state.running": "运行中",
+    "tui.kanban.waiting": "等待中",
+    "tui.kanban.running": "进行中",
+    "tui.kanban.pass": "成功",
+    "tui.kanban.fail": "失败",
+    "tui.kanban.more": "更多",
     "tui.sceneStart": '场景「{name}」{appended}',
     "tui.sceneEnd":
       '场景「{name}」结束：{tag}（断言 {n} 条，耗时 {duration}）',
@@ -152,7 +157,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cancelNotFound":
       "没有找到可取消的待办 #{arg}（已开始执行的场景请用 Esc 中止）",
     "tui.unknownCmd":
-      "未知命令：/{cmd}（可用：/help /status /run <文件> /cancel <n> /model /login /logout /toggle-language /exit）",
+      "未知命令：/{cmd}（可用：/help /status /run <文件> /new /cancel <n> /model /login /logout /toggle-language /exit）",
     "tui.languageSwitched": "界面语种已切换为 {locale}（已保存到配置）",
     "tui.languageSwitchFailed":
       "界面语种已切换为 {locale}（写入配置失败：{msg}）",
@@ -176,6 +181,17 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cmd.status": "查看运行队列",
     "tui.cmd.run": "加载一个已有用例文件并加入运行队列",
     "tui.cmd.cancel": "取消一个尚未开始的待办",
+    "tui.cmd.new":
+      "开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告）",
+    "tui.new.banner":
+      "── 新会话 ──（上一批：{n} 个场景 · 通过 {pass} / 失败 {fail} / 已取消 {cancel}）",
+    "tui.new.reset":
+      "视口与运行队列已清空，token 计数从头开始；上一批的场景仍会进退出时的汇总报告与回放脚本",
+    "tui.new.targetKept": "落点仍是 {path}（想换用例文件用 /run）",
+    "tui.new.busyRunning":
+      "当前场景「{name}」还在跑：先按 Esc 中止它，再 /new",
+    "tui.new.busyWaiting":
+      "队列里还有 {n} 个待办：先用 /cancel <n> 取消它们（或用 Ctrl+C 收工），再 /new",
     "tui.cmd.model": "选择本次会话使用的模型",
     "tui.cmd.login": "登录一个 provider（API Key 或订阅登录）",
     "tui.cmd.logout": "移除已登录 provider 的本地凭据",
@@ -578,7 +594,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.hint":
       "Enter submit · Shift+Enter newline · Esc abort current scenario · ↑↓/PgUp/PgDn scroll log · Ctrl+P history · Ctrl+C finish · /help",
     "tui.help":
-      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model used by this session (Ctrl+S sets the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /toggle-language  switch the UI language and save to config (zh ⇄ en)\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (input / output / cache read / cache write / total / call count, refreshed after each LLM call)",
+      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model used by this session (Ctrl+S sets the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /toggle-language  switch the UI language and save to config (zh ⇄ en)\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (input / output / cache read / cache write / total / call count, refreshed after each LLM call)",
     "tui.scroll.paused": "↓ follow paused · End to jump to bottom",
     "tui.appended": " (appended)",
     "tui.originAdded": "appended",
@@ -590,6 +606,11 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.writtenBack": "written back {n}",
     "tui.state.queued": "pending",
     "tui.state.running": "running",
+    "tui.kanban.waiting": "Waiting",
+    "tui.kanban.running": "Running",
+    "tui.kanban.pass": "Pass",
+    "tui.kanban.fail": "Failed",
+    "tui.kanban.more": "more",
     "tui.sceneStart": 'scenario "{name}"{appended}',
     "tui.sceneEnd":
       'scenario "{name}" ended: {tag} ({n} assertions, elapsed {duration})',
@@ -607,7 +628,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cancelNotFound":
       "no cancellable pending item #{arg} (for an already-running scenario use Esc to abort)",
     "tui.unknownCmd":
-      "unknown command: /{cmd} (available: /help /status /run <file> /cancel <n> /model /login /logout /toggle-language /exit)",
+      "unknown command: /{cmd} (available: /help /status /run <file> /new /cancel <n> /model /login /logout /toggle-language /exit)",
     "tui.languageSwitched": "UI language switched to {locale} (saved to config)",
     "tui.languageSwitchFailed":
       "UI language switched to {locale} (failed to write config: {msg})",
@@ -635,6 +656,18 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cmd.run":
       "load an existing case file and add it to the run queue",
     "tui.cmd.cancel": "cancel a not-yet-started pending item",
+    "tui.cmd.new":
+      "start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report)",
+    "tui.new.banner":
+      "── new session ── (previous batch: {n} scenario(s) · pass {pass} / fail {fail} / cancelled {cancel})",
+    "tui.new.reset":
+      "the viewport and run queue are cleared and the token counter starts over; the previous batch still goes into the exit summary and the replay script",
+    "tui.new.targetKept":
+      "write-back target is still {path} (use /run to switch case files)",
+    "tui.new.busyRunning":
+      "scenario \"{name}\" is still running: press Esc to abort it first, then /new",
+    "tui.new.busyWaiting":
+      "{n} pending item(s) are still queued: cancel them with /cancel <n> (or finish with Ctrl+C) first, then /new",
     "tui.cmd.model": "choose the model used by this session",
     "tui.cmd.login": "sign in a provider (API key or subscription login)",
     "tui.cmd.logout": "remove locally stored credentials for a provider",

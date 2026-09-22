@@ -34,9 +34,15 @@
  *
  * 无源会话与运行时加载（见 ADR-0005）：
  * - 可以**不带任何用例文件**启动（`pageqa` 无参 + TTY）：队列为空、落点为空；
- * - `/run <路径或关键字>` 加载一个已有用例文件的场景，并把落点切到它；
+ * - `/run <路径/关键字>` 加载一个已有用例文件的场景，并把落点切到它；
  * - 落点为空时，追加的场景只存在于本次会话，不写任何文件——退出时要明说，
  *   否则「敲下去就等于留下了」这条前提被抽掉而没人告诉用户。
+ *
+ * `/new` 开新会话（见 ADR-0009）：
+ * - 清空视口与运行队列、token 计数从头开始，**但上一批先归档**——退出时的汇总报告与
+ *   回放脚本覆盖整个进程跑过的全部场景（见 `./batches.ts`）；
+ * - 队列里还有在跑/待办的场景时拒绝执行（不静默丢掉「已提交但没跑」的场景）；
+ * - 落点不跟着换（静默丢落点会让之后敲下的用例不再写回文件）。
  *
  * 模型切换与登录（见 ADR-0004）：
  * - `/model` 打开模型选择器：`Enter` 本次会话生效、`Ctrl+S` 同时设为启动默认（写回 config.json）；
@@ -77,9 +83,15 @@ import type {
 import {
   ScenarioQueue,
   type QueuedScenario,
+  type ScenarioExecutor,
   type ScenarioOrigin,
   type ScenarioState,
 } from "./queue.js";
+import {
+  combineBatches,
+  snapshotBatch,
+  type SessionBatch,
+} from "./batches.js";
 import { accent, dim, editorTheme, err, ok, title, warn } from "./theme.js";
 import {
   arrowKeysBelongToLog,
@@ -185,6 +197,15 @@ function fmtDuration(ms: number): string {
  */
 const PICK_TIMEOUT_MS = 20_000;
 
+/**
+ * 看板带渲染所需的最小终端列宽。
+ *
+ * 5 列要横向铺开，每列至少约 16 显示列（CJK 列名 + 卡名截断）≈ 90 列才够看。
+ * pi-tui 的 `ScrollView` 只支持纵向、没有横向滚动，窄屏下硬挤 5 列只会互相覆盖，
+ * 因此低于此宽度直接不渲染看板、整片留给日志视口（见 ADR-0010 决策三）。
+ */
+const KANBAN_MIN_WIDTH = 90;
+
 /** 用户主动取消交互（Esc / Ctrl+C）时用的哨兵错误，与真正的失败区分开。 */
 const CANCELLED = "__cancelled__";
 
@@ -219,23 +240,6 @@ function modelLabel(choice: ModelChoice): string {
   return choice.provider === PAGEQA_PROVIDER_ID
     ? choice.model
     : `${choice.provider}/${choice.model}`;
-}
-
-/**
- * 给「没有结果的场景」造一份最小报告。
- * 典型是排队中被 `/cancel`、或 Ctrl+C 时还没轮到的场景——如实说「未运行」，
- * 而不是伪装成通过（那会让汇总报告说谎）。
- */
-function notRunReport(item: QueuedScenario): TestReport {
-  return {
-    status: "cancelled",
-    cancelReason:
-      (item.cancelNote ?? t("tui.notExecuted")) + t("tui.notRunSuffix"),
-    assertions: [],
-    transcript: "",
-    steps: numberSteps(item.body).steps,
-    usage: emptyUsage(),
-  };
 }
 
 /**
@@ -292,6 +296,8 @@ export async function runInteractive(
     isKeyRelease,
     matchesKey,
     setKeybindings,
+    truncateToWidth,
+    visibleWidth,
   } = await import("@earendil-works/pi-tui");
 
   /**
@@ -341,6 +347,8 @@ export async function runInteractive(
   const usageLine = new Text("", 1, 0);
   const hintLine = new Text(dim(t("tui.hint")), 1);
   const editor = new Editor(tui, editorTheme, { paddingX: 1 });
+  // 看板带：上方固定高度按状态把场景分成 5 列（见 ADR-0010）。
+  const kanban = new Text("");
 
   const dock = new VStack([
     { component: statusLine, shrink: 1, minSize: 0 },
@@ -350,6 +358,7 @@ export async function runInteractive(
   ]);
   tui.setLayoutRoot(
     new VStack([
+      { component: kanban, basis: "auto", grow: 0, shrink: 1, minSize: 0 },
       { component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 },
       { component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
     ]),
@@ -839,6 +848,78 @@ export async function runInteractive(
       : displayPath(origin.path);
   }
 
+  /** 把字符串按显示宽度补空格到 w（CJK 占 2 宽，故用 visibleWidth 而非字符数）。 */
+  function padToWidth(s: string, w: number): string {
+    return s + " ".repeat(Math.max(0, w - visibleWidth(s)));
+  }
+
+  /**
+   * 看板带：把场景按状态分成 5 列渲染（见 ADR-0010）。
+   *
+   * 纯展示、不滚动：列内只放得下的最近若干张，`+N 更多` 收尾，全量列表永远在 `/status`
+   * 与日志里。这样不引入列内滚动，也就不碰 `↑/↓` 空输入归日志视口的键位契约。
+   * 终端列数 < KANBAN_MIN_WIDTH 时整片清空，把空间让回日志视口。
+   * "进行中"列尾部追加实时耗时，由 `updateStatus` 的 1s ticker 刷新。
+   */
+  function renderKanban(): void {
+    const term = tui.terminal;
+    const cols = term.columns;
+    if (cols < KANBAN_MIN_WIDTH) {
+      kanban.setText("");
+      return;
+    }
+    const all = queue.all();
+    const columns: {
+      title: string;
+      color: (s: string) => string;
+      pick: (i: QueuedScenario) => boolean;
+    }[] = [
+      { title: t("tui.kanban.waiting"), color: dim, pick: (i) => i.state === "queued" },
+      { title: t("tui.kanban.running"), color: accent, pick: (i) => i.state === "running" },
+      { title: t("tui.kanban.pass"), color: ok, pick: (i) => i.state === "pass" },
+      { title: t("tui.kanban.fail"), color: err, pick: (i) => i.state === "fail" },
+      { title: t("common.cancelled"), color: warn, pick: (i) => i.state === "cancelled" },
+    ];
+    const groups = columns.map((c) => all.filter(c.pick));
+    const sep = 1;
+    const colWidth = Math.floor((cols - sep * (columns.length - 1)) / columns.length);
+    if (colWidth < 8) {
+      kanban.setText("");
+      return;
+    }
+    // 看板带高度上限：预留状态栏 + 输入区 + 至少几行日志，故随终端高度自适应（2~7 行）。
+    const maxRows = Math.max(2, Math.min(7, (term.rows || 24) - 10));
+    const sepStr = dim("│");
+    const more = t("tui.kanban.more");
+    const headerCells = columns.map((c, idx) => {
+      const title = truncateToWidth(`${c.title} (${groups[idx].length})`, colWidth, "…", false);
+      return c.color(padToWidth(title, colWidth));
+    });
+    const bodyCells = columns.map((c, idx) => {
+      const items = groups[idx];
+      const cap = items.length > maxRows ? maxRows - 1 : maxRows;
+      const lines: string[] = [];
+      for (const it of items.slice(0, cap)) {
+        let label = `#${it.id} ${it.name}`;
+        if (it.state === "running" && it.startedAt != null) {
+          label += ` · ${fmtDuration(Date.now() - it.startedAt)}`;
+        }
+        label = truncateToWidth(label, colWidth, "…", false);
+        lines.push(c.color(padToWidth(label, colWidth)));
+      }
+      if (items.length > maxRows) {
+        lines.push(dim(padToWidth(`… +${items.length - cap} ${more}`, colWidth)));
+      }
+      while (lines.length < maxRows) lines.push(" ".repeat(colWidth));
+      return lines;
+    });
+    const rows: string[] = [headerCells.join(sepStr)];
+    for (let r = 0; r < maxRows; r++) {
+      rows.push(bodyCells.map((c) => c[r]).join(sepStr));
+    }
+    kanban.setText(rows.join("\n"));
+  }
+
   function updateStatus(): void {
     const all = queue.all();
     const running = queue.running();
@@ -880,6 +961,7 @@ export async function runInteractive(
     // token 消耗放在**输入框下方**（与报告末行同一句话：`formatUsage`），含正在跑的场景的
     // 实时值，每轮 LLM 调用后随 updateStatus 一起刷新；端点没返回 usage 时它会自己说明。
     usageLine.setText(formatUsage(sessionUsage()));
+    renderKanban();
     tui.requestRender();
   }
 
@@ -908,7 +990,13 @@ export async function runInteractive(
       .join("\n");
   }
 
-  const queue = new ScenarioQueue(async (item) => {
+  /**
+   * 单个场景的执行流程。
+   *
+   * 抽成具名函数（而不是内联在 `new ScenarioQueue(...)` 里）是因为 `/new` 会开一条**新的队列**：
+   * 新旧队列共用同一个执行器，而执行器里对 `queue` 的引用每次都取当前那条队列。
+   */
+  const runScenario: ScenarioExecutor = async (item) => {
     const startedAt = item.startedAt ?? Date.now();
     append(
       title(
@@ -967,7 +1055,16 @@ export async function runInteractive(
     // （排队中被取消、模型探活就失败）时不打这行——那只会是一串 0。
     if (result.usage.calls > 0) append(dim(formatUsage(result.usage)));
     return result.report.status;
-  }, updateStatus);
+  };
+
+  /**
+   * 当前这一批的运行队列。`/new` 会把它换成一条新队列（上一批先快照进 `batches`），
+   * 因此是 `let`：所有引用点读到的都必须是最新那条。
+   */
+  let queue = new ScenarioQueue(runScenario, updateStatus);
+
+  /** `/new` 归档下来的历史批次：退出报告与回放脚本要覆盖整个进程跑过的全部场景。 */
+  const batches: SessionBatch[] = [];
 
   // ── `/` 命令联想：在行首输入 `/` 时弹出命令列表（/cancel 还会补全待办编号）──
   /** 构建补全项。描述随语种变化，所以切语种后要重建 provider。 */
@@ -979,6 +1076,7 @@ export async function runInteractive(
         argumentHint: "<文件或关键字>",
         description: t("tui.cmd.run"),
       },
+      { name: "new", description: t("tui.cmd.new") },
       {
         name: "cancel",
         argumentHint: "<n>",
@@ -1195,6 +1293,66 @@ export async function runInteractive(
     queue.pump();
   }
 
+  /**
+   * `/new`：在当前进程里开一个新会话。
+   *
+   * 清掉的是**视口与运行队列**（用户说的「重新开始」），不是历史：上一批先快照进 `batches`，
+   * 退出时的汇总报告与回放脚本照样覆盖它（见 `./batches.ts`）。
+   *
+   * 队列里还有在跑或待办的场景时**拒绝执行**：静默丢掉「已提交但没跑」的场景，等于抽掉
+   * 「提交了就一定会跑」这条承诺（ADR-0002 决策五），所以如实报错并给出两条出路。
+   */
+  function newSession(): void {
+    const running = queue.running();
+    const waiting = queue.waiting().length;
+    if (running || waiting > 0) {
+      if (running) {
+        append(err(t("tui.new.busyRunning", { name: running.name })));
+      }
+      if (waiting > 0) {
+        append(err(t("tui.new.busyWaiting", { n: waiting })));
+      }
+      return;
+    }
+    const batch = snapshotBatch(queue.all(), results, originLabel);
+    batches.push(batch);
+    const pass = batch.members.filter(
+      (m) => m.report.status === "pass",
+    ).length;
+    const fail = batch.members.filter(
+      (m) => m.report.status === "fail",
+    ).length;
+    // 归档小结先算好再清视口：顺序反了就会把刚要写下的内容自己擦掉。
+    const recap = batch.members.map(
+      (m, i) =>
+        `#${i + 1} [${statusTag(m.report.status)}] ${m.name}（${m.origin ?? ""}）`,
+    );
+    logLines.length = 0;
+    document.setText("");
+    results.clear();
+    runningUsage = null;
+    queue = new ScenarioQueue(runScenario, updateStatus);
+    append(
+      title(
+        t("tui.new.banner", {
+          n: batch.members.length,
+          pass,
+          fail,
+          cancel: batch.members.length - pass - fail,
+        }),
+      ),
+    );
+    for (const line of recap) append(dim(line));
+    append(dim(t("tui.new.reset")));
+    // 落点不跟着换：静默丢掉落点会让后面敲下的用例不再写回文件（那是更难发现的意外）。
+    if (writeBackTarget) {
+      append(
+        dim(t("tui.new.targetKept", { path: displayPath(writeBackTarget) })),
+      );
+    }
+    updateStatus();
+  }
+
   function runCommand(line: string): void {
     // 参数取整段剩余文本：`/run` 的参数是路径，切成两段会把带空格的路径切坏。
     const rest = line.slice(1);
@@ -1229,6 +1387,9 @@ export async function runInteractive(
         break;
       case "run":
         void loadCaseFromHint(arg);
+        break;
+      case "new":
+        newSession();
         break;
       case "cancel": {
         const id = Number(arg);
@@ -1407,6 +1568,8 @@ export async function runInteractive(
   updateStatus();
 
   tui.start();
+  // 启动后终端尺寸才就绪，立刻渲染一次看板带（窄屏则保持空白、整片日志）。
+  updateStatus();
 
   // Ctrl+C 有两条路径到我们这儿：raw 模式下它是 `\x03` 这个字节（上面的输入监听），
   // 而在 raw 模式没生效的时刻——启动早期、以及收尾还原终端之后——它会变成 SIGINT 信号，
@@ -1422,35 +1585,16 @@ export async function runInteractive(
   await finished;
 
   // ── 汇总（回到批处理口径：stdout 只放报告，退出码交 CI）──
-  const all = queue.all();
-  const members: SuiteMember[] = all.map((item) => {
-    const r = results.get(item.id);
-    const origin = originLabel(item.origin);
-    return r
-      ? { name: item.name, report: r.report, usage: r.usage, origin }
-      : {
-          name: item.name,
-          report: notRunReport(item),
-          usage: emptyUsage(),
-          origin,
-        };
-  });
+  // 覆盖**整个进程**跑过的场景：`/new` 归档下来的批次在前，当前批次在后（见 ./batches.ts）。
+  const total = combineBatches([
+    ...batches,
+    snapshotBatch(queue.all(), results, originLabel),
+  ]);
+  const members = total.members;
   const summary = summarizeSuite(members);
   if (opts.scriptPath) summary.script = opts.scriptPath;
-  const text = renderSuiteText(
-    summary,
-    members,
-    all.map((i) => ({ name: i.name, origin: originLabel(i.origin) })),
-  );
-  const recordings = all
-    .filter((i) => i.state !== "cancelled")
-    .flatMap((i) =>
-      // 录制带上来源：调用方据此按来源拆回放脚本（见 ADR-0005 决策七）。
-      (results.get(i.id)?.recordings ?? []).map((r) => ({
-        ...r,
-        sourcePath: i.origin.path,
-      })),
-    );
+  const text = renderSuiteText(summary, members, total.names);
+  const recordings = total.recordings;
 
   return {
     report: summary,
