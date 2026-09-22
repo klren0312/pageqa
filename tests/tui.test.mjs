@@ -7,6 +7,7 @@ import { KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { splitScenarios } from "../dist/agent.js";
 import { debugLog, info, setDebug, setSink } from "../dist/log.js";
 import {
+  addUsage,
   buildReport,
   emptyUsage,
   renderSuiteText,
@@ -21,6 +22,7 @@ import {
   resolveCaseFile,
 } from "../dist/tui/case-source.js";
 import { ScenarioQueue } from "../dist/tui/queue.js";
+import { combineBatches, snapshotBatch } from "../dist/tui/batches.js";
 import {
   arrowKeysBelongToLog,
   KEYBINDINGS,
@@ -223,6 +225,103 @@ describe("↑/↓ 归谁：日志视口还是输入框", () => {
       arrowKeysBelongToLog(state({ autocompleteShowing: true })),
       false,
     );
+  });
+});
+
+/**
+ * `/new` 开新会话时会把上一批场景归档（见 src/tui/batches.ts）。钉死的是「归档不丢数据」：
+ * 退出时的汇总报告与回放脚本都以整个进程跑过的场景为准，静默少几条会让脚本看起来完整、实际缺场景。
+ */
+describe("会话批次：/new 归档不丢数据", () => {
+  const label = (origin) => (origin.kind === "added" ? "追加" : origin.path);
+  const queued = (
+    id,
+    name,
+    state,
+    origin = { kind: "file", path: "case.md" },
+  ) => ({
+    id,
+    name,
+    body: "打开 https://example.com\n断言标题包含 Example",
+    origin,
+    state,
+    abort: new AbortController(),
+    ...(state === "cancelled" ? { cancelNote: "已从运行队列中取消" } : {}),
+  });
+  const ran = (status, recordings = []) => ({
+    report: { status, assertions: [], transcript: "" },
+    text: "",
+    json: "",
+    transcript: "",
+    usage: addUsage(emptyUsage(), { input: 10, output: 2, totalTokens: 12 }),
+    recordings,
+  });
+  const rec = (name) => ({ name, caseSteps: [], steps: [] });
+
+  test("快照带上场景名、来源与录制，录制带 sourcePath（回放脚本按来源拆分）", () => {
+    const batch = snapshotBatch(
+      [queued(1, "A", "pass")],
+      new Map([[1, ran("pass", [rec("A")])]]),
+      label,
+    );
+    assert.deepEqual(batch.names, [{ name: "A", origin: "case.md" }]);
+    assert.equal(batch.members[0].report.status, "pass");
+    assert.equal(batch.members[0].origin, "case.md");
+    assert.deepEqual(
+      batch.recordings.map((r) => [r.name, r.sourcePath]),
+      [["A", "case.md"]],
+    );
+  });
+
+  test("没有结果的场景如实写成「未运行」，不伪装成通过", () => {
+    const batch = snapshotBatch(
+      [queued(1, "A", "cancelled")],
+      new Map(),
+      label,
+    );
+    assert.equal(batch.members[0].report.status, "cancelled");
+    assert.deepEqual(batch.members[0].report.assertions, []);
+    assert.equal(batch.members[0].usage.calls, 0);
+    assert.equal(batch.recordings.length, 0);
+  });
+
+  test("已取消的场景不进录制（半截轨迹写进脚本会让回放跑半个用例还可能报 PASS）", () => {
+    const batch = snapshotBatch(
+      [queued(1, "A", "cancelled"), queued(2, "B", "pass")],
+      new Map([
+        [1, ran("cancelled", [rec("A")])],
+        [2, ran("pass", [rec("B")])],
+      ]),
+      label,
+    );
+    assert.deepEqual(
+      batch.recordings.map((r) => r.name),
+      ["B"],
+    );
+  });
+
+  test("合并归档批次与当前批次：两批都在且顺序稳定（新队列的场景编号会从头开始）", () => {
+    const archived = snapshotBatch(
+      [queued(1, "A", "pass")],
+      new Map([[1, ran("pass")]]),
+      label,
+    );
+    // `/new` 之后队列是新的，编号又从 1 开始——正是「按 id 存结果」会串数据的地方。
+    const current = snapshotBatch(
+      [queued(1, "B", "fail")],
+      new Map([[1, ran("fail")]]),
+      label,
+    );
+    const total = combineBatches([archived, current]);
+    assert.deepEqual(
+      total.members.map((m) => `${m.name}:${m.report.status}`),
+      ["A:pass", "B:fail"],
+    );
+    assert.deepEqual(
+      total.names.map((n) => n.name),
+      ["A", "B"],
+    );
+    assert.equal(total.members.length, total.names.length);
   });
 });
 
