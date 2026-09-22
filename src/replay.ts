@@ -395,14 +395,14 @@ export class LocatorMissError extends Error {}
  * 优先用语义定位符在当前快照里重新解析（页面微调也能命中）；
  * 解析不到时退回录制时的 target——它是 CSS 选择器就还能用，是 `@eN` 则已失效。
  */
-function resolveStepTarget(
+async function resolveStepTarget(
   ops: BskOps,
   target: string,
   locator: Locator | null,
   expand: (text: string) => string,
-): string {
+): Promise<string> {
   if (locator && (locator.role || locator.name)) {
-    const snapshot = ops.snapshot();
+    const snapshot = await ops.snapshot();
     const wanted: Locator = { ...locator, name: expand(locator.name) };
     const ref = resolveLocator(wanted, snapshot);
     if (ref) return ref;
@@ -436,36 +436,40 @@ async function runStep(
 ): Promise<{ text: string; assertion?: AssertionResult }> {
   switch (step.kind) {
     case "navigate":
-      return { text: ops.navigate(expand(step.url)) };
+      return { text: await ops.navigate(expand(step.url)) };
     case "click":
       return {
-        text: ops.click(resolveStepTarget(ops, step.target, step.locator, expand)),
+        text: await ops.click(
+          await resolveStepTarget(ops, step.target, step.locator, expand),
+        ),
       };
     case "hover":
       return {
-        text: ops.hover(resolveStepTarget(ops, step.target, step.locator, expand)),
+        text: await ops.hover(
+          await resolveStepTarget(ops, step.target, step.locator, expand),
+        ),
       };
     case "scroll":
       return {
-        text: ops.scroll(
-          resolveStepTarget(ops, step.target, step.locator, expand),
+        text: await ops.scroll(
+          await resolveStepTarget(ops, step.target, step.locator, expand),
         ),
       };
     case "fill":
       return {
-        text: ops.fill(
-          resolveStepTarget(ops, step.target, step.locator, expand),
+        text: await ops.fill(
+          await resolveStepTarget(ops, step.target, step.locator, expand),
           expand(step.value),
         ),
       };
     case "upload": {
       const target = step.target
-        ? resolveStepTarget(ops, step.target, step.locator, expand)
+        ? await resolveStepTarget(ops, step.target, step.locator, expand)
         : undefined;
-      return { text: ops.upload(target, expand(step.file)) };
+      return { text: await ops.upload(target, expand(step.file)) };
     }
     case "wait":
-      return { text: ops.wait(step.ms) };
+      return { text: await ops.wait(step.ms) };
     case "assert_text": {
       const expectation = expand(step.expectation);
       const out = await ops.assertText(expectation);
@@ -510,7 +514,7 @@ async function runStepWithRetry(
         `[replay-retry] #${index} ${step.kind}（第 ${attempt}/${attempts} 次失败）：${reason}`,
       );
       debugLog(`[replay] 第 ${index} 步失败，准备重试：${reason}`);
-      ops.wait(500);
+      await ops.wait(500);
     }
   }
   throw lastError;
@@ -687,7 +691,7 @@ async function replayScenario(
 
   try {
     await ensureBskReady();
-    session = ensureSession(opts.session);
+    session = await ensureSession(opts.session);
     info(`[pageqa] 回放 session=${session}（场景：${name}）`);
 
     const jev = opts.semantic
@@ -704,7 +708,7 @@ async function replayScenario(
       failFast: opts.failFast ?? false,
     });
   } finally {
-    if (session) closeSession(session);
+    if (session) await closeSession(session);
   }
 
   const { trace, assertions, skipped } = outcome;

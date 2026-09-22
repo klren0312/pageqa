@@ -18,7 +18,14 @@ export interface TokenUsage {
 }
 
 export interface TestReport {
-  status: "pass" | "fail";
+  /**
+   * 场景结论。`cancelled` 是第三种终态：用户在交互模式里主动中止了该场景。
+   * 它既不是通过也不是失败——不计入退出码，也不写入回放脚本（半截轨迹录进去
+   * 会让回放跑半个用例还可能报 PASS，见 ADR-0002 决策五）。
+   */
+  status: "pass" | "fail" | "cancelled";
+  /** 被中止时的说明（`status === "cancelled"` 时存在）。 */
+  cancelReason?: string;
   /** 运行模式：`llm`（自然语言解析，默认，旧报告无此字段）或 `replay`（零模型回放）。 */
   mode?: "llm" | "replay";
   /** 回放脚本路径（回放模式为所用脚本，LLM 模式为生成的脚本）。 */
@@ -41,7 +48,7 @@ export interface TestReport {
 /** 套件模式下的单个场景明细（写进 JSON 报告，供机器消费）。 */
 export interface ScenarioDetail {
   name: string;
-  status: "pass" | "fail";
+  status: "pass" | "fail" | "cancelled";
   steps: string[];
   trace: string[];
   assertions: AssertionResult[];
@@ -144,6 +151,7 @@ export function buildReport(
   input: string,
   transcript: string,
   toolAssertions?: AssertionResult[],
+  opts: { cancelled?: boolean } = {},
 ): TestReport {
   const assertions: AssertionResult[] =
     toolAssertions && toolAssertions.length > 0
@@ -162,6 +170,26 @@ export function buildReport(
       transcript,
     );
     status = negative ? "fail" : "pass";
+  }
+
+  // 被用户中止：不做完整性校验。
+  // 下面两条校验（「断言全部执行」「全部步骤执行完成」）是为「正常跑完但没跑满」设计的，
+  // 中止时它们必然不成立——塞进来就等于把「我不想等了」记成「这条用例挂了」，
+  // 让退出码与报告一起说谎（ADR-0002 决策五）。
+  if (opts.cancelled) {
+    const progress = parseProgress(transcript);
+    return {
+      status: "cancelled",
+      cancelReason:
+        (progress
+          ? `用户中止了该场景（已完成 ${progress.done}/${progress.total} 步）`
+          : "用户中止了该场景") + "，剩余步骤未执行",
+      assertions,
+      summary: extractSummary(transcript),
+      transcript,
+      trace,
+      steps,
+    };
   }
 
   // 完整性校验：用例里写了 N 条断言，就应当看到 N 条结果；
@@ -368,6 +396,15 @@ function verdictTag(v: "pass" | "fail"): string {
   return v === "pass" ? "PASS" : "FAIL";
 }
 
+/**
+ * 场景结论标签。
+ * 中止刻意用中文：它不是 PASS/FAIL 这个二选一里的第三项，写成「CANCELLED」
+ * 很容易被当成某种失败的同义词。
+ */
+export function statusTag(s: "pass" | "fail" | "cancelled"): string {
+  return s === "pass" ? "PASS" : s === "fail" ? "FAIL" : "已取消";
+}
+
 /** 渲染一条断言：`  - [PASS] 期望 (证据)`。 */
 export function assertionLine(a: AssertionResult): string {
   const ev = a.evidence ? " (" + a.evidence + ")" : "";
@@ -379,7 +416,8 @@ export function renderText(r: TestReport): string {
   const lines: string[] = [];
   lines.push("=== 页面测试报告 ===");
   if (r.mode === "replay") lines.push("模式: 回放（未调用大模型）");
-  lines.push("结论: " + (r.status === "pass" ? "PASS" : "FAIL"));
+  lines.push("结论: " + statusTag(r.status));
+  if (r.cancelReason) lines.push("中止: " + r.cancelReason);
   lines.push("断言数: " + r.assertions.length);
   for (const a of r.assertions) lines.push(assertionLine(a));
   // 跳过必须显式列出：它不计入失败，但「哪些步骤没按脚本执行」是判断回放可信度的关键
@@ -401,9 +439,17 @@ export function renderText(r: TestReport): string {
  * 断言前缀场景名、保留逐场景 `steps/trace` 明细，CI 侧可直接定位失败场景的卡点步骤。
  */
 export function summarizeSuite(members: SuiteMember[]): TestReport {
-  const overall = members.every((m) => m.report.status === "pass")
-    ? "pass"
-    : "fail";
+  const passed = members.filter((m) => m.report.status === "pass").length;
+  const cancelled = members.filter((m) => m.report.status === "cancelled").length;
+  const failed = members.filter((m) => m.report.status === "fail").length;
+  // 中止不计入退出码：整体失败只由真正失败（含断言不成立）的场景决定。
+  // 一个都没跑成（全部中止）则整体也是「已取消」，而不是伪装成通过。
+  const overall: TestReport["status"] =
+    failed > 0
+      ? "fail"
+      : passed === 0 && cancelled > 0
+        ? "cancelled"
+        : "pass";
   const usage = members.reduce(
     (acc, m) => mergeUsage(acc, m.usage),
     emptyUsage(),
@@ -420,8 +466,10 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
       "共 " +
       members.length +
       " 个场景，通过 " +
-      members.filter((m) => m.report.status === "pass").length +
-      " 个",
+      passed +
+      " 个" +
+      // 只在真有场景被中止时才追加：没有中止时输出与历史报告逐字一致。
+      (cancelled > 0 ? "，已取消 " + cancelled + " 个" : ""),
     transcript: members
       .map((m) => "## " + m.name + "\n" + m.report.transcript.trim())
       .join("\n\n"),
@@ -445,7 +493,7 @@ export function renderSuiteText(
   const lines: string[] = [];
   lines.push("=== 页面测试套件报告 ===");
   if (summary.mode === "replay") lines.push("模式: 回放（未调用大模型）");
-  lines.push("整体结论: " + (summary.status === "pass" ? "PASS" : "FAIL"));
+  lines.push("整体结论: " + statusTag(summary.status));
   lines.push("场景数: " + members.length);
   members.forEach((m, i) => {
     lines.push("");
@@ -455,9 +503,10 @@ export function renderSuiteText(
         "：" +
         (scenarios[i]?.name ?? "") +
         " [" +
-        (m.report.status === "pass" ? "PASS" : "FAIL") +
+        statusTag(m.report.status) +
         "] ---",
     );
+    if (m.report.cancelReason) lines.push("  " + m.report.cancelReason);
     for (const a of m.report.assertions) lines.push(assertionLine(a));
     if (m.report.skipped?.length) {
       lines.push(`  跳过 ${m.report.skipped.length} 步（元素未找到，详见执行轨迹）`);

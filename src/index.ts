@@ -4,6 +4,8 @@ import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAgent, runSuite } from "./agent.js";
 import { ensureConfigDir, CONFIG_PATH, loadConfig } from "./config.js";
+import type { TestReport } from "./report.js";
+import { runInteractive } from "./tui/app.js";
 import {
   buildReplayScript,
   loadReplayScript,
@@ -11,7 +13,12 @@ import {
   sourceDriftNotice,
   writeReplayScript,
 } from "./replay.js";
-import { captureRunVars, expandVars, VAR_HELP } from "./vars.js";
+import {
+  captureRunVars,
+  expandVars,
+  VAR_HELP,
+  type RunVarValue,
+} from "./vars.js";
 import { info, setDebug } from "./log.js";
 
 interface CliArgs {
@@ -32,6 +39,10 @@ interface CliArgs {
   semantic: boolean;
   /** `--fail-fast`：回放时任一失败即停止该场景（默认跑完剩余步骤）。 */
   failFast: boolean;
+  /** `--tui`：显式要求进入交互模式。 */
+  tui: boolean;
+  /** `--no-tui`：显式拒绝交互模式（本机只想看滚动日志时用）。 */
+  noTui: boolean;
   /** 参数解析错误（如带值选项缺少参数）；有值时 main 会提示并退出。 */
   error?: string;
 }
@@ -46,6 +57,8 @@ function parseArgs(argv: string[]): CliArgs {
     emitScript: false,
     semantic: false,
     failFast: false,
+    tui: false,
+    noTui: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -110,6 +123,12 @@ function parseArgs(argv: string[]): CliArgs {
       case "--fail-fast":
         args.failFast = true;
         break;
+      case "--tui":
+        args.tui = true;
+        break;
+      case "--no-tui":
+        args.noTui = true;
+        break;
       default:
         if (!a.startsWith("-")) {
           // 只接受一个用例输入。此前是「后者覆盖前者」，`--emit-script ./replay`
@@ -162,6 +181,9 @@ const HELP = `pageqa - 自然语言驱动的页面测试工具（pi-agent-core +
                   并关掉它对应的浏览器窗口（Agent Window）
   --json           输出 JSON 报告
   --suite          强制按多场景套件运行（即使只有一个场景）
+  --tui            强制进入交互模式（默认在交互式终端下自动进入，见下方「交互模式」）
+  --no-tui         不要交互模式（只想看滚动日志、或排障时用）
+                  也可用环境变量关闭：PAGEQA_NO_TUI=1
   --emit-script [path]
                    运行结束后把本次成功的操作序列固化成回放脚本（Replay Script）
                   不给 path 时写到源用例同目录 <用例名>.replay.json
@@ -176,6 +198,27 @@ const HELP = `pageqa - 自然语言驱动的页面测试工具（pi-agent-core +
   --out <file>     将报告写入文件
   --debug          显示调试日志（bsk 命令、快照体积、上下文裁剪、Jev 请求详情）
   -h, --help       显示帮助
+
+交互模式（跑用例的同时可以追加场景）:
+  在交互式终端（stdin 与 stdout 都是 TTY）里直接运行、且未给 --json 时自动进入；
+  用 --tui / --no-tui 可显式开关，也可用环境变量 PAGEQA_NO_TUI=1 关闭。
+  要求必须传入源用例文件——追加场景要写回它，内联文本没有落点。
+
+  Enter         提交（输入里写了「## 标题」就用它作场景名，否则取首行摘要）
+  Shift+Enter   换行（写多场景用例时用）
+  Esc           中止当前场景：记为「已取消」，不计入退出码、不写入回放脚本
+  Ctrl+C        收工：中止当前 + 取消全部待办，然后输出汇总报告
+  /status       查看运行队列；/cancel <n> 取消一个尚未开始的待办
+  /help /exit
+
+  - 提交的场景会**立即追加写回源用例文件**（原文原样保留，含运行时占位符），
+    因此「pageqa --tui examples/smoke.md」会改动该文件。
+  - 场景串行执行：每个场景各自创建并关闭自己的 bsk session 与浏览器窗口，
+    排队中的场景在轮到它执行时才创建 session。
+  - 不能与 --json / --replay / --session 同时使用（前两个要独占 stdout 或无需等待，
+    第三个与「场景各有独立 session」冲突）。
+  - --emit-script 在交互模式下仍生效：退出时把跑过的场景一次性写入一个脚本，
+    已取消的场景不含在内。
 
 回放脚本（零模型重跑同一用例）:
   pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast]
@@ -216,6 +259,8 @@ ${VAR_HELP}
   pageqa --session ulao "打开 https://example.com 并断言标题包含 Example"
   pageqa examples/smoke.md --json
   pageqa examples/smoke.md --debug
+  pageqa --tui examples/smoke.md        # 交互模式：跑用例的同时可以追加场景
+  pageqa --tui examples/smoke.md --emit-script   # 顺手固化出回放脚本
 `;
 
 /**
@@ -255,6 +300,118 @@ function defaultScriptPath(rawInput: string, isFile: boolean): string {
     dirname(rawInput),
     basename(rawInput, extname(rawInput)) + ".replay.json",
   );
+}
+
+/**
+ * 退出码：只有真正失败才非零。
+ *
+ * 「已取消」不计入——用户按 Esc 是「我不想再等这个了」，不是「这个用例挂了」，
+ * 把它算成失败会让退出码和报告一起说谎（ADR-0002 决策五）。
+ */
+function exitCodeFor(report: TestReport): number {
+  return report.status === "fail" ? 1 : 0;
+}
+
+/**
+ * 是否进入交互模式。
+ *
+ * 判据必须**同时**看 stdin 与 stdout：TUI 要 raw stdin，只看 stdout 会让
+ * `pageqa case.md < /dev/null`、IDE 内嵌终端、CI 子 shell 进去一个收不到键的空壳。
+ *
+ * `--json` 阻止（机器消费方要纯 stdout）；`--replay` 阻止（秒级零模型，全屏只是噪音）；
+ * `--out` **不阻止**（它只是「报告另存一份」，与要不要看 TUI 无关）。
+ */
+function detectInteractive(
+  args: CliArgs,
+  isFile: boolean,
+): { run: boolean; error?: string } {
+  const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  if (args.tui) {
+    if (args.noTui) return { run: false, error: "--tui 与 --no-tui 不能同时使用" };
+    if (args.json) {
+      return {
+        run: false,
+        error: "--tui 不能与 --json 同时使用：JSON 报告要求 stdout 只放机器可读内容",
+      };
+    }
+    if (args.session) {
+      return {
+        run: false,
+        error:
+          "--tui 不能与 --session 同时使用：交互模式下每个场景各自建一个 bsk session" +
+          "（场景拥有独立 session 与浏览器窗口是既有约定，不能给单个 session 塞多个场景）",
+      };
+    }
+    if (!isFile) {
+      return {
+        run: false,
+        error:
+          "--tui 需要源用例文件：追加场景要写回该文件，内联文本没有落点。" +
+          "请传入一个 .md/.txt 用例文件（只想临时试一条请改批处理模式）",
+      };
+    }
+    if (!tty) {
+      return {
+        run: false,
+        error:
+          "--tui 需要交互式终端（stdin 与 stdout 都必须是 TTY）。" +
+          "在管道/重定向下请去掉 --tui（会自动走批处理）",
+      };
+    }
+    return { run: true };
+  }
+  if (args.noTui || process.env.PAGEQA_NO_TUI) return { run: false };
+  // 自动识别：只在两个流都是 TTY、未给 --json、且确实是源用例文件时才进。
+  // 内联文本不进——没有源用例文件可写回（见 ADR-0002 决策七）。
+  return { run: Boolean(tty && !args.json && isFile) };
+}
+
+/**
+ * 交互模式入口：把控制权交给 TUI，退出后回到批处理口径输出汇总报告。
+ *
+ * 回放脚本必须在**写回完成之后**再生成：`source.hash` 依据的是源用例文件内容，
+ * 而交互过程会把追加场景写进它——沿用启动时读到的那份，会让第一次回放就报「源用例已变更」。
+ */
+async function interactiveMode(
+  sourcePath: string,
+  sourceText: string,
+  now: Date,
+  vars: RunVarValue[],
+  args: CliArgs,
+  scriptPath: string | undefined,
+): Promise<number> {
+  info("[pageqa] ===== 启动（交互模式）=====");
+  const result = await runInteractive(sourceText, {
+    sourcePath,
+    sourceText,
+    vars,
+    now,
+    debug: args.debug,
+    scriptPath,
+  });
+
+  if (result.writtenBack > 0) {
+    info(`[pageqa] 已写回 ${result.writtenBack} 个追加场景到 ${sourcePath}`);
+  }
+  if (scriptPath) {
+    const finalSource = readFileSync(sourcePath, "utf8");
+    const script = buildReplayScript(result.recordings, {
+      sourcePath,
+      sourceText: finalSource,
+    });
+    writeReplayScript(scriptPath, script);
+    const steps = script.scenarios.reduce((n, s) => n + s.steps.length, 0);
+    info(
+      `[pageqa] 回放脚本已生成：${scriptPath}` +
+        `（${script.scenarios.length} 个场景，共 ${steps} 步；已取消的场景不含在内）`,
+    );
+    info(`[pageqa] 下次可零模型回放：pageqa --replay ${scriptPath}`);
+  }
+
+  const out = args.json ? result.json : result.text;
+  if (args.out) writeFileSync(args.out, out + "\n");
+  process.stdout.write(out + "\n");
+  return exitCodeFor(result.report);
 }
 
 /**
@@ -330,6 +487,13 @@ async function main(): Promise<number> {
       );
       return 1;
     }
+    if (args.tui) {
+      process.stderr.write(
+        "参数错误：--tui 不能与 --replay 同时使用" +
+          "（回放是秒级零模型执行，既没有等待也没有追加输入的诉求）\n\n",
+      );
+      return 1;
+    }
     setDebug(args.debug);
     return await replayMode(args);
   }
@@ -363,6 +527,23 @@ async function main(): Promise<number> {
   const scriptPath = args.emitScript
     ? (args.emitScriptPath ?? defaultScriptPath(rawInput, isFile))
     : undefined;
+
+  // ── 交互模式：跑用例的同时可以提交新场景（会写回源用例文件）──
+  const interactive = detectInteractive(args, isFile);
+  if (interactive.error) {
+    process.stderr.write(`参数错误：${interactive.error}\n\n`);
+    return 1;
+  }
+  if (interactive.run) {
+    try {
+      return await interactiveMode(rawInput, sourceText, now, vars, args, scriptPath);
+    } catch (err) {
+      process.stderr.write(
+        `执行失败: ${err instanceof Error ? err.stack : String(err)}\n`,
+      );
+      return 1;
+    }
+  }
 
   info("[pageqa] ===== 启动 =====");
   info(
@@ -409,7 +590,7 @@ async function main(): Promise<number> {
       writeFileSync(args.out, out + "\n");
     }
     process.stdout.write(out + "\n");
-    return result.report.status === "pass" ? 0 : 1;
+    return exitCodeFor(result.report);
   } catch (err) {
     process.stderr.write(
       `执行失败: ${err instanceof Error ? err.stack : String(err)}\n`,

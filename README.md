@@ -126,6 +126,8 @@ bsk session start    # 可选：手动创建 session（不传 --session 时 page
 
 ## 安装
 
+> **Node 版本要求：≥ 22.19**。交互模式依赖 `@earendil-works/pi-tui`，该包要求 `node >= 22.19.0`（`package.json` 的 `engines` 已声明此下限）。
+
 本地开发（仓库使用 pnpm，请先安装：`npm install -g pnpm`）：
 
 ```bash
@@ -162,6 +164,37 @@ pageqa --suite "打开 https://example.com 并断言标题包含 Example"
 ### 多场景套件
 
 脚本（`.md`/`.txt`）中用 `## 场景名` 分隔多个独立测试场景，CLI 会逐个运行、分别给出结论，并汇总整体 PASS/FAIL 与总退出码（任一场景失败则整体失败）。
+
+### 交互模式（跑用例的同时追加场景）
+
+长流程单次可能跑十几分钟，而这段时间里想补一条用例只能干等。交互模式让用例继续跑的同时随时可以提交新场景：
+
+```bash
+pageqa --tui examples/smoke.md
+```
+
+进入条件：在交互式终端（`stdin` 与 `stdout` 都是 TTY）里直接运行、且没给 `--json` 时**自动进入**；`--tui` / `--no-tui` 可显式开关，也可用 `PAGEQA_NO_TUI=1` 关闭。显式 `--tui` 但非 TTY 会直接报错，不静默降级（静默降级会让人以为界面坏了）。交互模式**必须传源用例文件**——追加场景要写回它，内联文本没有落点。
+
+界面是「上方可滚动日志 + 底部固定输入框」：进度日志、bsk 命令耗时、每一步成败都实时进视口，stdout 仍只留给最终报告。
+
+| 按键 | 作用 |
+| --- | --- |
+| `Enter` | 提交（输入里写了 `## 标题` 就用它作场景名，否则取首行摘要） |
+| `Shift+Enter` | 换行（写多场景用例时用） |
+| `Esc` | 中止当前场景：记为「已取消」，不计入退出码、不写入回放脚本 |
+| `Ctrl+C` | 收工：中止当前 + 取消全部待办，然后输出汇总报告 |
+
+命令：`/status`（查看运行队列）、`/cancel <n>`（取消一个尚未开始的待办）、`/help`、`/exit`。
+
+要点：
+
+- **追加场景会立即写回源用例文件**（纯 append，用例原文与运行时占位符原样保留，绝不写展开后的具体值）。因为「敲下来的就是你想留下的用例」，等跑完再写会让 Ctrl+C 把整条待办队列丢掉。因此 `pageqa --tui examples/smoke.md` 会改动该文件——本机试用时注意别把仓库弄脏。
+- **场景串行执行**：每个场景各自创建并关闭自己的 bsk session 与浏览器窗口（排队中的场景轮到它执行时才创建），不会几个窗口抢焦点；一个场景结束（通过／失败／已取消）后自动开始下一个。
+- **「已取消」是第三种终态**：Esc 表达的是「我不想再等这个了」，不是「这条用例挂了」，所以它不进退出码、也不写进回放脚本（半截轨迹录进去会让回放跑半个用例还可能报 PASS）。
+- **中止是真的中止**：按 Esc 会 kill 掉正在跑的 bsk 命令，而不是等它自己超时。这要求 bsk 操作层异步化（同步子进程会阻塞事件循环，界面在这期间完全不渲染、也收不到 Esc），理由见 `docs/adr/0003`。
+- **`--emit-script` 仍生效**：退出时把跑过的场景一次性写入一个脚本（已取消的不含在内），且脚本的源用例哈希基于**写回之后**的文件内容，因此第一次回放不会误报「源用例已变更」。
+- 不能与 `--json`（要独占 stdout）、`--replay`（秒级零模型，无需等待）、`--session`（与「场景各有独立 session」冲突）同时使用。
+- 批处理模式（管道、重定向、`--json`、CI）行为完全不变：`tests/smoke.test.mjs` 走管道 stdio，会自动降级。
 
 ### 失败定位（步骤编号 + 执行轨迹）
 
@@ -275,6 +308,7 @@ pageqa --replay examples/smoke.replay.json --semantic   # 断言改用 Jev 语�
 - **多场景**：一个脚本文件包含全部场景，逐个回放（各自独立 session 与浏览器窗口），任一场景失败则整体失败、退出码 `1`。
 - **源用例变更**：脚本记录源用例内容哈希，回放时若源文件已改动会在 stderr 提示（只警告、不失败），提示你重新生成脚本。
 - **PASS/FAIL 都会生成**：失败轨迹同样能导出，便于排查「模型这次到底做了什么」；但模型一步都没成功执行时脚本为空，回放会直接拒绝执行，不会伪装成「0 步全通过」。
+- **已取消的场景不入脚本**：交互模式下按 Esc 中止的场景只留下半截轨迹，写进脚本会让 `--replay` 跑半个用例还可能报 PASS——这是「假通过比报错危险得多」那条教训的翻版。
 - **输出路径写法**：`--emit-script ./replay`、`--emit-script reports/run1.json` 都可以（不必是 `.json` 结尾）。紧跟其后的 token 只有在「像路径」时才被当作输出路径——若它是 `.md`/`.txt` 或含空格的文本，则按用例输入处理，因此 `pageqa --emit-script examples/smoke.md` 也能正常工作。只接受一个用例输入，多给一个会直接报错。
 
 ### 运行进度日志
@@ -314,6 +348,8 @@ pageqa --replay examples/smoke.replay.json --semantic   # 断言改用 Jev 语�
 | `--session <id>` | 指定已存在的 bsk session（默认自动创建） |
 | `--json` | 输出 JSON 报告 |
 | `--suite` | 强制按多场景套件运行 |
+| `--tui` | 强制进入交互模式（默认在交互式终端下自动进入，见「交互模式」） |
+| `--no-tui` | 不要交互模式（只想看滚动日志、或排障时用）；也可用 `PAGEQA_NO_TUI=1` |
 | `--emit-script [path]` | 运行结束后把成功操作固化成回放脚本（默认源用例同目录 `<用例名>.replay.json`；PASS/FAIL 都生成）。`path` 可选，写成路径形式（`./replay`、`reports/run1.json`；含空白用引号） |
 | `--replay <file>` | 零模型回放已有脚本（不调用任何大模型） |
 | `--semantic` | 回放时断言改用 Jev 语义判断（默认纯字符串匹配） |
@@ -371,6 +407,11 @@ pageqa examples/element-plus-upload.md
           └─> --emit-script：录制成功操作 -> 回放脚本（*.replay.json）
 
 回放脚本 -> pageqa --replay -> bsk 操作层 -> 真实浏览器 -> 报告 + 退出码（全程不调用大模型）
+
+交互模式（pageqa --tui <用例文件>）
+   ├─> TUI：滚动日志视口（进度日志经 setSink 汇入）+ 底部固定输入框
+   ├─> 运行队列：串行执行；提交的新场景写回源用例文件后入队
+   └─> 退出 -> 恢复主屏 -> 汇总报告（stdout/--out）+ 退出码（已取消不计入）
 ```
 
 可用工具（`src/bsk/tools.ts`）：
@@ -423,8 +464,12 @@ src/
   index.ts       CLI 入口
   agent.ts       编排器（pi-agent-core Agent + bsk 工具 + 报告）
   llm.ts         LLM 后端（pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
-  log.ts         进度日志（stderr 默认输出；--debug 输出调试明细）
-  bsk/tools.ts   browserskill 操作层与工具层（含 upload 文件上传、录制上报）
+  log.ts         进度日志（默认写 stderr；落点可通过 setSink 注入，交互模式接进界面视口）
+  bsk/tools.ts   browserskill 操作层与工具层（异步、可中止、全局串行；含 upload 与录制上报）
+  tui/app.ts     交互模式界面（pi-tui TuiAltScreen：滚动日志视口 + 固定输入框，延迟加载）
+  tui/queue.ts   运行队列（场景串行执行、追加、取消、中止）
+  tui/writeback.ts  追加场景写回源用例文件（纯 append，占位符原样保留）
+  tui/theme.ts   交互界面配色（库不提供默认主题，自持 16 色 + truecolor 探测）
   record.ts      录制层（把成功操作与断言记成可回放步骤）
   locator.ts     语义定位符（快照解析 + 回放时按 role/name/序号重定位）
   snapshot.ts    快照瘦身（保留可交互节点与祖先链，截断长文本；降低上下文压力）
@@ -436,5 +481,6 @@ examples/
   element-plus-upload.md    文件上传用例（点击 Click to upload 上传本地图片）
   plm-product-bom.md        PLM 长流程用例（建产品→目录→物料→检出→待办同意→BOM 插入）
 tests/smoke.test.mjs 端到端验证
-tests/report.test.mjs / tests/replay.test.mjs / tests/snapshot.test.mjs 单元测试（无浏览器/LLM 依赖）
+tests/report.test.mjs / tests/replay.test.mjs / tests/snapshot.test.mjs / tests/tui.test.mjs
+  单元测试（无浏览器/LLM/TTY 依赖）：报告解析、定位符与回放、快照瘦身、追加场景写回、运行队列、「已取消」判定、日志落点
 ```
