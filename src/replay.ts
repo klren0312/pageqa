@@ -126,6 +126,34 @@ export interface ScenarioRecording {
   /** 用例原文步骤（忽略 `#`/`>` 行），用于把回放步骤映回「用例第 k 步」。 */
   caseSteps: string[];
   steps: ReplayStep[];
+  /**
+   * 该场景归属的用例文件——回放脚本按它分组（见 ADR-0005 决策七）。
+   * 无落点的追加场景没有归属文件；批处理模式不必设置（只有一个来源）。
+   */
+  sourcePath?: string;
+}
+
+/**
+ * 按来源把录制分组：一组 = 一个用例文件 = 一份回放脚本。
+ *
+ * 为什么拆而不合并：`ReplayScript.source` 是**脚本级单值** `{ path, hash }`，而一次
+ * 交互会话可以加载多个用例文件。升级脚本格式（`sources[]`）会让一份脚本有两种可能的
+ * 结构，读取端、漂移检测、占位符还原全要双分支；而脚本是会被长期保存、丢进 git、
+ * 在 CI 里零模型重跑的对外契约，不值得为「一份脚本装多来源」这个几乎用不到的写法动它。
+ *
+ * `null` 组是从没加载过任何文件、纯内存追加的场景（默认写到 cwd 的 `pageqa.replay.json`）。
+ */
+export function groupRecordingsBySource(
+  recordings: ScenarioRecording[],
+): Map<string | null, ScenarioRecording[]> {
+  const groups = new Map<string | null, ScenarioRecording[]>();
+  for (const r of recordings) {
+    const key = r.sourcePath ?? null;
+    const list = groups.get(key);
+    if (list) list.push(r);
+    else groups.set(key, [r]);
+  }
+  return groups;
 }
 
 /** 回放脚本文件结构。 */

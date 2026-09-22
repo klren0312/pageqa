@@ -17,14 +17,26 @@ export type ScenarioState =
   | "fail"
   | "cancelled";
 
+/**
+ * 场景来源（Scenario Origin，见 CONTEXT.md）：场景进入运行队列的出处。
+ *
+ * - `file`：来自某个用例文件——启动时指定的那个，或运行时 `/run` 加载的；
+ * - `added`：用户在交互模式里追加的；`path` 是提交那一刻的落点（没有落点则缺省）。
+ *
+ * 写回只发生在 `added` 上，回放脚本则按 `path` 分组（见 ADR-0005 决策四/七）。
+ */
+export type ScenarioOrigin =
+  | { kind: "file"; path: string }
+  | { kind: "added"; path?: string };
+
 /** 队列里的一个场景。 */
 export interface QueuedScenario {
   readonly id: number;
   readonly name: string;
   /** 场景正文（用例原文，占位符形式）。 */
   readonly body: string;
-  /** 是否由用户在交互模式里追加（区别于源用例文件里已有的场景）。 */
-  readonly added: boolean;
+  /** 场景来源（见 `ScenarioOrigin`）。 */
+  readonly origin: ScenarioOrigin;
   state: ScenarioState;
   /**
    * 中止信号。
@@ -54,13 +66,13 @@ export class ScenarioQueue {
     private readonly onChange: () => void,
   ) {}
 
-  /** 入队。`added` 表示它是本次运行中由用户追加的（而非源用例文件里已有的）。 */
-  add(name: string, body: string, added: boolean): QueuedScenario {
+  /** 入队。`origin` 记录它来自哪个用例文件，还是用户本次追加的。 */
+  add(name: string, body: string, origin: ScenarioOrigin): QueuedScenario {
     const item: QueuedScenario = {
       id: this.nextId++,
       name,
       body,
-      added,
+      origin,
       state: "queued",
       abort: new AbortController(),
     };

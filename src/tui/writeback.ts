@@ -36,6 +36,16 @@ export function scenariosFromInput(text: string): CaseScenario[] {
   return scenarios.map((s) => ({ ...s, name: scenarioNameFromBody(s.body) }));
 }
 
+/**
+ * 读入一个已有用例文件的场景（运行时 `/run` 加载）。
+ *
+ * 刻意与启动时走同一个 `splitScenarios`：同一个文件无论启动时加载还是运行中加载，
+ * 切分结果与场景名都必须一模一样，否则报告与回放脚本会对不上。
+ */
+export function loadCaseScenarios(path: string): CaseScenario[] {
+  return splitScenarios(readFileSync(path, "utf8"));
+}
+
 /** 没写标题时的场景名：取首个非空行，过长则截断。 */
 export function scenarioNameFromBody(body: string, max = NAME_MAX): string {
   const first =

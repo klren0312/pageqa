@@ -168,26 +168,60 @@ pageqa --suite "Open https://example.com and assert the title contains Example"
 
 Use `## scenario name` in a script (`.md`/`.txt`) to separate multiple independent test scenarios. The CLI runs each one, gives a verdict for each, and summarizes the overall PASS/FAIL and a single exit code (any scenario failure means overall failure).
 
+### Model connectivity check (probe before running)
+
+Before every scenario, pageqa sends one tiny real request (same provider path, `max_tokens=16`) to confirm the model actually answers. The probe runs **before the bsk daemon check, session creation and browser window**, so an unreachable model means no window is ever opened. When the probe fails, **no scenario is executed**:
+
+- **Batch**: stderr reports "model unreachable: `<provider>/<model>`: <reason>" plus what to do, the exit code is `1`, and nothing is printed to stdout (nothing ran, so a report-shaped output would be a lie);
+- **Interactive**: that scenario is honestly recorded as FAIL (never as "cancelled", which is excluded from the exit code), the remaining pending items are cancelled, and the viewport explains why.
+
+Why probe **every** scenario instead of once at startup: the model may die halfway through the previous scenario — "it answered at startup" says nothing about scenario 8. Covered failures: endpoint down (connection refused), wrong `baseUrl`/`apiKey` (401), unknown model id (404), network unreachable (timeout, 20s). Aborting with `Esc` is not treated as "unreachable" — it stays a "cancelled" run. See `docs/adr/0006`.
+
 ### Interactive mode (add scenarios while a run is in progress)
 
 A long flow can take ten-plus minutes in one run, and during that time you could only wait idly if you wanted to add a case. Interactive mode lets the run keep going while you submit new scenarios at any time:
 
 ```bash
 pageqa --tui examples/smoke.md
+
+# or open a session first and decide what to run later (no case file needed)
+pageqa
 ```
 
-Entry condition: it enters **automatically** when run in an interactive terminal (`stdin` and `stdout` are both a TTY) and `--json` is not given; `--tui` / `--no-tui` can force it on/off, or `PAGEQA_NO_TUI=1` can disable it. Explicit `--tui` in a non-TTY errors out immediately rather than silently degrading (silent degradation would make people think the UI is broken). Interactive mode **requires a source case file** — appended scenarios are written back to it, and inline text has no destination.
+Entry condition: it enters **automatically** when run in an interactive terminal (`stdin` and `stdout` are both a TTY) and `--json` is not given; `--tui` / `--no-tui` can force it on/off, or `PAGEQA_NO_TUI=1` can disable it. With **no arguments at all** it also enters — that session starts with an empty queue and **no write-back target**, and you load a case file whenever you want with `/run`. Inline text still does not enter (batch mode is the right place for a one-off case) and `--tui "<inline text>"` still errors. Explicit `--tui` in a non-TTY errors out immediately rather than silently degrading (silent degradation would make people think the UI is broken).
 
-The UI is "scrollable log on top + fixed input box at the bottom": progress logs, bsk command timings, and each step's success/failure all stream into the viewport in real time, while stdout stays reserved for the final report.
+The **write-back target** is the case file that appended scenarios are written back to: the startup case file, or the most recent `/run` file, whichever came later. It is always shown in the status bar, and switching it is announced in the viewport. With no target, appended scenarios exist only in this session and nothing is written to disk — the viewport says so on submit, and the exit summary says how many were never written.
+
+The UI is "scrollable log on top + fixed input box at the bottom": progress logs, bsk command timings, and each step's success/failure all stream into the viewport in real time, while stdout stays reserved for the final report. When the log outgrows the viewport, `PageUp`/`PageDown`, `Ctrl+↑`/`Ctrl+↓`, `↑`/`↓` and the mouse wheel scroll back through it; scrolling up pauses following the end, and the label on the last row (or `End`) jumps back to the bottom. Submitting input always returns to the bottom.
+
+**Directly below the input box** there is a permanent line with this session's token usage, worded exactly like the report's last line:
+
+```text
+Token usage: input 301 / output 117 / cache read 9536 / cache write 0 / total 9954 (LLM calls 4)
+```
+
+It is the **session total** (settled values of finished scenarios + the running scenario's live value), refreshed after every LLM call — so a long flow tells you how much it has burned halfway through. When the endpoint returns no usage that line says so itself (it never passes `0` off as "nothing consumed"). Each scenario also gets its own detail line in the viewport when it ends, and the exit summary and `--json` keep exactly the same shape as before.
+
+**Some terminals deliver the mouse wheel as `↑`/`↓`** (VS Code's alternate buffer does exactly that: when the app gets no mouse events, the terminal translates the wheel into arrow keys so that pagers like `less`/`man` still work). A wheel and a real arrow key are byte-identical, so the app dispatches by context: **while the input box is empty, `↑`/`↓` belong to the log viewport** (which is what makes the wheel scroll the log, same step as the wheel), and input history moves to `Ctrl+P`/`Ctrl+N`; as soon as the input box has content, `↑`/`↓` go straight back to the editor (cursor movement / history browsing). Rationale in `docs/adr/0007`.
 
 | Key | Action |
 | --- | --- |
 | `Enter` | Submit (if the input contains `## title`, it becomes the scenario name; otherwise the first-line summary is used) |
 | `Shift+Enter` | Newline (for writing multi-scenario cases) |
 | `Esc` | Abort the current scenario: recorded as "cancelled", not counted in the exit code, not written to the replay script |
-| `Ctrl+C` | Finish: abort current + cancel all pending, then output the summary report |
+| `Ctrl+C` | Finish: abort current + cancel all pending, restore the terminal and output the summary report (**a normal exit, never a hard kill**; pressing it again while winding down stops waiting for the queue) |
+| `PageUp` / `PageDown` | Scroll the log one page up/down |
+| `↑` / `↓` | Scroll the log (only while the input box is empty; terminals often report the wheel as these) |
+| `Ctrl+↑` / `Ctrl+↓` | Scroll the log one line (always works, even while writing a multi-line case) |
+| `Ctrl+P` / `Ctrl+N` | Input history: previous / next submitted text (was `↑`/`↓`) |
+| `Home` / `End` | Jump to the start of the log / back to the end (follows the end again) |
+| Mouse wheel | Scroll the log (3 lines per notch); scrolling up also pauses following — click the label on the last row to go back to the bottom |
 
-Commands: `/status` (view the run queue), `/cancel <n>` (cancel a not-yet-started pending item), `/model` (choose the model used by this session), `/login` (sign in a provider), `/logout` (remove a provider's local credentials), `/toggle-language` (switch the UI language between `zh`/`en` and persist it to the `locale` field of `~/.pageqa/config.json`, applied on the next start), `/help`, `/exit`. Typing `/` at the start of the input pops up a fuzzy-filtered command list, and `/cancel` additionally completes pending queue numbers (Tab accepts).
+`Ctrl+C` (same as `/exit`) goes through the **normal exit path**: abort the current scenario → cancel all pending → restore the terminal (leave the alt screen, show the cursor) → print the summary report → exit the process. It never kills the process outright — a signal-killed process never restores the terminal, leaving it in the alt screen with a hidden cursor (which looks like the terminal was closed or hung, with no report at all). When raw mode is not in effect (early startup, or after the terminal is restored during teardown) the terminal turns `Ctrl+C` into a `SIGINT` signal; pageqa routes the signal through the same path. Pressing it again while winding down means "stop waiting for the queue" — the report is still printed. Rationale in `docs/adr/0008`.
+
+Commands: `/status` (view the run queue), `/run <path or keyword>` (load an existing case file into the run queue), `/cancel <n>` (cancel a not-yet-started pending item), `/model` (choose the model used by this session), `/login` (sign in a provider), `/logout` (remove a provider's local credentials), `/toggle-language` (switch the UI language between `zh`/`en` and persist it to the `locale` field of `~/.pageqa/config.json`, applied on the next start), `/help`, `/exit`. Typing `/` at the start of the input pops up a fuzzy-filtered command list, and `/cancel` additionally completes pending queue numbers (Tab accepts).
+
+- **`/run` loads a case file at runtime**: `/run examples/plm-product-bom.md` (exact path), `/run examples` (every case file in that directory), or `/run plm` (filename keyword — `node_modules`, dot-directories and similar are skipped). A single match loads directly; with several matches the **candidate filenames** (never their contents) are handed to the model to pick from, and if it can't decide — or the model is unavailable — a selector lets you pick yourself. The loaded file's scenarios are appended to the queue, its scenarios are **not** written back (they are already in the file), and the write-back target switches to it. The model is deliberately not given file-reading tools: if case contents bypassed pageqa, step numbering, the `k ↔ case text` mapping and the write-back/recording correspondence would all break, and it would gain read access to any file on the machine.
 
 - **`/model` switches the model**: a selector pops up (`↑↓` to move, `Enter` applies to this session, `Ctrl+S` also persists it as the startup default in `config.json`, `Esc` cancels). The list covers two kinds of providers — the **custom endpoint** (`baseUrl`/`apiKey`/`model` in `config.json` is always available) and **built-in providers** (anthropic / openai / deepseek / github-copilot …, which appear only after `/login` or when the matching env var like `ANTHROPIC_API_KEY` is set). Switching affects only **later** scenarios; a running one is never interrupted. See `docs/adr/0004`.
 - **`/login` signs in**: pick a provider, then follow its login flow (API key or subscription OAuth); the authorization link / device code is printed to the screen, text/key prompts use the bottom input box, `Esc` cancels. Credentials are written to `~/.pageqa/auth.json`, which is **not** part of the git repo. After signing in, `/model` offers that provider's models.
@@ -196,11 +230,14 @@ Commands: `/status` (view the run queue), `/cancel <n>` (cancel a not-yet-starte
 
 Key points:
 
-- **Appended scenarios are written back to the source case file immediately** (pure append; the case's original text and runtime placeholders are preserved verbatim — never the expanded concrete values). Because "what you type is the case you want to keep"; writing it after the run would let Ctrl+C discard the entire pending queue. Therefore `pageqa --tui examples/smoke.md` will modify that file — be careful not to dirty the repo when trying it locally.
+- **Nothing runs while the model is unreachable**: every scenario is preceded by a connectivity probe; when it fails, that scenario is recorded as FAIL, the remaining pending items are cancelled, and the viewport states the reason and the way out (see "Model connectivity check").
+- **Appended scenarios are written back to the write-back target immediately** (pure append; the case's original text and runtime placeholders are preserved verbatim — never the expanded concrete values). Because "what you type is the case you want to keep"; writing it after the run would let Ctrl+C discard the entire pending queue.
+- **`/run` appends to the tail of the queue, it never replaces it**: a running scenario is unaffected and new ones line up behind the pending list. Loading is just a bulk submit — the promise that "submitted means it will run" (`docs/adr/0002`) is exactly why loading does not get to throw anything away. Use `/cancel` or Ctrl+C to drop something.
+- **Loaded scenarios are never written back**: they are already in the file they came from. Only appended scenarios are written. Placeholders in a loaded file expand from the **session's** single moment (the same one appended scenarios use), not from the load time — the replay script does the reverse lookup "concrete value → placeholder" per script, and a file's scenarios and its appended ones end up in the same script.
 - **Scenarios run serially**: each scenario creates and closes its own bsk session and browser window (created only when its turn comes in the queue), so no windows fight for focus; after one scenario ends (pass / fail / cancelled) the next starts automatically.
 - **"Cancelled" is a third terminal state**: Esc means "I don't want to wait for this anymore", not "this case is broken", so it does not enter the exit code nor the replay script (half a trace recorded there would let replay run half a case and possibly report PASS).
 - **Aborting is a real abort**: pressing Esc kills the bsk command currently running, rather than waiting for it to time out. This requires the bsk operation layer to be async (a synchronous child process blocks the event loop, during which the UI does not render at all and cannot receive Esc) — rationale in `docs/adr/0003`.
-- **`--emit-script` still works**: on exit, the run scenarios are written to a script at once (cancelled ones excluded), and the script's source-case hash is based on the **post-writeback** file content, so the first replay won't falsely report "source case changed".
+- **`--emit-script` still works**: on exit, the run scenarios are frozen into replay scripts — **one script per case file**, each written next to its own source (`examples/smoke.replay.json`), because a script's header carries a single `source { path, hash }`. Cancelled scenarios are excluded, and appended scenarios belong to whichever target they were written to. Scenarios appended with no target at all go to `pageqa.replay.json` in the current directory. Generated paths are printed to stderr, one per source. Giving an explicit script path for a run with several sources is an **error** rather than a silent partial write, and a run in which nothing ever ran writes no script at all. The hash is based on the **post-writeback** file content, so the first replay won't falsely report "source case changed".
 - Cannot be combined with `--json` (needs exclusive stdout), `--replay` (sub-second, zero-model, no waiting), or `--session` (conflicts with "each scenario has its own session").
 - Batch mode (pipes, redirection, `--json`, CI) behavior is unchanged: `tests/smoke.test.mjs` goes through piped stdio and degrades automatically.
 
@@ -374,9 +411,9 @@ A long flow (create product → create material → inspect → approve …) can
 | `--locale <zh\|en>` | Display language for the UI / progress logs / report (default `zh`; `PAGEQA_LOCALE` env also works) |
 | `--json` | Output JSON report |
 | `--suite` | Force multi-scenario suite mode |
-| `--tui` | Force interactive mode (auto-enters in an interactive terminal by default, see "Interactive mode") |
+| `--tui` | Force interactive mode (auto-enters in an interactive terminal by default; with no case file given it opens a session you can `/run` into; see "Interactive mode") |
 | `--no-tui` | Don't use interactive mode (when you only want the scrolling log, or for troubleshooting); `PAGEQA_NO_TUI=1` also works |
-| `--emit-script [path]` | After the run, freeze successful operations into a replay script (default: `<case name>.replay.json` next to the source case; both PASS and FAIL are generated). `path` is optional, written in path form (`./replay`, `reports/run1.json`; quote if it contains spaces) |
+| `--emit-script [path]` | After the run, freeze successful operations into replay scripts (one per case file, default `<case name>.replay.json` next to that source case; both PASS and FAIL are generated). `path` is optional, written in path form (`./replay`, `reports/run1.json`; quote if it contains spaces) — valid only when the run has a single source |
 | `--replay <file>` | Replay an existing script with zero models (no LLM called) |
 | `--semantic` | At replay, assertions use Jev semantic judgment (default pure string match) |
 | `--fail-fast` | At replay, any failure (including element not found) stops that scenario immediately; by default runs remaining steps |
@@ -495,8 +532,10 @@ src/
   bsk/navigate-diagnosis.ts  translate navigation failures into plain language (translate only, don't guess; pass through verbatim if unrecognized)
   tui/app.ts     interactive mode UI (pi-tui TuiAltScreen: scrolling log viewport + fixed input box, lazily loaded)
   tui/queue.ts   run queue (scenario serial execution, append, cancel, abort)
-  tui/writeback.ts  write appended scenarios back to the source case file (pure append, placeholders preserved verbatim)
+  tui/writeback.ts  write appended scenarios back to the write-back target (pure append, placeholders preserved verbatim)
+  tui/case-source.ts  resolve `/run`'s path-or-keyword into a case file (deterministic first; the model only picks among candidate filenames)
   tui/theme.ts   interactive UI colors (the lib provides no default theme, self-holding 16-color + truecolor detection)
+  tui/keys.ts    key adjustments (viewport scroll keys, history keys, wheel step, with the reasoning)
   record.ts      recording layer (record successful operations and assertions as replayable steps)
   locator.ts     semantic locator (snapshot parsing + replay-time relocation by role/name/index)
   snapshot.ts    snapshot slimming (keep interactive nodes and ancestor chains, truncate long text; reduce context pressure)
@@ -509,7 +548,7 @@ examples/
   plm-product-bom.md        PLM long-flow case (create product→catalog→material→inspect→todo approve→BOM insert)
 tests/smoke.test.mjs  end-to-end verification
 tests/report.test.mjs / tests/replay.test.mjs / tests/snapshot.test.mjs / tests/tui.test.mjs
-  unit tests (no browser/LLM/TTY dependency): report parsing, locator and replay, snapshot slimming, appended-scenario writeback, run queue, "cancelled" judgment, log sink
+  unit tests (no browser/LLM/TTY dependency): report parsing, locator and replay, snapshot slimming, appended-scenario writeback, run queue, "cancelled" judgment, log sink, runtime case-file lookup (/run), per-source replay script splitting, scenario origins in the report
 ```
 
 ---

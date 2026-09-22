@@ -11,7 +11,32 @@
  * 键位（见 ADR-0002 决策三/五）：
  * - `Enter` 提交、`Shift+Enter` 换行；
  * - `Esc` 中止当前场景（记为「已取消」，队列继续跑下一个）；
- * - `Ctrl+C` 收工：中止当前 + 取消全部待办，回到批处理口径输出汇总报告。
+ * - `Ctrl+C` 收工：中止当前 + 取消全部待办，回到批处理口径输出汇总报告。它是**正常退出**
+ *   而不是硬杀——还原终端、打完报告才退；收尾期间再按一次表示「别再等队列了」（`/exit` 同义）。
+ *   `SIGINT` 信号（raw 模式没生效时 Ctrl+C 会变成信号）走同一条路，见 ADR-0008。
+ * - 日志视口可滚：`PageUp`/`PageDown` 翻页、`Ctrl+↑`/`Ctrl+↓` 逐行、`Home`/`End` 跳到首尾，
+ *   鼠标滚轮同样有效；上滚即暂停跟随末尾，此时视口末行会显示一行提示，点它（或按 `End`）
+ *   回到底部继续跟随。键位与滚轮步长为什么这么定，见 `./keys.ts`。
+ * - `↑`/`↓` 在**输入框为空时**归日志视口：一部分终端会把滚轮翻译成 `↑`/`↓`（VS Code 的
+ *   全屏缓冲就是这样），不分派的话滚轮会去翻输入框的历史、日志反而滚不动；历史输入因此
+ *   改用 `Ctrl+P`/`Ctrl+N`。输入框里有内容时 `↑`/`↓` 仍归编辑器。理由见 `./keys.ts`。
+ *
+ * Token 消耗：
+ * - **输入框下方**常驻一行本次会话的累计用量（含正在跑的场景的实时值，每轮 LLM 调用后刷新）——
+ *   长流程跑到一半就能看出已经烧了多少；文案与报告末行**同源**（同一个 `formatUsage`），
+ *   端点没返回 usage 时它会自己说明，不会拿 0 冒充；
+ * - 每个场景结束再在日志里补一行该场景的明细，退出时的汇总报告口径不变。
+ *
+ * 模型探活（见 `../agent.ts` 的 `ensureModelReachable`）：
+ * - 每个场景开跑前先探一次模型是否真的能发起请求；不通就把该场景如实记为失败，并把
+ *   **剩余待办一起取消**——一次「连不上」不该摊成 N 个「用例失败」，更不该为它开 N 个
+ *   浏览器窗口。探活用的是「开跑那一刻」的模型选择，因此 `/model` 换过模型后会自动重探。
+ *
+ * 无源会话与运行时加载（见 ADR-0005）：
+ * - 可以**不带任何用例文件**启动（`pageqa` 无参 + TTY）：队列为空、落点为空；
+ * - `/run <路径或关键字>` 加载一个已有用例文件的场景，并把落点切到它；
+ * - 落点为空时，追加的场景只存在于本次会话，不写任何文件——退出时要明说，
+ *   否则「敲下去就等于留下了」这条前提被抽掉而没人告诉用户。
  *
  * 模型切换与登录（见 ADR-0004）：
  * - `/model` 打开模型选择器：`Enter` 本次会话生效、`Ctrl+S` 同时设为启动默认（写回 config.json）；
@@ -20,10 +45,17 @@
  * 选择器与登录提问都复用底部输入区（浮层负责选项，输入框负责文本/密钥），
  * 因此「跑场景」与「改配置」用的是同一套输入路径，不需要第二套按键。
  */
-import { runAgent, splitScenarios, type AgentRunResult } from "../agent.js";
+import {
+  ModelUnreachableError,
+  runAgent,
+  splitScenarios,
+  type AgentRunResult,
+} from "../agent.js";
 import { info, setSink } from "../log.js";
 import {
   emptyUsage,
+  formatUsage,
+  mergeUsage,
   numberSteps,
   renderSuiteText,
   renderText,
@@ -45,10 +77,26 @@ import type {
 import {
   ScenarioQueue,
   type QueuedScenario,
+  type ScenarioOrigin,
   type ScenarioState,
 } from "./queue.js";
 import { accent, dim, editorTheme, err, ok, title, warn } from "./theme.js";
-import { appendScenarioToCaseFile, scenariosFromInput } from "./writeback.js";
+import {
+  arrowKeysBelongToLog,
+  KEYBINDINGS,
+  WHEEL_SCROLL_LINES,
+} from "./keys.js";
+import {
+  appendScenarioToCaseFile,
+  loadCaseScenarios,
+  scenariosFromInput,
+} from "./writeback.js";
+import {
+  buildPickPrompt,
+  displayPath,
+  parsePick,
+  resolveCaseFile,
+} from "./case-source.js";
 import { getLocale, setLocale, t } from "../i18n.js";
 import { CONFIG_PATH, saveLocale, saveModelSelection } from "../config.js";
 import { AUTH_PATH } from "../auth.js";
@@ -71,20 +119,30 @@ import {
 import type { AuthEvent, AuthPrompt, AuthType } from "@earendil-works/pi-ai";
 
 export interface InteractiveOptions {
-  /** 源用例文件路径。交互模式要求必须有它——追加场景要写回这里。 */
-  sourcePath: string;
-  /** 源用例文件原文（含 `${...}` 占位符）。 */
-  sourceText: string;
+  /**
+   * 启动时指定的源用例文件路径，也就是初始落点。
+   *
+   * 无参启动的会话没有它——落点由运行中的 `/run` 决定（见 ADR-0005 决策四）。
+   */
+  sourcePath?: string;
   /** 本次运行展开占位符的取值。 */
   vars: RunVarValue[];
   /**
    * 展开 `${...}` 占位符用的时刻。
-   * 初始场景与全部追加场景**共用同一个**：回放脚本靠「具体值 → 占位符」反查还原，
-   * 若各场景各用各的时刻，同一份脚本里一个占位符会对应多个取值（见 ADR-0002 决策六）。
+   *
+   * 初始场景、`/run` 加载的场景与全部追加场景**共用同一个**：回放脚本靠
+   * 「具体值 → 占位符」反查还原，若各场景各用各的时刻，同一份脚本里一个占位符
+   * 会对应多个取值（见 ADR-0002 决策六）。加载场景为何也必须跟会话时刻走，
+   * 见 ADR-0005 决策八——同一落点派生的场景会进同一份脚本，而回放端只展开一次。
    */
   now: Date;
   debug: boolean;
-  /** 将要写入的回放脚本路径（仅用于在汇总报告里标注）。 */
+  /**
+   * 显式指定的回放脚本输出路径（仅用于在汇总报告里标注）。
+   *
+   * 不给路径时脚本按来源拆、各自贴着源用例写（见 ADR-0005 决策七），
+   * 那些路径只有退出时才知道，因此打 stderr 而不是塞进报告。
+   */
   scriptPath?: string;
 }
 
@@ -97,8 +155,10 @@ export interface InteractiveRunResult {
   usage: TokenUsage;
   /** 跑过的场景的录制。已取消的不含——半截轨迹录进脚本会让回放跑半个用例还可能报 PASS。 */
   recordings: ScenarioRecording[];
-  /** 写回源用例文件的场景数。 */
+  /** 写回落点的场景数。 */
   writtenBack: number;
+  /** 因为没有落点而没能写回的场景数（退出时必须明说，否则等于静默丢数据）。 */
+  unwritten: number;
 }
 
 // 帮助文本按当前语种实时渲染（/toggle-language 之后要立刻是新语言）。
@@ -116,6 +176,14 @@ function fmtDuration(ms: number): string {
   if (s < 60) return `${s}s`;
   return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
 }
+
+/**
+ * 让模型从候选里挑用例文件的超时。
+ *
+ * 挑文件只是 `/run` 的一个辅助步骤——它卡住时必须能及时退到手动选择，
+ * 不能因为模型端点慢，就让「加载用例文件」这件事看起来坏了。
+ */
+const PICK_TIMEOUT_MS = 20_000;
 
 /** 用户主动取消交互（Esc / Ctrl+C）时用的哨兵错误，与真正的失败区分开。 */
 const CANCELLED = "__cancelled__";
@@ -170,14 +238,23 @@ function notRunReport(item: QueuedScenario): TestReport {
   };
 }
 
-/** 执行抛错时的报告：记成失败，绝不当作「未执行」。 */
-function failedResult(item: QueuedScenario, cause: unknown): AgentRunResult {
+/**
+ * 执行抛错时的报告：记成失败，绝不当作「未执行」。
+ *
+ * `expectation` 可换：模型不可达时「场景执行出错」这句并不准确——那条用例压根没开始跑，
+ * 报告该说的是「模型能连通」这条前提不成立（见下方场景执行器里的 ModelUnreachableError 分支）。
+ */
+function failedResult(
+  item: QueuedScenario,
+  cause: unknown,
+  expectation: string = t("tui.scenarioErrorExpectation"),
+): AgentRunResult {
   const message = msgOf(cause);
   const report: TestReport = {
     status: "fail",
     assertions: [
       {
-        expectation: t("tui.scenarioErrorExpectation"),
+        expectation,
         verdict: "fail",
         evidence: message,
       },
@@ -210,7 +287,11 @@ export async function runInteractive(
     Editor,
     SelectList,
     CombinedAutocompleteProvider,
+    KeybindingsManager,
+    TUI_KEYBINDINGS,
+    isKeyRelease,
     matchesKey,
+    setKeybindings,
   } = await import("@earendil-works/pi-tui");
 
   /**
@@ -236,7 +317,15 @@ export async function runInteractive(
   }
 
   const terminal = new ProcessTerminal();
-  const tui = new TuiAltScreen(terminal, true, undefined, { mouse: true });
+  // 滚动键位与滚轮步长是 pi-tui 的全局设置（输入分发时才读取），必须在收到按键之前装好。
+  setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, KEYBINDINGS));
+  const tui = new TuiAltScreen(terminal, true, undefined, {
+    mouse: true,
+    wheelScrollLines: WHEEL_SCROLL_LINES,
+    // `follow: "end"` 的代价是「上滚」这件事本身没有别的凭据：没有这行提示，用户只能看到
+    // 日志不再刷新，却不知道是自己滚走了、也不知道怎么回去。它同时是可点击的（点一下回底部）。
+    scrollToEndIndicator: () => t("tui.scroll.paused"),
+  });
 
   // ── 视口：上方滚动日志 + 底部固定输入区 ──
   const logLines: string[] = [];
@@ -247,12 +336,16 @@ export async function runInteractive(
     scrollbar: "auto",
   });
   const statusLine = new Text("", 1);
+  // token 消耗紧贴输入框下方：`paddingY: 0` —— 它是一行数据，不该像提示行那样上下各留一行空白
+  // （那两行空白是日志区的空间）。内容与报告末行同源（同一个 `formatUsage`），口径不会两处不一。
+  const usageLine = new Text("", 1, 0);
   const hintLine = new Text(dim(t("tui.hint")), 1);
   const editor = new Editor(tui, editorTheme, { paddingX: 1 });
 
   const dock = new VStack([
     { component: statusLine, shrink: 1, minSize: 0 },
     { component: editor, shrink: 1, minSize: 3 },
+    { component: usageLine, shrink: 1, minSize: 0 },
     { component: hintLine, shrink: 1, minSize: 0 },
   ]);
   tui.setLayoutRoot(
@@ -265,8 +358,39 @@ export async function runInteractive(
 
   // ── 状态 ──
   const results = new Map<number, AgentRunResult>();
+  /**
+   * 正在跑的那次 `runAgent` 的实时用量（每轮 LLM 调用后由 agent 回调刷新）。
+   *
+   * 场景结束时以 `results` 里的权威结算值取代它，因此必须清空——否则同一份消耗会被算两遍。
+   */
+  let runningUsage: TokenUsage | null = null;
+
+  /**
+   * 本次会话累计 token 用量 = 已结束场景的结算值 + 正在跑的场景的实时值。
+   *
+   * 输入框下方那行要回答的是「到现在为止烧了多少」：只算已结束的场景，长流程跑到第十分钟时
+   * 显示的仍是上一个场景的数字。
+   */
+  function sessionUsage(): TokenUsage {
+    let acc = emptyUsage();
+    for (const r of results.values()) acc = mergeUsage(acc, r.usage);
+    if (runningUsage) acc = mergeUsage(acc, runningUsage);
+    return acc;
+  }
+  /**
+   * 当前落点（Write-back Target，见 ADR-0005 决策四）：追加场景写回哪个用例文件。
+   *
+   * 启动时给了源用例文件就是它；无参启动时为空，等 `/run` 加载第一个文件时填上，
+   * 之后每次加载都会跟着换（用户刚打开哪个文件，敲下的用例就该写进哪个）。
+   * 为空时追加的场景不写任何文件——这是让「无源会话」合法存在必须付的代价。
+   */
+  let writeBackTarget: string | undefined = opts.sourcePath;
   let writtenBack = 0;
+  /** 因为没有落点而没能写回的场景数：退出时要如实报出来，不能静默丢。 */
+  let unwritten = 0;
   let shuttingDown = false;
+  /** 收尾期间又收到一次收工请求（Ctrl+C / SIGINT / `/exit`）：不再等队列停下。 */
+  let finishNow = false;
   let teardown = false;
   let finish: () => void = () => {};
   const finished = new Promise<void>((resolve) => {
@@ -708,6 +832,13 @@ export async function runInteractive(
     }
   }
 
+  /** 场景来源的短标签：用例文件用相对路径（便于阅读），追加场景标「追加」。 */
+  function originLabel(origin: ScenarioOrigin): string {
+    return origin.kind === "added"
+      ? t("tui.originAdded")
+      : displayPath(origin.path);
+  }
+
   function updateStatus(): void {
     const all = queue.all();
     const running = queue.running();
@@ -737,8 +868,18 @@ export async function runInteractive(
     // 当前模型常驻状态栏：切换过模型之后，这一栏是「这一条场景到底用哪个模型」的唯一凭据。
     bits.push(dim(t("tui.model.status", { model: modelLabel(currentChoice) })));
     if (writtenBack > 0) bits.push(dim(t("tui.writtenBack", { n: writtenBack })));
-    bits.push(dim(opts.sourcePath));
+    // 落点常驻状态栏：无落点是「正常但会丢数据」的状态，必须一直看得见。
+    bits.push(
+      dim(
+        writeBackTarget
+          ? t("tui.target", { path: displayPath(writeBackTarget) })
+          : t("tui.noTarget"),
+      ),
+    );
     statusLine.setText(bits.join(dim("  ·  ")));
+    // token 消耗放在**输入框下方**（与报告末行同一句话：`formatUsage`），含正在跑的场景的
+    // 实时值，每轮 LLM 调用后随 updateStatus 一起刷新；端点没返回 usage 时它会自己说明。
+    usageLine.setText(formatUsage(sessionUsage()));
     tui.requestRender();
   }
 
@@ -762,8 +903,7 @@ export async function runInteractive(
     return all
       .map(
         (i) =>
-          `#${i.id} [${tagOf(i.state)}] ${i.name}` +
-          (i.added ? t("tui.appended") : ""),
+          `#${i.id} [${tagOf(i.state)}] ${i.name}（${originLabel(i.origin)}）`,
       )
       .join("\n");
   }
@@ -774,7 +914,7 @@ export async function runInteractive(
       title(
         t("tui.sceneStart", {
           name: item.name,
-          appended: item.added ? t("tui.appended") : "",
+          appended: item.origin.kind === "added" ? t("tui.appended") : "",
         }),
       ),
     );
@@ -791,12 +931,30 @@ export async function runInteractive(
         // 不会把跑到一半的会话换成另一个模型（那会让报告里的模型归属含糊不清）。
         model: { ...currentChoice },
         catalog,
+        // 每轮 LLM 调用后刷新状态栏里的 token 累计：长流程跑到一半就能看出已经烧了多少。
+        onUsage: (usage) => {
+          runningUsage = usage;
+          updateStatus();
+        },
       });
     } catch (err2) {
-      result = failedResult(item, err2);
       append(err(t("tui.sceneError", { name: item.name, msg: msgOf(err2) })));
+      if (err2 instanceof ModelUnreachableError) {
+        // 模型不通：这个场景如实记为失败（**不是**「已取消」——它是配置错误，
+        // 混进「不计入退出码」的类别会让 CI 把「模型连不上」当成通过），
+        // 同时把整条队列停掉。继续跑只会把一次「连不上」摊成 N 个「用例失败」，
+        // 每个还要先开一次浏览器窗口再白等十几分钟。
+        result = failedResult(item, err2, t("tui.model.expectation"));
+        append(dim(t("err.modelUnreachableHint")));
+        const stopped = queue.cancelAllWaiting(t("tui.model.stopNote"));
+        if (stopped > 0) append(warn(t("tui.model.stopRun", { n: stopped })));
+      } else {
+        result = failedResult(item, err2);
+      }
     }
     results.set(item.id, result);
+    // 结算值已进 results，实时值必须清掉，否则这份消耗会在状态栏里被算两遍。
+    runningUsage = null;
     const tag = statusTag(result.report.status);
     const line = t("tui.sceneEnd", {
       name: item.name,
@@ -805,6 +963,9 @@ export async function runInteractive(
       duration: fmtDuration(Date.now() - startedAt),
     });
     append(result.report.status === "pass" ? ok(line) : result.report.status === "cancelled" ? warn(line) : err(line));
+    // 这一条场景花了多少：状态栏只有会话累计，看不出单条成本。没发生过 LLM 调用
+    // （排队中被取消、模型探活就失败）时不打这行——那只会是一串 0。
+    if (result.usage.calls > 0) append(dim(formatUsage(result.usage)));
     return result.report.status;
   }, updateStatus);
 
@@ -813,6 +974,11 @@ export async function runInteractive(
   function buildCommandItems(): SlashCommand[] {
     return [
       { name: "status", description: t("tui.cmd.status") },
+      {
+        name: "run",
+        argumentHint: "<文件或关键字>",
+        description: t("tui.cmd.run"),
+      },
       {
         name: "cancel",
         argumentHint: "<n>",
@@ -846,37 +1012,199 @@ export async function runInteractive(
 
   installAutocomplete();
 
-  /** 把一段输入拆成场景：写回源用例文件 + 入队。 */
+  /**
+   * 把一段输入拆成场景：写回**当前落点** + 入队。
+   *
+   * 没有落点时（无参启动且还没 `/run` 过任何文件）不写任何文件——ADR-0002 决策七
+   * 拒绝过的两件事仍在拒绝之列：不在用户工作目录里凭空造文件、不静默降级成别的行为。
+   * 代价是这些场景关掉就没，所以这里与退出时都要把话说出来（见 ADR-0005 决策六）。
+   */
   function addScenarios(text: string): void {
     const scenarios = scenariosFromInput(text);
     if (scenarios.length === 0) return;
+    const target = writeBackTarget;
+    const origin: ScenarioOrigin = target
+      ? { kind: "added", path: target }
+      : { kind: "added" };
     for (const sc of scenarios) {
-      // 先写回再入队：源文件是「用户想留下的用例」，本次运行只是它的一次执行。
-      try {
-        appendScenarioToCaseFile(opts.sourcePath, sc);
-        writtenBack += 1;
-        append(dim(t("tui.wroteBack", { name: sc.name })));
-      } catch (err2) {
-        append(err(t("tui.writeBackFail", { msg: msgOf(err2) })));
+      // 先写回再入队：落点文件是「用户想留下的用例」，本次运行只是它的一次执行。
+      if (target) {
+        try {
+          appendScenarioToCaseFile(target, sc);
+          writtenBack += 1;
+          append(dim(t("tui.wroteBack", { name: sc.name })));
+        } catch (err2) {
+          append(err(t("tui.writeBackFail", { msg: msgOf(err2) })));
+        }
+      } else {
+        unwritten += 1;
+        append(warn(t("tui.notWrittenBack", { name: sc.name })));
       }
-      const item = queue.add(sc.name, sc.body, true);
+      const item = queue.add(sc.name, sc.body, origin);
       append(
-        t("tui.queued", {
-          id: item.id,
-          name: item.name,
-          path: opts.sourcePath,
-        }),
+        target
+          ? t("tui.queued", {
+              id: item.id,
+              name: item.name,
+              path: target,
+            })
+          : t("tui.queuedNoTarget", { id: item.id, name: item.name }),
       );
     }
     // 队列空闲时立刻开跑；正在跑则等当前场景结束后自动接上。
     queue.pump();
   }
 
+  /**
+   * 让模型从候选里挑一个用例文件。
+   *
+   * 只把**文件名**交给模型，不给文件内容：读文件、编号、入队、录制全归 pageqa，
+   * 「让 AI 自行查找」的边界就划在这里（见 ADR-0005 决策三）。
+   */
+  async function pickCaseByModel(
+    hint: string,
+    candidates: string[],
+  ): Promise<string | undefined> {
+    const model = resolveModel(catalog, currentChoice);
+    if (!model) return undefined;
+    try {
+      const reply = await catalog.models.completeSimple(
+        model,
+        {
+          messages: [
+            {
+              role: "user",
+              content: buildPickPrompt(hint, candidates),
+              timestamp: Date.now(),
+            },
+          ],
+        },
+        { signal: AbortSignal.timeout(PICK_TIMEOUT_MS) },
+      );
+      const text = reply.content
+        .map((c) => (c.type === "text" ? c.text : ""))
+        .join("");
+      const picked = parsePick(text, candidates);
+      if (picked) {
+        append(dim(t("tui.run.picked", { path: displayPath(picked) })));
+        return picked;
+      }
+      append(
+        dim(
+          t("tui.run.pickFailed", { msg: text.trim().slice(0, 40) || "-" }),
+        ),
+      );
+      return undefined;
+    } catch (err2) {
+      // 模型不可用不该变成「加载不了用例文件」：说清楚，然后走手动选择。
+      append(dim(t("tui.run.pickFailed", { msg: msgOf(err2) })));
+      return undefined;
+    }
+  }
+
+  /**
+   * `/run <路径或关键字>`：把一个已有用例文件的场景加载进队列。
+   *
+   * 确定性优先（见 ADR-0005 决策三）：命中唯一就直接加载；命中多个先让模型从文件名
+   * 列表里挑，挑不出来（或模型不可用）就弹选择器让用户自己挑。加载进来的场景来源是
+   * 那个文件，**不会被写回**（它本来就在文件里），但落点会切到它。
+   */
+  async function loadCaseFromHint(hint: string): Promise<void> {
+    if (!hint) {
+      append(err(t("tui.run.usage")));
+      return;
+    }
+    const found = resolveCaseFile(hint);
+    if (found.kind === "none") {
+      append(err(t("tui.run.notFound", { hint })));
+      return;
+    }
+    let path: string | undefined;
+    if (found.kind === "one") {
+      path = found.path;
+    } else {
+      const listed = found.candidates.map((p) => displayPath(p)).join("、");
+      append(
+        dim(
+          t("tui.run.ambiguous", {
+            n: found.candidates.length,
+            paths: listed,
+          }) +
+            (found.truncated > 0
+              ? t("tui.run.overflow", { n: found.truncated })
+              : ""),
+        ),
+      );
+      path = await pickCaseByModel(hint, found.candidates);
+      if (!path) {
+        const pick = await openSelector(
+          t("tui.run.pickTitle", { hint }),
+          found.candidates.map((p) => ({ value: p, label: displayPath(p) })),
+        );
+        path = pick?.value;
+      }
+    }
+    if (!path) return;
+    const casePath = path;
+    let scenarios;
+    try {
+      scenarios = loadCaseScenarios(casePath);
+    } catch (err2) {
+      append(
+        err(
+          t("tui.run.readFailed", {
+            path: displayPath(casePath),
+            msg: msgOf(err2),
+          }),
+        ),
+      );
+      return;
+    }
+    if (scenarios.length === 0) {
+      append(warn(t("tui.run.empty", { path: displayPath(casePath) })));
+      return;
+    }
+    // 落点跟着这次加载走：刚打开的文件就是用户此刻在编辑/补用例的那个（决策四）。
+    writeBackTarget = casePath;
+    for (const sc of scenarios) {
+      const item = queue.add(sc.name, sc.body, {
+        kind: "file",
+        path: casePath,
+      });
+      append(
+        dim(
+          t("tui.queued", {
+            id: item.id,
+            name: item.name,
+            path: displayPath(casePath),
+          }),
+        ),
+      );
+    }
+    append(
+      accent(
+        t("tui.run.loaded", {
+          n: scenarios.length,
+          path: displayPath(casePath),
+        }),
+      ),
+    );
+    append(dim(t("tui.run.targetSwitched", { path: displayPath(casePath) })));
+    updateStatus();
+    // 队列空闲时立刻开跑；正在跑则等当前场景结束后自动接上（决策五：加载即追加到队尾）。
+    queue.pump();
+  }
+
   function runCommand(line: string): void {
-    const [cmd, arg] = line.slice(1).split(/\s+/, 2);
+    // 参数取整段剩余文本：`/run` 的参数是路径，切成两段会把带空格的路径切坏。
+    const rest = line.slice(1);
+    const gap = rest.search(/\s/);
+    const cmd = gap < 0 ? rest : rest.slice(0, gap);
+    const arg = gap < 0 ? "" : rest.slice(gap).trim();
     switch (cmd) {
       case "help":
-        append(t("tui.help"));
+        // 滚轮步长从常量注入，免得帮助里的数字与 `./keys.ts` 慢慢对不上。
+        append(t("tui.help", { wheel: WHEEL_SCROLL_LINES }));
         break;
       case "toggle-language": {
         // 切语种并把结果写回配置文件：下次启动直接生效。
@@ -899,6 +1227,9 @@ export async function runInteractive(
       case "status":
         append(statusText());
         break;
+      case "run":
+        void loadCaseFromHint(arg);
+        break;
       case "cancel": {
         const id = Number(arg);
         const item = Number.isFinite(id) ? queue.cancel(id) : undefined;
@@ -920,11 +1251,27 @@ export async function runInteractive(
         break;
       case "exit":
       case "quit":
-        void shutdown(t("tui.exitReason"));
+        requestShutdown(t("tui.exitReason"));
         break;
       default:
         append(t("tui.unknownCmd", { cmd: cmd ?? "" }));
     }
+  }
+
+  /**
+   * 请求收工。
+   *
+   * 第二次请求（`Ctrl+C` 按键与 `SIGINT` 信号走的是同一条路）不再等队列停下：用户表达的是
+   * 「立刻收尾」。但**仍然要走完收尾**——还原终端、打印汇总报告。这正是「不要直接把终端关闭，
+   * 只要退出就行」的含义：进程必须经由正常路径退出，而不是被信号当场杀掉（被杀的进程不会
+   * 还原终端，会把它留在 alt 屏 + 隐藏光标的状态里，看起来就像终端被关掉了）。
+   */
+  function requestShutdown(reason: string): void {
+    if (!shuttingDown) {
+      void shutdown(reason);
+      return;
+    }
+    finishNow = true;
   }
 
   async function shutdown(reason: string): Promise<void> {
@@ -948,6 +1295,11 @@ export async function runInteractive(
     // 免得界面永远卡在「正在收尾」。
     const deadline = Date.now() + 30_000;
     while (queue.running() || queue.waiting().length > 0) {
+      // 收尾期间又按了 Ctrl+C：别再等队列，立刻收尾（报告照打，仍然不是硬杀）。
+      if (finishNow) {
+        append(warn(t("tui.shutdownNow")));
+        break;
+      }
       if (Date.now() > deadline) {
         append(err(t("tui.abortTimeout")));
         break;
@@ -973,6 +1325,9 @@ export async function runInteractive(
     if (!text) return;
     editor.addToHistory(text);
     editor.setText("");
+    // 提交即「这段我看完了」：把视口拉回末尾恢复跟随。否则用户上滚读完一段再敲下一条时，
+    // 新场景的日志会在看不见的地方刷过去（而「正在跑」的唯一现场就是这片日志）。
+    transcript.scrollToEnd();
     if (text.startsWith("/")) runCommand(text);
     else addScenarios(text);
   };
@@ -980,8 +1335,25 @@ export async function runInteractive(
   // Esc / Ctrl+C 走全局监听：它们在编辑器之前被处理，
   // 因为「中止正在跑的东西」不该排队等编辑器先把按键消化一遍。
   tui.addInputListener((data) => {
+    // ↑/↓：输入框为空时归日志视口。一部分终端把滚轮翻译成 ↑/↓ 送进来（VS Code 的全屏缓冲
+    // 就是这样），不接管的话滚轮会去翻输入框的历史、日志反而滚不动（见 ./keys.ts）。
+    // 只吃「按一下」，不吃 Kitty 协议的释放事件——否则一次滚轮会在支持该协议的终端上滚两倍。
+    if (
+      !isKeyRelease(data) &&
+      (matchesKey(data, "up") || matchesKey(data, "down")) &&
+      arrowKeysBelongToLog({
+        text: editor.getText(),
+        overlayOpen: tui.hasOverlay(),
+        autocompleteShowing: editor.isShowingAutocomplete(),
+      })
+    ) {
+      transcript.scrollBy(
+        matchesKey(data, "up") ? -WHEEL_SCROLL_LINES : WHEEL_SCROLL_LINES,
+      );
+      return { consume: true };
+    }
     if (matchesKey(data, "ctrl+c")) {
-      void shutdown("Ctrl+C");
+      requestShutdown("Ctrl+C");
       return { consume: true };
     }
     if (matchesKey(data, "escape")) {
@@ -1005,14 +1377,25 @@ export async function runInteractive(
   const ticker = setInterval(() => updateStatus(), 1000);
 
   // ── 启动 ──
-  const initial = splitScenarios(input);
-  for (const sc of initial) queue.add(sc.name, sc.body, false);
+  // 无参启动时没有种子场景：队列为空、落点为空，等用户输入或 `/run`（ADR-0005 决策一）。
+  const sourcePath = opts.sourcePath;
+  const initial = sourcePath ? splitScenarios(input) : [];
+  if (sourcePath) {
+    for (const sc of initial) {
+      queue.add(sc.name, sc.body, { kind: "file", path: sourcePath });
+    }
+  }
   info(
     "[pageqa] " +
       t("tui.interactiveStart", { n: initial.length }) +
       (opts.debug ? t("tui.debugOn") : ""),
   );
-  info("[pageqa] " + t("tui.sourceFile", { path: opts.sourcePath }));
+  info(
+    "[pageqa] " +
+      (sourcePath
+        ? t("tui.sourceFile", { path: sourcePath })
+        : t("tui.noSource")),
+  );
   append(dim(t("tui.enterHint")));
   // 配置里的默认模型可能已不可用（provider 未登录/模型下线）：先校正，避免第一条场景
   // 就以「模型不存在」失败。校正结果会写到视口，用户的第一次交互就能看到。
@@ -1024,6 +1407,17 @@ export async function runInteractive(
   updateStatus();
 
   tui.start();
+
+  // Ctrl+C 有两条路径到我们这儿：raw 模式下它是 `\x03` 这个字节（上面的输入监听），
+  // 而在 raw 模式没生效的时刻——启动早期、以及收尾还原终端之后——它会变成 SIGINT 信号，
+  // 默认行为是**当场杀掉进程**：不还原终端、不打汇总报告，终端被留在 alt 屏 + 光标隐藏的
+  // 状态里（看起来就像「终端被关掉了」，还得手动关掉标签页）。因此信号也走同一条收工路径。
+  process.on("SIGINT", () => requestShutdown(t("tui.signalReason")));
+  // 兜底：万一有异常把进程带走了，也别把终端留在半途（stop() 是同步的，且可重复调用）。
+  process.on("exit", () => {
+    if (!teardown) tui.stop();
+  });
+
   queue.pump();
   await finished;
 
@@ -1031,20 +1425,32 @@ export async function runInteractive(
   const all = queue.all();
   const members: SuiteMember[] = all.map((item) => {
     const r = results.get(item.id);
+    const origin = originLabel(item.origin);
     return r
-      ? { name: item.name, report: r.report, usage: r.usage }
-      : { name: item.name, report: notRunReport(item), usage: emptyUsage() };
+      ? { name: item.name, report: r.report, usage: r.usage, origin }
+      : {
+          name: item.name,
+          report: notRunReport(item),
+          usage: emptyUsage(),
+          origin,
+        };
   });
   const summary = summarizeSuite(members);
   if (opts.scriptPath) summary.script = opts.scriptPath;
   const text = renderSuiteText(
     summary,
     members,
-    all.map((i) => ({ name: i.name })),
+    all.map((i) => ({ name: i.name, origin: originLabel(i.origin) })),
   );
   const recordings = all
     .filter((i) => i.state !== "cancelled")
-    .flatMap((i) => results.get(i.id)?.recordings ?? []);
+    .flatMap((i) =>
+      // 录制带上来源：调用方据此按来源拆回放脚本（见 ADR-0005 决策七）。
+      (results.get(i.id)?.recordings ?? []).map((r) => ({
+        ...r,
+        sourcePath: i.origin.path,
+      })),
+    );
 
   return {
     report: summary,
@@ -1054,5 +1460,6 @@ export async function runInteractive(
     usage: summary.usage ?? emptyUsage(),
     recordings,
     writtenBack,
+    unwritten,
   };
 }

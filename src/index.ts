@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runAgent, runSuite } from "./agent.js";
+import { ModelUnreachableError, runAgent, runSuite } from "./agent.js";
 import {
   ensureConfigDir,
   CONFIG_PATH,
@@ -13,10 +13,12 @@ import type { TestReport } from "./report.js";
 import { runInteractive } from "./tui/app.js";
 import {
   buildReplayScript,
+  groupRecordingsBySource,
   loadReplayScript,
   runReplayScript,
   sourceDriftNotice,
   writeReplayScript,
+  type ScenarioRecording,
 } from "./replay.js";
 import {
   captureRunVars,
@@ -224,14 +226,76 @@ function looksLikeScriptFile(input: string): boolean {
 
 /**
  * 默认的回放脚本落盘位置：贴着源用例（同名 + `.replay.json`），便于和用例一起进 git 评审。
- * 内联文本没有源文件，落到当前工作目录。
+ * 内联文本与无落点的追加场景没有源文件，落到当前工作目录。
  */
 function defaultScriptPath(rawInput: string, isFile: boolean): string {
-  if (!isFile) return "pageqa.replay.json";
+  return scriptPathForSource(isFile ? rawInput : null);
+}
+
+/** 一个来源文件对应的默认脚本位置。 */
+function scriptPathForSource(sourcePath: string | null): string {
+  if (!sourcePath) return "pageqa.replay.json";
   return join(
-    dirname(rawInput),
-    basename(rawInput, extname(rawInput)) + ".replay.json",
+    dirname(sourcePath),
+    basename(sourcePath, extname(sourcePath)) + ".replay.json",
   );
+}
+
+/**
+ * 把交互模式跑过的场景固化成回放脚本（**按来源拆分**，见 ADR-0005 决策七）。
+ *
+ * 一个来源 = 一个用例文件 = 一份脚本：脚本头部的 `source { path, hash }` 是单值，
+ * 而一次交互会话可以加载多个用例文件。刻意不升级脚本格式（`sources[]`）——脚本是
+ * 会被长期保存、丢进 git、在 CI 里零模型重跑的对外契约，不值得为「一份脚本装多来源」
+ * 这个几乎用不到的写法去动它的结构。
+ *
+ * 显式给了路径却撞上多个来源时**直接报错**：静默只收其中一个等于丢数据，而「脚本与
+ * 用例文件一对一」是 ADR-0001 立下的不变量。一个场景都没跑过时不落盘——「压根没跑」
+ * 不是证据，落盘只会多一个需要判断「这个空脚本是什么」的文件。
+ */
+function emitInteractiveScripts(
+  recordings: ScenarioRecording[],
+  explicitPath: string | undefined,
+): void {
+  if (recordings.length === 0) {
+    info(t("log.scriptSkippedNoScenarios"));
+    return;
+  }
+  const groups = groupRecordingsBySource(recordings);
+  if (explicitPath && groups.size > 1) {
+    throw new Error(
+      t("err.emitMultiSource", {
+        n: groups.size,
+        paths: [...groups.keys()]
+          .map((p) => p ?? "pageqa.replay.json")
+          .join("、"),
+      }),
+    );
+  }
+  for (const [sourcePath, group] of groups) {
+    const target = explicitPath ?? scriptPathForSource(sourcePath);
+    // 写回之后源文件内容已变：必须重新读它算 hash，否则第一次回放就报「源用例已变更」。
+    // 文件在运行中被删/改名时照常出脚本，只是没有漂移检测的依据（hash 为 null）。
+    let sourceText: string | null = null;
+    if (sourcePath) {
+      try {
+        sourceText = readFileSync(sourcePath, "utf8");
+      } catch {
+        sourceText = null;
+      }
+    }
+    const script = buildReplayScript(group, { sourcePath, sourceText });
+    writeReplayScript(target, script);
+    const steps = script.scenarios.reduce((n, s) => n + s.steps.length, 0);
+    info(
+      t("log.replayScriptGeneratedInteractive", {
+        path: target,
+        scenes: script.scenarios.length,
+        steps,
+      }),
+    );
+    info(t("log.replayNext", { path: target }));
+  }
 }
 
 /**
@@ -256,6 +320,7 @@ function exitCodeFor(report: TestReport): number {
 function detectInteractive(
   args: CliArgs,
   isFile: boolean,
+  hasInput: boolean,
 ): { run: boolean; error?: string } {
   const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   if (args.tui) {
@@ -267,7 +332,7 @@ function detectInteractive(
     if (args.session) {
       return { run: false, error: t("err.tuiWithSession") };
     }
-    if (!isFile) {
+    if (hasInput && !isFile) {
       return { run: false, error: t("err.tuiNeedsFile") };
     }
     if (!tty) {
@@ -276,60 +341,86 @@ function detectInteractive(
     return { run: true };
   }
   if (args.noTui || process.env.PAGEQA_NO_TUI) return { run: false };
-  // 自动识别：只在两个流都是 TTY、未给 --json、且确实是源用例文件时才进。
-  // 内联文本不进——没有源用例文件可写回（见 ADR-0002 决策七）。
-  return { run: Boolean(tty && !args.json && isFile) };
+  // 自动识别：两个流都是 TTY、未给 --json，且「给了源用例文件」或「什么都没给」。
+  // 前者是「跑这条用例」，后者是「先开个会话再决定跑什么」（ADR-0005 决策一）。
+  // 内联文本仍不进——批处理与交互的差别只该是「人看不看这个终端」。
+  return { run: Boolean(tty && !args.json && (isFile || !hasInput)) };
 }
 
 /**
  * 交互模式入口：把控制权交给 TUI，退出后回到批处理口径输出汇总报告。
  *
+ * `source` 为空对象表示**无源会话**（无参启动）：队列为空、落点为空，
+ * 用例文件由运行中的 `/run` 决定（见 ADR-0005 决策一）。
+ *
  * 回放脚本必须在**写回完成之后**再生成：`source.hash` 依据的是源用例文件内容，
  * 而交互过程会把追加场景写进它——沿用启动时读到的那份，会让第一次回放就报「源用例已变更」。
  */
 async function interactiveMode(
-  sourcePath: string,
-  sourceText: string,
+  source: { path?: string; text?: string },
   now: Date,
   vars: RunVarValue[],
   args: CliArgs,
-  scriptPath: string | undefined,
 ): Promise<number> {
   info(t("log.startupInteractive"));
-  const result = await runInteractive(sourceText, {
-    sourcePath,
-    sourceText,
+  const result = await runInteractive(source.text ?? "", {
+    sourcePath: source.path,
     vars,
     now,
     debug: args.debug,
-    scriptPath,
+    scriptPath: args.emitScriptPath,
   });
 
-  if (result.writtenBack > 0) {
-    info(t("log.wroteBackScenarios", { n: result.writtenBack, path: sourcePath }));
-  }
-  if (scriptPath) {
-    const finalSource = readFileSync(sourcePath, "utf8");
-    const script = buildReplayScript(result.recordings, {
-      sourcePath,
-      sourceText: finalSource,
-    });
-    writeReplayScript(scriptPath, script);
-    const steps = script.scenarios.reduce((n, s) => n + s.steps.length, 0);
+  if (result.writtenBack > 0 && source.path) {
     info(
-      t("log.replayScriptGeneratedInteractive", {
-        path: scriptPath,
-        scenes: script.scenarios.length,
-        steps,
+      t("log.wroteBackScenarios", {
+        n: result.writtenBack,
+        path: source.path,
       }),
     );
-    info(t("log.replayNext", { path: scriptPath }));
+  }
+  // 没有落点的追加场景关掉就没：收尾时必须说出来（ADR-0005 决策六）。
+  if (result.unwritten > 0) {
+    info(t("log.lostScenarios", { n: result.unwritten }));
+  }
+
+  let scriptError: string | undefined;
+  if (args.emitScript) {
+    try {
+      emitInteractiveScripts(result.recordings, args.emitScriptPath);
+    } catch (err) {
+      // 报告仍要打出来（用户可能等了十几分钟），脚本这头的错如实上 stderr 并反映到退出码。
+      scriptError = err instanceof Error ? err.message : String(err);
+    }
   }
 
   const out = args.json ? result.json : result.text;
   if (args.out) writeFileSync(args.out, out + "\n");
   process.stdout.write(out + "\n");
+  if (scriptError) {
+    process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");
+    return 1;
+  }
   return exitCodeFor(result.report);
+}
+
+/** 交互模式的统一收尾：把抛出的异常翻成可读报错（而不是一个裸栈）。 */
+async function runInteractiveSafely(
+  source: { path?: string; text?: string },
+  now: Date,
+  vars: RunVarValue[],
+  args: CliArgs,
+): Promise<number> {
+  try {
+    return await interactiveMode(source, now, vars, args);
+  } catch (err) {
+    process.stderr.write(
+      t("err.execFailed", {
+        msg: err instanceof Error ? (err.stack ?? String(err)) : String(err),
+      }) + "\n",
+    );
+    return 1;
+  }
 }
 
 /**
@@ -419,7 +510,21 @@ async function main(): Promise<number> {
     return await replayMode(args);
   }
 
+  // ── 无参：TTY 下进交互模式（开一个可以随时 /run 加载用例文件的会话）──
+  // 非 TTY（管道 / CI）维持原口径：打印帮助并退出码 1——那里没有「人看不看这个终端」
+  // 这个判据，而 help 是它唯一的发现途径（ADR-0005 决策一）。
   if (!args.input) {
+    const interactive = detectInteractive(args, false, false);
+    if (interactive.error) {
+      process.stderr.write(t("err.param", { msg: interactive.error }) + "\n\n");
+      return 1;
+    }
+    if (interactive.run) {
+      setDebug(args.debug);
+      // 占位符时刻取自会话启动那一刻：`/run` 加载的场景与追加场景共用它（ADR-0005 决策八）。
+      const now = new Date();
+      return await runInteractiveSafely({}, now, captureRunVars(now), args);
+    }
     process.stdout.write(buildHelp() + "\n");
     return 1;
   }
@@ -444,23 +549,19 @@ async function main(): Promise<number> {
     ? (args.emitScriptPath ?? defaultScriptPath(rawInput, isFile))
     : undefined;
 
-  // ── 交互模式：跑用例的同时可以提交新场景（会写回源用例文件）──
-  const interactive = detectInteractive(args, isFile);
+  // ── 交互模式：跑用例的同时可以提交新场景（会写回落点）──
+  const interactive = detectInteractive(args, isFile, true);
   if (interactive.error) {
     process.stderr.write(t("err.param", { msg: interactive.error }) + "\n\n");
     return 1;
   }
   if (interactive.run) {
-    try {
-      return await interactiveMode(rawInput, sourceText, now, vars, args, scriptPath);
-    } catch (err) {
-      process.stderr.write(
-        t("err.execFailed", {
-          msg: err instanceof Error ? (err.stack ?? String(err)) : String(err),
-        }) + "\n",
-      );
-      return 1;
-    }
+    return await runInteractiveSafely(
+      { path: isFile ? rawInput : undefined, text: sourceText },
+      now,
+      vars,
+      args,
+    );
   }
 
   info(t("log.startup"));
@@ -515,10 +616,14 @@ async function main(): Promise<number> {
     process.stdout.write(out + "\n");
     return exitCodeFor(result.report);
   } catch (err) {
+    // 模型不可达是「环境不对」，不是「跑挂了」：给干净的报错 + 出路，不打印一坨栈。
+    // 这时一条用例都没执行，stdout 上不该出现一份伪装成结果的报告。
     process.stderr.write(
-      t("err.execFailed", {
-        msg: err instanceof Error ? (err.stack ?? String(err)) : String(err),
-      }) + "\n",
+      (err instanceof ModelUnreachableError
+        ? `${err.message}\n${t("err.modelUnreachableHint")}`
+        : t("err.execFailed", {
+            msg: err instanceof Error ? (err.stack ?? String(err)) : String(err),
+          })) + "\n",
     );
     return 1;
   }
