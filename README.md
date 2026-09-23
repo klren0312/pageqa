@@ -251,6 +251,8 @@ On a long-flow failure, seeing only "steps done: 23/42" is useless for fixing th
 3. **Name the next unrun step directly when incomplete**: the integrity check's failure items give "last progress" and "unexecuted step (step k/n): <case original text>", so you can locate the line to fix by following it.
 4. The JSON report additionally provides `steps` (the case step list) and `trace` (execution trace array) fields; suite mode also provides `scenarios[]` (per-scenario `name/status/steps/trace/assertions`) for CI-side failure attribution.
 
+- `durationMs` (optional, milliseconds): this scenario's / suite's duration; suite per-scenario detail `scenarios[].durationMs` is the same field.
+
 Example report fragment on failure:
 
 ```text
@@ -279,6 +281,21 @@ Token consumption: input 446 / output 136 / cache read 6720 / cache write 0 / to
 - Data comes from the `usage` of each round's assistant message (including auto-retried rounds); `input/output/cache read/cache write` are the breakdown, and `total` is the endpoint's `totalTokens`.
 - In the JSON report (`--json`) it is the `usage` field: `{ input, output, cacheRead, cacheWrite, reasoning, total, calls }`.
 - If the LLM endpoint returns no usage (total is 0), the same line notes "endpoint returned no usage", avoiding misreading 0 as real consumption.
+
+### HTML report
+
+Every run (batch, replay, interactive exit) writes a self-contained HTML report that can be
+opened directly in a browser into the current directory; the path and generation time are
+printed to stderr:
+
+```text
+pageqa-report/report-20260923-153001.html
+```
+
+- The filename carries a timestamp, so multiple runs never overwrite each other; `pageqa-report/` is already ignored in `.gitignore`.
+- Contents: overall summary (scenario count / passed / failed / cancelled / duration / tokens), per-scenario status and assertions, collapsible execution traces.
+- The HTML is a side-product: it does **not** affect the stdout report contract or the exit code; write failures only warn on stderr.
+- The JSON report (`--json`/`--out`) gains an optional `durationMs` field (milliseconds); older reports lack this field.
 
 ### Snapshot slimming and reuse (save tokens and time)
 
