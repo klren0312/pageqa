@@ -94,6 +94,7 @@ import {
 } from "./batches.js";
 import { accent, dim, editorTheme, err, ok, title, warn } from "./theme.js";
 import { frameLines, overlayInnerWidth } from "./overlay-frame.js";
+import { packageVersion } from "../version.js";
 import {
   arrowKeysBelongToLog,
   KEYBINDINGS,
@@ -810,9 +811,11 @@ export async function runInteractive(
           description: localeLabel(),
         },
       ];
-      const pick = await openSelector(t("tui.setting.title"), items, {
-        hint: t("tui.setting.hint", { path: CONFIG_PATH }),
-      });
+      const pick = await openSelector(
+        t("tui.setting.title", { version: packageVersion() }),
+        items,
+        { hint: t("tui.setting.hint", { path: CONFIG_PATH }) },
+      );
       if (!pick) return;
       if (pick.value === "locale") {
         switchLocale();

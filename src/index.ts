@@ -34,6 +34,7 @@ import {
 } from "./vars.js";
 import { info, setDebug } from "./log.js";
 import { parseLocale, setLocale, t } from "./i18n.js";
+import { packageVersion } from "./version.js";
 
 interface CliArgs {
   input?: string;
@@ -43,6 +44,8 @@ interface CliArgs {
   suite: boolean;
   initConfig: boolean;
   help: boolean;
+  /** `--version`：打印版本号后退出（方便脚本/CI 取当前版本）。 */
+  version: boolean;
   debug: boolean;
   /** `--replay <file>`：零模型回放一个已有的回放脚本。 */
   replay?: string;
@@ -69,6 +72,7 @@ function parseArgs(argv: string[]): CliArgs {
     suite: false,
     initConfig: false,
     help: false,
+    version: false,
     debug: false,
     emitScript: false,
     semantic: false,
@@ -90,6 +94,10 @@ function parseArgs(argv: string[]): CliArgs {
       case "-h":
       case "--help":
         args.help = true;
+        break;
+      case "-v":
+      case "--version":
+        args.version = true;
         break;
       case "--session": {
         const v = argv[++i];
@@ -498,6 +506,11 @@ async function main(): Promise<number> {
     process.stderr.write(t("err.param", { msg: args.error }) + "\n\n");
     process.stdout.write(buildHelp() + "\n");
     return 1;
+  }
+  if (args.version) {
+    // 只打「pageqa <版本>」：脚本要的是版本号本身，不需要帮助文本那套排版。
+    process.stdout.write(`pageqa ${packageVersion()}\n`);
+    return 0;
   }
   if (args.help) {
     process.stdout.write(buildHelp() + "\n");
