@@ -320,6 +320,7 @@ Turn either one off with `/setting` in interactive mode (three rows: `test repor
 - The switches cover **side outputs only**: `--json`, `--out` and the stdout text report never change.
 - **Explicit flags win**: `--emit-script` (with or without a path) still generates even when the switch is off.
 - Scenarios without a target (appended scenarios in a source-less session, inline text) produce **no script**, and the summary says why; to make them replayable, open a case file with `/run` first.
+- **A run in which no case executed writes no report**: exiting an empty session, or cancelling every scenario before any of them starts, leaves no empty report file (the summary says "no case ran this session"). A scenario that did start and was then aborted still has a real half trace, so it is kept.
 - `/toggle-language` still works in interactive mode, but no longer appears in `/help` or the completion list (the new entry point is `/setting`).
 
 Rationale: `docs/adr/0011`.
@@ -465,6 +466,7 @@ A long flow (create product → create material → inspect → approve …) can
 | `--init-config` | Create/reset the config file in the user directory |
 | `--out <file>` | Write the report to a file |
 | `--debug` | Show debug logs (bsk commands and timings, snapshot size, context trimming, Jev request details) |
+| `-v, --version` | Show the version (e.g. `pageqa 0.10.0`), handy for scripts and CI |
 | `-h, --help` | Help |
 
 Exit code: `0` all assertions passed; `1` any assertion failed / errored / could not execute. Can be wired directly into CI.

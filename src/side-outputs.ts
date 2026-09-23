@@ -18,6 +18,8 @@ import type { TestReport } from "./report.js";
 export type ReportOutcome =
   | { kind: "written"; path: string }
   | { kind: "off" }
+  /** 本次一条用例都没跑（空会话，或全部未开始就被取消）：没有可报告的东西，不落盘。 */
+  | { kind: "skipped" }
   | { kind: "failed"; error: string };
 
 /**
@@ -54,6 +56,9 @@ export function renderSideOutputLines(
       break;
     case "off":
       lines.push(t("log.sideOutputReportOff"));
+      break;
+    case "skipped":
+      lines.push(t("log.sideOutputReportSkipped"));
       break;
     case "failed":
       lines.push(t("log.sideOutputReportFailed", { msg: report.error }));
@@ -111,10 +116,26 @@ export function emitSideOutputs(
 }
 
 /**
+ * 这次运行有没有「跑过用例」——没有就不该留下报告文件。
+ *
+ * - 单场景报告（批处理 / 回放）来自一次真实的用例执行，恒为真。
+ * - 套件报告看两点：只要有**一条跑完**（PASS/FAIL）就算跑过；全是「已取消」时再看有没有
+ *   真的调用过模型——被中止的场景留下的是半截真实轨迹（还烧了 token），比空会话更有留档
+ *   价值；而「一条都没开始就退出」的会话两者皆无。
+ */
+export function hasRunScenarios(report: TestReport): boolean {
+  const scenarios = report.scenarios;
+  if (scenarios === undefined) return true;
+  if (scenarios.some((s) => s.status !== "cancelled")) return true;
+  return (report.usage?.calls ?? 0) > 0;
+}
+
+/**
  * 按开关写测试报告并给出结果；**永不抛错**。
  *
  * 与回放脚本不同，报告是「顺手留档」：写失败只该是一条说明，绝不能顶掉 stdout 报告或
- * 改退出码（ADR-0011 决策五）。开关关掉时连 `pageqa-report/` 目录都不创建。
+ * 改退出码（ADR-0011 决策五）。开关关掉时连 `pageqa-report/` 目录都不创建；一条用例都
+ * 没跑过时同样不落盘——空的报告文件只会让人以为「跑过但什么都没发生」。
  */
 export function writeReportSideOutput(
   report: TestReport,
@@ -123,6 +144,7 @@ export function writeReportSideOutput(
 ): ReportOutcome {
   const enabled = (prefs ?? readSideOutputPrefs()).htmlReport;
   if (!enabled) return { kind: "off" };
+  if (!hasRunScenarios(report)) return { kind: "skipped" };
   try {
     const { path } = writeHtmlReport(report, baseDir);
     return { kind: "written", path };

@@ -27,6 +27,7 @@ const {
 } = await import("../dist/config.js");
 const {
   emitSideOutputs,
+  hasRunScenarios,
   renderSideOutputLines,
   writeReportSideOutput,
 } = await import("../dist/side-outputs.js");
@@ -143,6 +144,11 @@ describe("renderSideOutputLines", () => {
     assert.ok(
       noTarget.includes("[pageqa]   回放脚本: 未生成（2 个场景没有落点文件）"),
     );
+
+    const skipped = renderSideOutputLines({ kind: "skipped" }, { kind: "none" });
+    assert.ok(
+      skipped.includes("[pageqa]   测试报告: 未生成（本次没有执行任何用例）"),
+    );
   });
 
   test("写出了脚本但跳过了无落点场景：追加一行说明", () => {
@@ -171,7 +177,69 @@ describe("renderSideOutputLines", () => {
   });
 });
 
+describe("hasRunScenarios（没跑用例就不留报告）", () => {
+  const scenario = (status) => ({
+    name: "s",
+    status,
+    steps: [],
+    trace: [],
+    assertions: [],
+  });
+
+  test("单场景报告恒为真（批处理 / 回放都来自一次真实执行）", () => {
+    assert.equal(hasRunScenarios(base()), true);
+  });
+
+  test("空套件（一条都没跑）为假", () => {
+    assert.equal(hasRunScenarios({ ...base(), scenarios: [] }), false);
+  });
+
+  test("场景全是被取消、且没调用过模型（一条都没开始）为假", () => {
+    assert.equal(
+      hasRunScenarios({ ...base(), scenarios: [scenario("cancelled")] }),
+      false,
+    );
+  });
+
+  test("有跑完的场景（含失败）为真", () => {
+    assert.equal(
+      hasRunScenarios({ ...base(), scenarios: [scenario("fail")] }),
+      true,
+    );
+  });
+
+  test("被中止但真调用过模型（有半截轨迹）为真", () => {
+    assert.equal(
+      hasRunScenarios({
+        ...base(),
+        scenarios: [scenario("cancelled")],
+        usage: {
+          input: 10,
+          output: 2,
+          cacheRead: 0,
+          cacheWrite: 0,
+          reasoning: 0,
+          total: 12,
+          calls: 3,
+        },
+      }),
+      true,
+    );
+  });
+});
+
 describe("writeReportSideOutput", () => {
+  test("一条用例都没跑过：不写文件、也不建目录", () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "pageqa-side-skip-")), "reports");
+    const outcome = writeReportSideOutput(
+      { ...base(), scenarios: [] },
+      ALL_ON,
+      dir,
+    );
+    assert.deepEqual(outcome, { kind: "skipped" });
+    assert.equal(existsSync(dir), false);
+  });
+
   test("开关关掉：不写文件、连目录都不建", () => {
     const dir = join(mkdtempSync(join(tmpdir(), "pageqa-side-off-")), "reports");
     const outcome = writeReportSideOutput(
