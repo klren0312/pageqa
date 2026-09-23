@@ -112,12 +112,15 @@ function scenarioSection(sc: ScenarioDetail, index: number, total: number): stri
 /** 单场景视图：直接渲染报告自身的断言/步骤/轨迹/摘要。 */
 function singleSection(r: TestReport): string {
   const parts: string[] = [];
+  // 标题固定「用例明细」，耗时只作附注——避免 duration 挤掉标题或复用文本报告的 === 装饰。
   parts.push(
-    `<section class="scenario"><h2>${escapeHtml(
-      typeof r.durationMs === "number"
-        ? t("reportHtml.duration", { dur: formatDurationMs(r.durationMs) })
-        : t("report.title"),
-    )} ${badge(r.status)}</h2>`,
+    `<section class="scenario"><h2>${escapeHtml(t("reportHtml.detail"))}` +
+      (typeof r.durationMs === "number"
+        ? ` <span class="muted">${escapeHtml(
+            t("reportHtml.duration", { dur: formatDurationMs(r.durationMs) }),
+          )}</span>`
+        : "") +
+      ` ${badge(r.status)}</h2>`,
   );
   if (r.cancelReason) {
     parts.push(`<p>${escapeHtml(t("report.cancelled", { reason: r.cancelReason }))}</p>`);
@@ -205,7 +208,8 @@ export function renderHtml(report: TestReport): string {
   const counts = isSuite
     ? countUp(scenarios)
     : countUp([report]);
-  const title = isSuite ? t("report.titleSuite") : t("report.title");
+  // HTML 文档标题用专用键（无 === 装饰）；文本报告的 report.title 保留给 stdout。
+  const title = isSuite ? t("reportHtml.pageTitleSuite") : t("reportHtml.pageTitle");
   const generatedAt = new Date().toLocaleString();
   const usageLine = formatUsage(report.usage, report.mode);
 
