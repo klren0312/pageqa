@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ModelUnreachableError, runAgent, runSuite } from "./agent.js";
@@ -698,10 +698,23 @@ async function main(): Promise<number> {
 }
 
 // 只有作为主模块执行（pageqa bin）时才启动 CLI；被单测 import 时只取 parseArgs。
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-) {
+// 主模块判定要对符号链接归一化：全局安装常位于符号链接路径下
+// （如 nvm 的 `node` 目录被软链成 `nodejs`，或 pnpm 的软链 store），此时
+// `process.argv[1]` 是符号链接路径，而 `import.meta.url` 是 node 解析后的真实路径，
+// 直接按 href 比较会不相等，导致 main() 不执行、CLI 静默退出。两边各取 realpath 再比即可。
+function isMainModule(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    const entry = realpathSync(process.argv[1]);
+    const self = realpathSync(fileURLToPath(import.meta.url));
+    if (entry === self) return true;
+  } catch {
+    // 解析失败（极少见）退回原始 href 比较，保持旧行为
+  }
+  return import.meta.url === pathToFileURL(process.argv[1]).href;
+}
+
+if (isMainModule()) {
   main()
     .then((code) => process.exit(code))
     .catch((err) => {
