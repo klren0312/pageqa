@@ -1,6 +1,12 @@
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 
 /**
  * 用户级配置：在用户主目录下创建配置目录与文件，持久化 LLM 后端设置。
@@ -202,7 +208,25 @@ function updateUserConfig(patch: Record<string, unknown>): void {
     }
   }
   const merged = { ...DEFAULTS, ...current, ...patch };
-  writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
+  writeConfigFile(merged);
+}
+
+/**
+ * 写 config.json（含 apiKey），权限与 auth.json 对齐为 0o600。
+ *
+ * 旧版本写出的文件权限较宽，这里对已存在的文件也尽力收紧一次；
+ * Windows 上 chmod 可能无效，失败忽略（权限问题不该拖垮写配置）。
+ */
+function writeConfigFile(data: object): void {
+  writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  try {
+    chmodSync(CONFIG_PATH, 0o600);
+  } catch {
+    // 平台不支持 chmod 时忽略。
+  }
 }
 
 /**
@@ -251,7 +275,7 @@ function readConfigFile(): Partial<PageQaConfig> {
  */
 function createDefaultConfigFile(): Partial<PageQaConfig> {
   ensureConfigDir();
-  writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULTS, null, 2), "utf8");
+  writeConfigFile(DEFAULTS);
   return { ...DEFAULTS };
 }
 

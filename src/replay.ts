@@ -23,6 +23,7 @@ import {
   type BskOps,
 } from "./bsk/tools.js";
 import { loadConfig } from "./config.js";
+import { t } from "./i18n.js";
 import { JevClient } from "./jev.js";
 import {
   describeLocator,
@@ -34,7 +35,6 @@ import {
 import { debugLog, info } from "./log.js";
 import {
   emptyUsage,
-  parseAssertions,
   renderSuiteText,
   renderText,
   summarizeSuite,
@@ -211,28 +211,35 @@ export function writeReplayScript(path: string, script: ReplayScript): void {
 /** 读取并校验回放脚本文件；结构不合法时抛出可读错误（而不是回放中途才崩）。 */
 export function loadReplayScript(path: string): ReplayScript {
   if (!existsSync(path)) {
-    throw new Error(`找不到回放脚本：${path}`);
+    throw new Error(t("replay.err.notFound", { path }));
   }
   let parsed: ReplayScript;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8")) as ReplayScript;
   } catch (err) {
     throw new Error(
-      `回放脚本不是合法 JSON：${path}（${err instanceof Error ? err.message : String(err)}）`,
+      t("replay.err.invalidJson", {
+        path,
+        msg: err instanceof Error ? err.message : String(err),
+      }),
     );
   }
   if (parsed?.format !== REPLAY_FORMAT) {
     throw new Error(
-      `不是 pageqa 回放脚本（format=${String(parsed?.format)}）：${path}`,
+      t("replay.err.badFormat", { format: String(parsed?.format), path }),
     );
   }
   if (typeof parsed.version !== "number" || parsed.version > REPLAY_VERSION) {
     throw new Error(
-      `回放脚本版本不支持（脚本 v${String(parsed.version)}，当前支持到 v${REPLAY_VERSION}）：${path}`,
+      t("replay.err.badVersion", {
+        version: String(parsed.version),
+        supported: REPLAY_VERSION,
+        path,
+      }),
     );
   }
   if (!Array.isArray(parsed.scenarios) || parsed.scenarios.length === 0) {
-    throw new Error(`回放脚本没有可执行的场景：${path}`);
+    throw new Error(t("replay.err.noScenarios", { path }));
   }
   // 空脚本（例如录制时模型一步都没成功执行）必须明确拒绝：
   // 否则回放会「0 步全部通过」，把无效脚本伪装成一次成功的回归。
@@ -241,24 +248,48 @@ export function loadReplayScript(path: string): ReplayScript {
     0,
   );
   if (total === 0) {
-    throw new Error(
-      `回放脚本不含任何可执行步骤（录制时模型未成功执行浏览器操作）：${path}\n` +
-        "请先跑一次自然语言用例使其通过，再用 --emit-script 重新生成。",
-    );
+    throw new Error(t("replay.err.empty", { path }));
+  }
+  // 不认识的步骤类型在加载时就拒绝：脚本是对外契约，带病加载只会在回放中途
+  // 以更难懂的方式崩掉（例如 switch 静默落空、步骤「执行成功」却什么都没做）。
+  for (const sc of parsed.scenarios) {
+    for (const st of sc.steps ?? []) {
+      if (!REPLAY_STEP_KINDS.has(st?.kind)) {
+        throw new Error(
+          t("replay.err.badStepKind", { kind: String(st?.kind), path }),
+        );
+      }
+    }
   }
   // 旧版本生成的脚本可能在定位符/用例原文里残留录制当次写死的取值；加载时就地还原，
   // 免去「为一个字段重跑一次十几分钟的 LLM 用例」。
   const normalized = normalizePlaceholderLiterals(parsed);
   if (normalized.length > 0) {
-    info(
-      `[pageqa] 已把脚本里写死的录制取值还原为占位符（回放时重新展开）：${normalized.join("，")}`,
-    );
+    info(t("replay.normalized", { items: normalized.join("，") }));
   }
   return parsed;
 }
 
+/** 已知的回放步骤类型（loadReplayScript 校验用）。 */
+const REPLAY_STEP_KINDS: ReadonlySet<string> = new Set<ReplayStepKind>([
+  "navigate",
+  "click",
+  "fill",
+  "upload",
+  "hover",
+  "scroll",
+  "wait",
+  "assert_text",
+]);
+
 /** 形如 `${name}` 或 `${name:fmt}` 的运行时变量占位符。 */
 const PLACEHOLDER_TOKEN = /\$\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}/;
+
+/** 带捕获组的全局版：split 后奇数位是各占位符原文（按出现顺序）。 */
+const PLACEHOLDER_SPLIT = new RegExp(`(${PLACEHOLDER_TOKEN.source})`, "g");
+
+const escapeRegExp = (s: string): string =>
+  s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * 从「占位符写法 + 录制当次字面量」的成对字段里反推出替换表。
@@ -266,20 +297,41 @@ const PLACEHOLDER_TOKEN = /\$\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}/;
  * `fill.value` / `assert_text.expectation` 与它们各自的 `recorded*` 字段就是这样一对
  * （如 `自动化测试产品${timestamp}` 与 `自动化测试产品202609211103`）。
  * 把占位符两侧的固定部分对齐，剩下那段就是当次展开出的取值。
+ * 一处写法里可能有**多个**占位符（如 `${date}-${time}`），每个都要各对上一段。
  */
 function deriveSubstitutions(script: ReplayScript): Map<string, string> {
   const map = new Map<string, string>();
   const consider = (placeholderized?: string, literal?: string): void => {
     if (!placeholderized || !literal) return;
-    const m = placeholderized.match(PLACEHOLDER_TOKEN);
-    if (!m || m.index === undefined) return;
-    const prefix = placeholderized.slice(0, m.index);
-    const suffix = placeholderized.slice(m.index + m[0].length);
-    if (!literal.startsWith(prefix) || !literal.endsWith(suffix)) return;
-    const token = literal.slice(prefix.length, literal.length - suffix.length);
-    // 太短的取值替换起来容易误伤页面里的无关数字
-    if (token.length < 4) return;
-    map.set(token, m[0]);
+    // split 带捕获组：[固定段, 占位符, 固定段, …, 固定段]
+    const parts = placeholderized.split(PLACEHOLDER_SPLIT);
+    const tokens: string[] = [];
+    const segments: string[] = [];
+    for (const [i, part] of parts.entries()) {
+      if (i % 2 === 0) segments.push(part);
+      else tokens.push(part);
+    }
+    if (tokens.length === 0) return;
+    // 把固定段转义后拼成 ^seg(.+?)seg(.+?)seg$，各捕获组即占位符当次的取值。
+    const pattern = new RegExp(
+      "^" +
+        segments
+          .map((seg, i) =>
+            i < tokens.length
+              ? escapeRegExp(seg) + "(.+?)"
+              : escapeRegExp(seg),
+          )
+          .join("") +
+        "$",
+    );
+    const m = literal.match(pattern);
+    if (!m) return;
+    for (const [i, placeholder] of tokens.entries()) {
+      const token = m[i + 1] ?? "";
+      // 太短的取值替换起来容易误伤页面里的无关数字
+      if (token.length < 4) continue;
+      map.set(token, placeholder);
+    }
   };
   for (const sc of script.scenarios) {
     for (const st of sc.steps) {
@@ -359,10 +411,19 @@ export function normalizePlaceholderLiterals(script: ReplayScript): string[] {
 export function sourceDriftNotice(script: ReplayScript): string | null {
   const { path, hash } = script.source;
   if (!path || !hash) return null;
-  if (!existsSync(path)) return `源用例已不存在：${path}`;
-  const current = scriptHash(readFileSync(path, "utf8"));
+  if (!existsSync(path)) return t("replay.drift.missing", { path });
+  let current: string;
+  try {
+    current = scriptHash(readFileSync(path, "utf8"));
+  } catch (err) {
+    // 读不了（权限/占用）不该让整个回放崩掉：如实说明并跳过漂移检测。
+    return t("replay.drift.unreadable", {
+      path,
+      msg: err instanceof Error ? err.message : String(err),
+    });
+  }
   if (current !== hash) {
-    return `源用例内容已变更（${path}）：脚本基于录制时的版本，建议重新用 LLM 跑一次并重新生成`;
+    return t("replay.drift.changed", { path });
   }
   return null;
 }
@@ -400,9 +461,14 @@ function stepContext(
   index: number,
   caseSteps: string[],
 ): string {
-  const parts = [`回放第 ${index} 步（${step.kind}）`];
+  const parts = [t("replay.step.label", { index, kind: step.kind })];
   if (step.step && step.step >= 1 && step.step <= caseSteps.length) {
-    parts.push(`对应用例第 ${step.step} 步：${caseSteps[step.step - 1]}`);
+    parts.push(
+      t("replay.step.caseRef", {
+        step: step.step,
+        text: caseSteps[step.step - 1],
+      }),
+    );
   }
   return parts.join("，");
 }
@@ -440,20 +506,25 @@ async function resolveStepTarget(
     const hint = locatorHint(wanted, snapshot);
     const detail =
       hint.kind === "similar-name"
-        ? `；当前页面中名字相近的 ${role} 元素：${hint.items.join("、")}`
+        ? t("replay.locate.similar", { role, items: hint.items.join("、") })
         : hint.kind === "role-only"
-          ? `；当前页面有 ${hint.roleCount} 个 role=${role} 元素` +
-            `（${hint.items.join("、")}），但没有名字含「${wanted.name.slice(0, 2)}」的` +
-            `——多半是点到了另一个同名菜单/按钮`
-          : `；当前页面中没有 role=${role} 的可见元素，说明该菜单/弹窗此刻并未打开`;
+          ? t("replay.locate.roleOnly", {
+              count: hint.roleCount,
+              role,
+              items: hint.items.join("、"),
+              prefix: wanted.name.slice(0, 2),
+            })
+          : t("replay.locate.noRole", { role });
     throw new LocatorMissError(
-      `无法在当前页面重新定位元素：${describeLocator(locator)}（录制时为 ${target}）${detail}`,
+      t("replay.locate.miss", {
+        desc: describeLocator(locator),
+        target,
+        detail,
+      }),
     );
   }
   if (!isRef(target)) return expand(target);
-  throw new LocatorMissError(
-    `无法在当前页面重新定位元素：${target}（引用已失效，且录制时未拿到语义定位符）`,
-  );
+  throw new LocatorMissError(t("replay.locate.missRef", { target }));
 }
 
 /** 执行单个回放步骤；断言步骤额外返回解析好的断言结果。 */
@@ -501,14 +572,22 @@ async function runStep(
     case "assert_text": {
       const expectation = expand(step.expectation);
       const out = await ops.assertText(expectation);
-      const parsed = parseAssertions(out)[0];
+      // 结论以结构化结果为准：assertText 返回的文本是给人/模型看的，
+      // 再对它做一次文本解析等于把报告准源绑死在那段文案的措辞上。
+      const outcome = ops.lastAssert();
       return {
         text: out,
-        assertion: parsed ?? {
-          expectation,
-          verdict: "fail",
-          evidence: `无法解析断言结果：${out}`,
-        },
+        assertion: outcome
+          ? {
+              expectation: outcome.expectation,
+              verdict: outcome.pass ? "pass" : "fail",
+              evidence: outcome.evidence,
+            }
+          : {
+              expectation,
+              verdict: "fail",
+              evidence: t("replay.assert.unparsed", { out }),
+            },
       };
     }
   }
@@ -521,6 +600,9 @@ async function runStep(
  * `did not activate a file input`，重试即成功），以及页面动画/弹窗延迟导致元素晚出现。
  * 定位每次都会重新取快照，所以对「稍后才出现」有效；代价是失败步骤多花约 1 秒，
  * 比把一条长流程判死划算。
+ *
+ * navigate 不适用这套逻辑（调用方传 attempts=1）：目标不可达时重试是纯浪费——
+ * 连接被拒绝/域名解析失败不会因为 500ms 后再试一次就变得可达，诊断文本里也是这么说的。
  */
 async function runStepWithRetry(
   ops: BskOps,
@@ -539,9 +621,9 @@ async function runStepWithRetry(
       if (attempt >= attempts) break;
       const reason = err instanceof Error ? err.message : String(err);
       trace.push(
-        `[replay-retry] #${index} ${step.kind}（第 ${attempt}/${attempts} 次失败）：${reason}`,
+        t("replay.retry.trace", { index, kind: step.kind, attempt, attempts, reason }),
       );
-      debugLog(`[replay] 第 ${index} 步失败，准备重试：${reason}`);
+      debugLog(t("replay.retry.debug", { index, reason }));
       await ops.wait(500);
     }
   }
@@ -622,8 +704,10 @@ export async function executeReplaySteps(
   for (const [i, step] of scenario.steps.entries()) {
     const index = i + 1;
     const label = `#${index} ${step.kind}`;
+    // navigate 不重试：目标不可达时 500ms 后再试一次也不会变得可达（理由见 runStepWithRetry）。
+    const stepAttempts = step.kind === "navigate" ? 1 : attempts;
     const startedAt = Date.now();
-    info(`[pageqa] ▶ ${label} …`);
+    info(t("replay.log.step", { label }));
     try {
       const out = await runStepWithRetry(
         ops,
@@ -631,7 +715,7 @@ export async function executeReplaySteps(
         opts.expand,
         outcome.trace,
         index,
-        attempts,
+        stepAttempts,
       );
       outcome.executed = index;
       const cost = Date.now() - startedAt;
@@ -649,15 +733,22 @@ export async function executeReplaySteps(
         ) {
           out.assertion.evidence =
             (out.assertion.evidence ? out.assertion.evidence + "；" : "") +
-            "该断言在录制时靠 Jev 语义判断成立（字面不含期望文本），字符串匹配必然不成立——可加 --semantic 重试";
+            t("replay.assert.semanticHint");
         }
         outcome.assertions.push(out.assertion);
       }
       info(
-        `[pageqa] ✓ ${label} ${cost}ms` +
-          (out.assertion
-            ? `（断言${out.assertion.verdict === "pass" ? "成立" : "不成立"}）`
-            : ""),
+        t("replay.log.ok", {
+          label,
+          cost,
+          assert: out.assertion
+            ? t(
+                out.assertion.verdict === "pass"
+                  ? "replay.log.okAssertPass"
+                  : "replay.log.okAssertFail",
+              )
+            : "",
+        }),
       );
       continue;
     } catch (err) {
@@ -669,25 +760,28 @@ export async function executeReplaySteps(
       if (err instanceof LocatorMissError && !opts.failFast) {
         outcome.skipped.push(`${context}：${reason}`);
         outcome.trace.push(`[replay-skip] ${label}：${reason}`);
-        info(`[pageqa] ⚠ ${label} ${cost}ms 元素未找到，已跳过并继续：${reason}`);
+        info(t("replay.log.skip", { label, cost, reason }));
         continue;
       }
 
       outcome.failed += 1;
       outcome.trace.push(`[replay-error] ${label}：${reason}`);
-      info(`[pageqa] ✗ ${label} ${cost}ms：${reason}`);
+      info(t("replay.log.fail", { label, cost, reason }));
       const giveUp = step.kind === "navigate" || opts.failFast === true;
       outcome.assertions.push({
-        expectation: `${context} 成功`,
+        expectation: t("replay.assert.stepOk", { context }),
         verdict: "fail",
         evidence:
-          `${reason}；已尝试 ${attempts} 次仍失败` +
+          t("replay.evidence.attempts", { reason, attempts: stepAttempts }) +
           (giveUp
-            ? `，回放在此停止` +
+            ? t("replay.evidence.aborted") +
               (index < scenario.steps.length
-                ? `；未执行到的步骤：回放第 ${index + 1}~${scenario.steps.length} 步`
+                ? t("replay.evidence.remaining", {
+                    from: index + 1,
+                    to: scenario.steps.length,
+                  })
                 : "")
-            : "，已跳过该步并继续执行剩余步骤"),
+            : t("replay.evidence.continued")),
       });
       if (giveUp) {
         outcome.aborted = label;
@@ -721,15 +815,13 @@ async function replayScenario(
   try {
     await ensureBskReady();
     session = await ensureSession(opts.session);
-    info(`[pageqa] 回放 session=${session}（场景：${name}）`);
+    info(t("replay.log.session", { session, name }));
 
     const jev = opts.semantic
       ? new JevClient(loadConfig().jev, opts.debug ?? false)
       : undefined;
     if (opts.semantic && !jev?.enabled) {
-      info(
-        "[pageqa] --semantic 已指定，但 Jev 未启用（缺 enabled/apiKey），断言退回字符串匹配",
-      );
+      info(t("replay.log.semanticOff"));
     }
     outcome = await executeReplaySteps(createBskOps(session, jev), scenario, {
       expand,
@@ -749,9 +841,16 @@ async function replayScenario(
     assertions,
     skipped,
     summary: [
-      `回放 ${scenario.steps.length} 步，执行 ${outcome.executed} 步`,
-      skipped.length ? `跳过 ${skipped.length} 步（元素未找到）` : null,
-      outcome.failed ? `失败 ${outcome.failed} 步` : null,
+      t("replay.summary.executed", {
+        total: scenario.steps.length,
+        executed: outcome.executed,
+      }),
+      skipped.length
+        ? t("replay.summary.skipped", { count: skipped.length })
+        : null,
+      outcome.failed
+        ? t("replay.summary.failed", { count: outcome.failed })
+        : null,
     ]
       .filter(Boolean)
       .join("，"),
@@ -765,11 +864,18 @@ async function replayScenario(
     durationMs: Date.now() - startedAt,
   };
   info(
-    `[pageqa] 场景回放结束：${status === "pass" ? "PASS" : "FAIL"}` +
-      `（执行 ${outcome.executed}/${scenario.steps.length} 步` +
-      (skipped.length ? `，跳过 ${skipped.length} 步` : "") +
-      (outcome.failed ? `，失败 ${outcome.failed} 步` : "") +
-      "）",
+    t("replay.log.scenarioEnd", {
+      status: status === "pass" ? "PASS" : "FAIL",
+      executed: outcome.executed,
+      total: scenario.steps.length,
+      extra:
+        (skipped.length
+          ? t("replay.log.scenarioEnd.skip", { count: skipped.length })
+          : "") +
+        (outcome.failed
+          ? t("replay.log.scenarioEnd.fail", { count: outcome.failed })
+          : ""),
+    }),
   );
 
   const result: ReplayRunResult = {
@@ -801,8 +907,11 @@ export async function runReplayScript(
 ): Promise<ReplayRunResult> {
   const scenarios = script.scenarios;
   info(
-    `[pageqa] 回放脚本：${opts.scriptPath ?? "(内存)"}，共 ${scenarios.length} 个场景，` +
-      `零模型执行${opts.semantic ? "（断言使用 Jev 语义判断）" : ""}`,
+    t("replay.log.scriptStart", {
+      path: opts.scriptPath ?? "(内存)",
+      count: scenarios.length,
+      semantic: opts.semantic ? t("replay.log.scriptStart.semantic") : "",
+    }),
   );
   // 录制时靠 Jev 语义复核才成立的断言（如「检出成功」「标题包含 Example」这类
   // 字面不出现在页面上的措辞），默认的字符串包含匹配必然判为不成立。
@@ -815,10 +924,7 @@ export async function runReplayScript(
       0,
     );
     if (semanticAssertions > 0) {
-      info(
-        `[pageqa] 注意：脚本中有 ${semanticAssertions} 条断言在录制时靠 Jev 语义判断成立` +
-          `（字面不含期望文本），回放默认用字符串包含匹配必然不成立；需要语义判断请加 --semantic`,
-      );
+      info(t("replay.log.semanticWarn", { count: semanticAssertions }));
     }
   }
 
@@ -830,7 +936,13 @@ export async function runReplayScript(
   // 多场景套件的墙钟起点（单场景路径保留场景自身的 durationMs，不需要这里）。
   const suiteStartedAt = Date.now();
   for (const [i, sc] of scenarios.entries()) {
-    info(`[pageqa] ═══ 场景 ${i + 1}/${scenarios.length}：${sc.name} ═══`);
+    info(
+      t("replay.log.suiteScenario", {
+        index: i + 1,
+        total: scenarios.length,
+        name: sc.name,
+      }),
+    );
     const outcome = await replayScenario(sc.name, sc, opts);
     outcomes.push(outcome);
   }
@@ -850,7 +962,7 @@ export async function runReplayScript(
     outcomes.map((o) => ({ report: o.result.report, usage: o.result.usage })),
     scenarios.map((s) => ({ name: s.name, body: "" })),
   );
-  info(`[pageqa] 回放汇总：${summary.summary}`);
+  info(t("replay.log.suiteSummary", { summary: summary.summary ?? "" }));
   return {
     report: summary,
     text,

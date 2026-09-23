@@ -1,7 +1,7 @@
 {
   "format": "pageqa-replay",
   "version": 1,
-  "recordedAt": "2026-09-23T05:51:29.502Z",
+  "recordedAt": "2026-09-23T06:52:48.702Z",
   "source": {
     "path": "./examples\\smoke.md",
     "hash": "0ecb1b58de665e97"
@@ -21,7 +21,7 @@
         {
           "kind": "assert_text",
           "step": 1,
-          "expectation": "Example Domain"
+          "expectation": "Example"
         }
       ]
     },
@@ -38,7 +38,7 @@
         },
         {
           "kind": "click",
-          "step": 2,
+          "step": 1,
           "target": "@e1",
           "locator": {
             "role": "link",
@@ -52,12 +52,12 @@
         },
         {
           "kind": "wait",
-          "step": 2,
+          "step": 1,
           "ms": 2000
         },
         {
           "kind": "assert_text",
-          "step": 2,
+          "step": 1,
           "expectation": "IANA"
         }
       ]

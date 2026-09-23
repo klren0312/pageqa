@@ -221,7 +221,7 @@ Token 消耗: 输入 301 / 输出 117 / 缓存读 9536 / 缓存写 0 / 合计 99
 
 命令：`/status`（查看运行队列）、`/run <路径或关键字>`（加载一个已有用例文件）、`/new`（开一个新会话：清空视口与运行队列）、`/cancel <n>`（取消一个尚未开始的待办）、`/model`（选择本次会话使用的模型）、`/login`（登录一个 provider）、`/logout`（移除某 provider 的本地凭据）、`/setting`（修改设置：测试报告 / 回放脚本 / 语言，写回 `~/.pageqa/config.json`）、`/help`、`/exit`。在输入行首键入 `/` 会弹出命令联想列表（支持模糊过滤；`/cancel` 还会补全待办编号，Tab 可补全）。
 
-- **`/run` 在运行中加载用例文件**：`/run examples/plm-product-bom.md`（精确路径）、`/run examples`（该目录下的全部用例文件）、`/run plm`（文件名关键字，会跳过 `node_modules`、点目录之类）。命中唯一就直接加载；命中多个时把**候选文件名**（不含文件内容）交给模型挑，模型挑不出来或不可用就弹选择器让你自己挑。加载进来的场景并入队列，它们的来源是那个文件、**不会**被写回（本来就在文件里），而落点会切到它。刻意**不**给模型读文件的工具：内容一旦绕过 pageqa，步骤编号、`k ↔ 用例原文` 映射与写回/录制的对应关系全断，模型还会获得读取本机任意文件的能力。
+- **`/run` 在运行中加载用例文件**：`/run examples/github-star.md`（精确路径）、`/run examples`（该目录下的全部用例文件）、`/run github-star`（文件名关键字，会跳过 `node_modules`、点目录之类）。命中唯一就直接加载；命中多个时把**候选文件名**（不含文件内容）交给模型挑，模型挑不出来或不可用就弹选择器让你自己挑。加载进来的场景并入队列，它们的来源是那个文件、**不会**被写回（本来就在文件里），而落点会切到它。刻意**不**给模型读文件的工具：内容一旦绕过 pageqa，步骤编号、`k ↔ 用例原文` 映射与写回/录制的对应关系全断，模型还会获得读取本机任意文件的能力。
 
 - **`/model` 切换模型**：弹出可用模型列表（`↑↓` 选择、`Enter` 本次会话生效、`Ctrl+S` 同时设为启动默认写回 config.json、`Esc` 取消）。列表里的模型来自两类 provider——**自定义端点**（`config.json` 的 `baseUrl`/`apiKey`/`model` 总是可用）和**内置 provider**（anthropic / openai / deepseek / github-copilot 等，需先 `/login` 或设置对应环境变量如 `ANTHROPIC_API_KEY` 才会出现）。切换只影响**之后**的场景，正在跑的不被打断。设计细节见 `docs/adr/0004`。
 - **`/login` 登录**：先选 provider，再按它支持的登录方式（API Key 或订阅 OAuth）走引导；期间授权链接/设备码会打印到界面，需要文本/密钥时用底部输入框提交，`Esc` 取消。凭据写入 `~/.pageqa/auth.json`，**不属于** git 仓库。登录后 `/model` 即可选该 provider 的模型。
@@ -364,7 +364,7 @@ pageqa-report/report-20260923-153001.html
 | `${datetime}` | `yyyyMMddHHmmss` |
 | `${timestamp:<格式>}` | 自定义格式，支持 `yyyy` `yy` `MM` `dd` `HH` `mm` `ss` `SSS`，如 `${timestamp:yyyy-MM-dd HH:mm}` |
 
-未识别的占位符（如 `${PATH}`）原样保留，不会被替换。完整示例：`examples/plm-product-bom.md`。
+未识别的占位符（如 `${PATH}`）原样保留，不会被替换。完整示例：`examples/smoke.md`。
 
 ### 回放脚本（零模型重跑同一用例）
 
@@ -407,9 +407,9 @@ pageqa --replay examples/smoke.replay.json --semantic   # 断言改用 Jev 语�
 
 ```text
 08:48:45 [pageqa] ===== 启动 =====
-08:48:45 [pageqa] 已读取脚本文件 examples/plm-product-bom.md（892 字符）
+08:48:45 [pageqa] 已读取脚本文件 examples/smoke.md（892 字符）
 08:48:45 [pageqa] 运行模式：单场景
-08:48:45 [pageqa] 用例开始：打开 http://localhost/#/plm/product/list …（892 字符）
+08:48:45 [pageqa] 用例开始：打开 http://localhost/ …（892 字符）
 08:48:45 [pageqa] LLM 已就绪：model=hunyuan-2.0-instruct
 08:48:45 [pageqa] 检查 bsk daemon 与浏览器连接…
 08:48:45 [pageqa] bsk daemon 未运行，正在后台启动（首次可能需数秒）…
@@ -592,7 +592,6 @@ examples/
   smoke.md                  示例套件（A1–A3）
   github-star.md            GitHub Star 用例
   element-plus-upload.md    文件上传用例（点击 Click to upload 上传本地图片）
-  plm-product-bom.md        PLM 长流程用例（建产品→目录→物料→检出→待办同意→BOM 插入）
 tests/smoke.test.mjs 端到端验证
 tests/report.test.mjs / tests/replay.test.mjs / tests/snapshot.test.mjs / tests/tui.test.mjs
   单元测试（无浏览器/LLM/TTY 依赖）：报告解析、定位符与回放、快照瘦身、追加场景写回、运行队列、「已取消」判定、日志落点、运行时用例文件查找（/run）、按来源拆分回放脚本、报告标注场景来源

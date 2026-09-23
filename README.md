@@ -221,7 +221,7 @@ It is the **session total** (settled values of finished scenarios + the running 
 
 Commands: `/status` (view the run queue), `/run <path or keyword>` (load an existing case file into the run queue), `/new` (start a new session: clears the viewport and the run queue), `/cancel <n>` (cancel a not-yet-started pending item), `/model` (choose the model used by this session), `/login` (sign in a provider), `/logout` (remove a provider's local credentials), `/setting` (change settings: test report / replay script / language, persisted to `~/.pageqa/config.json`), `/help`, `/exit`. Typing `/` at the start of the input pops up a fuzzy-filtered command list, and `/cancel` additionally completes pending queue numbers (Tab accepts).
 
-- **`/run` loads a case file at runtime**: `/run examples/plm-product-bom.md` (exact path), `/run examples` (every case file in that directory), or `/run plm` (filename keyword — `node_modules`, dot-directories and similar are skipped). A single match loads directly; with several matches the **candidate filenames** (never their contents) are handed to the model to pick from, and if it can't decide — or the model is unavailable — a selector lets you pick yourself. The loaded file's scenarios are appended to the queue, its scenarios are **not** written back (they are already in the file), and the write-back target switches to it. The model is deliberately not given file-reading tools: if case contents bypassed pageqa, step numbering, the `k ↔ case text` mapping and the write-back/recording correspondence would all break, and it would gain read access to any file on the machine.
+- **`/run` loads a case file at runtime**: `/run examples/github-star.md` (exact path), `/run examples` (every case file in that directory), or `/run github-star` (filename keyword — `node_modules`, dot-directories and similar are skipped). A single match loads directly; with several matches the **candidate filenames** (never their contents) are handed to the model to pick from, and if it can't decide — or the model is unavailable — a selector lets you pick yourself. The loaded file's scenarios are appended to the queue, its scenarios are **not** written back (they are already in the file), and the write-back target switches to it. The model is deliberately not given file-reading tools: if case contents bypassed pageqa, step numbering, the `k ↔ case text` mapping and the write-back/recording correspondence would all break, and it would gain read access to any file on the machine.
 
 - **`/model` switches the model**: a selector pops up (`↑↓` to move, `Enter` applies to this session, `Ctrl+S` also persists it as the startup default in `config.json`, `Esc` cancels). The list covers two kinds of providers — the **custom endpoint** (`baseUrl`/`apiKey`/`model` in `config.json` is always available) and **built-in providers** (anthropic / openai / deepseek / github-copilot …, which appear only after `/login` or when the matching env var like `ANTHROPIC_API_KEY` is set). Switching affects only **later** scenarios; a running one is never interrupted. See `docs/adr/0004`.
 - **`/login` signs in**: pick a provider, then follow its login flow (API key or subscription OAuth); the authorization link / device code is printed to the screen, text/key prompts use the bottom input box, `Esc` cancels. Credentials are written to `~/.pageqa/auth.json`, which is **not** part of the git repo. After signing in, `/model` offers that provider's models.
@@ -365,7 +365,7 @@ Assert the page contains `自动化测试产品${timestamp}`
 | `${datetime}` | `yyyyMMddHHmmss` |
 | `${timestamp:<format>}` | custom format, supports `yyyy` `yy` `MM` `dd` `HH` `mm` `ss` `SSS`, e.g. `${timestamp:yyyy-MM-dd HH:mm}` |
 
-Unrecognized placeholders (e.g. `${PATH}`) are kept as-is and not replaced. Full example: `examples/plm-product-bom.md`.
+Unrecognized placeholders (e.g. `${PATH}`) are kept as-is and not replaced. Full example: `examples/smoke.md`.
 
 ### Replay script (rerun the same case with zero models)
 
@@ -408,9 +408,9 @@ A long flow (create product → create material → inspect → approve …) can
 
 ```text
 08:48:45 [pageqa] ===== startup =====
-08:48:45 [pageqa] read script file examples/plm-product-bom.md (892 chars)
+08:48:45 [pageqa] read script file examples/smoke.md (892 chars)
 08:48:45 [pageqa] run mode: single scenario
-08:48:45 [pageqa] case starts: open http://localhost/#/plm/product/list … (892 chars)
+08:48:45 [pageqa] case starts: open http://localhost/ … (892 chars)
 08:48:45 [pageqa] LLM ready: model=hunyuan-2.0-instruct
 08:48:45 [pageqa] checking bsk daemon and browser connection…
 08:48:45 [pageqa] bsk daemon not running, background-starting (first time may take seconds)…
@@ -593,7 +593,6 @@ examples/
   smoke.md                   example suite (A1–A3)
   github-star.md            GitHub Star case
   element-plus-upload.md    file upload case (click "Click to upload" to upload a local image)
-  plm-product-bom.md        PLM long-flow case (create product→catalog→material→inspect→todo approve→BOM insert)
 tests/smoke.test.mjs  end-to-end verification
 tests/report.test.mjs / tests/replay.test.mjs / tests/snapshot.test.mjs / tests/tui.test.mjs
   unit tests (no browser/LLM/TTY dependency): report parsing, locator and replay, snapshot slimming, appended-scenario writeback, run queue, "cancelled" judgment, log sink, runtime case-file lookup (/run), per-source replay script splitting, scenario origins in the report

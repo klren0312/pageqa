@@ -325,6 +325,7 @@ describe("回放失败语义（executeReplaySteps）", () => {
   /** 构造一个假的操作层：记录调用、可注入失败，避免测试依赖真实浏览器。 */
   function makeOps(handlers = {}) {
     const calls = [];
+    let assertOutcome = null;
     const ops = {
       calls,
       session: "fake",
@@ -365,8 +366,14 @@ describe("回放失败语义（executeReplaySteps）", () => {
       },
       assertText: async (expectation) => {
         calls.push(["assert_text", expectation]);
+        assertOutcome = {
+          expectation,
+          pass: true,
+          evidence: `页面中包含「${expectation}」`,
+        };
         return `断言「${expectation}」：成立。页面中包含「${expectation}」`;
       },
+      lastAssert: () => assertOutcome,
       lastAssertSemantic: () => false,
     };
     return ops;
@@ -584,6 +591,67 @@ describe("回放脚本文件", () => {
     // 录制当次的值作为证据保留；本地文件路径属于真实存在的路径，不动
     assert.equal(fill.recordedValue, "自动化测试产品202609211103");
     assert.equal(upload.file, "D:\\Downloads\\a-202609211103.png");
+  });
+
+  test("含不认识步骤类型的脚本被拒绝（加载时崩，而不是回放中途静默落空）", () => {
+    const p = join(dir, "badkind.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        format: REPLAY_FORMAT,
+        version: REPLAY_VERSION,
+        scenarios: [
+          { name: "A1", caseSteps: [], steps: [{ kind: "teleport", step: null }] },
+        ],
+      }),
+    );
+    assert.throws(() => loadReplayScript(p), /不支持的步骤类型/);
+  });
+
+  test("一处写法里的多个占位符取值都能还原（不止第一个）", () => {
+    const p = join(dir, "multi-placeholder.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        format: REPLAY_FORMAT,
+        version: REPLAY_VERSION,
+        scenarios: [
+          {
+            name: "M1",
+            caseSteps: ["创建 `产品20260921-110300`"],
+            steps: [
+              {
+                kind: "fill",
+                step: null,
+                target: "@e1",
+                value: "产品${date}-${time}",
+                recordedValue: "产品20260921-110300",
+                locator: null,
+              },
+              {
+                kind: "click",
+                step: null,
+                target: "@e9",
+                locator: {
+                  role: "link",
+                  name: "产品20260921-110300",
+                  nth: 0,
+                  target: "@e9",
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const script = loadReplayScript(p);
+    const [fill, click] = script.scenarios[0].steps;
+    assert.equal(fill.value, "产品${date}-${time}");
+    assert.equal(click.locator.name, "产品${date}-${time}");
+    assert.equal(
+      script.scenarios[0].caseSteps[0],
+      "创建 `产品${date}-${time}`",
+    );
   });
 
   test("正常脚本可加载", () => {
