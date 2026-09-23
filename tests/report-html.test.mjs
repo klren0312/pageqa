@@ -12,6 +12,7 @@ import {
   writeHtmlReportSafe,
 } from "../dist/report-html.js";
 import { getLocale, setLocale } from "../dist/i18n.js";
+import { setSink } from "../dist/log.js";
 
 const base = (over = {}) => ({
   status: "pass",
@@ -209,6 +210,21 @@ describe("writeHtmlReport", () => {
       // baseDir 指向一个文件（不是目录）→ mkdir 必失败 → safe 吞掉
       assert.equal(writeHtmlReportSafe(base(), blocker), undefined);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("执行结束后经 info 打出报告路径（成功时）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pageqa-html-path-"));
+    const captured = [];
+    setSink((line) => captured.push(line));
+    try {
+      writeHtmlReportSafe(base(), dir, new Date("2026-09-23T16:00:00"));
+      const hit = captured.find((l) => l.includes("HTML 报告已生成:"));
+      assert.ok(hit, `expected path log, got: ${JSON.stringify(captured)}`);
+      assert.ok(hit.includes("report-20260923-160000.html"));
+    } finally {
+      setSink(null);
       rmSync(dir, { recursive: true, force: true });
     }
   });
