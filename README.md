@@ -506,6 +506,101 @@ Key points (pitfalls hit before):
 - Components like `el-upload` ("click button → page JS triggers hidden input") may return `did not activate a file input` on the first try (a timing issue, not a permission issue); retrying once then succeeds.
 - A successful upload does not mean the case passed: **truth is still decided by the page assertion**. If a site submits the file to an external interface that is unavailable (e.g. the element-plus doc example submits to `run.mocky.io`, whose cert validation fails locally), the component removes the file after the upload fails, and "assert the file appears in the list" will honestly report FAIL — this is the real behavior of the page under test, not a tool problem.
 
+## Architecture
+
+The diagram below is the **layered/module view** — which layer owns what and how artifacts flow between modules; the runtime sequence is in "How it works" immediately after.
+
+```mermaid
+flowchart TD
+  subgraph ENTRY["CLI entry · src/index.ts"]
+    CLI["parseArgs · main · detectInteractive<br/>batch / interactive --tui / replay --replay / --help·--version·--init-config"]
+  end
+
+  subgraph ORCH["Orchestration · src/agent.ts"]
+    RUN["runAgent / runSuite: initialize → run (≤5 continuations) → finalize"]
+  end
+
+  subgraph LLMC["LLM & config"]
+    MODELS["models.ts model catalog · probe · resolve"]
+    LLMP["llm.ts OpenAI-compatible provider"]
+    AUTH["auth.ts credentials (~/.pageqa/auth.json)"]
+    CONFIG["config.ts config (~/.pageqa/config.json)"]
+    JEV["jev.ts semantic assertion (optional)"]
+  end
+
+  subgraph BSK["bsk tool layer · src/bsk"]
+    TOOLS["tools.ts 9 tools<br/>navigate·snapshot·click·fill·upload·hover·scroll·wait·assert_text<br/>async · abortable · globally serial"]
+    DIAG["navigate-diagnosis.ts turn navigation failures into plain language"]
+    SNAP["snapshot.ts snapshot slimming"]
+  end
+
+  BROWSER["Real browser (connected by the bsk daemon)"]
+
+  subgraph REC["Recording → replay (zero model)"]
+    RECORDER["record.ts records successful operations"]
+    LOCATOR["locator.ts semantic locators"]
+    ENGINE["replay.ts replay script & engine"]
+  end
+
+  subgraph REP["Report & side outputs"]
+    REPORT["report.ts text / JSON and suite summary"]
+    HTML["report-html.ts self-contained HTML"]
+    SIDE["side-outputs.ts artifact manifest (stderr)"]
+    VARS["vars.ts placeholder expansion / restore"]
+  end
+
+  subgraph TUI["Interactive mode · src/tui"]
+    APP["app.ts full-screen TUI (log viewport + input box)"]
+    QUEUE["queue.ts run queue (serial)"]
+    WB["writeback.ts write appended scenarios back to the case file"]
+    CS["case-source.ts /run resolution"]
+    BATCH["batches.ts session batch snapshots"]
+  end
+
+  XCUT["Cross-cutting: i18n.ts localization · log.ts logging (sink) · version.ts"]
+
+  CLI -->|"batch"| RUN
+  CLI -->|"--replay"| ENGINE
+  CLI -->|"--tui / auto-detected TTY"| APP
+  CLI -.->|"locale"| XCUT
+
+  RUN -->|"init: probe → bsk ready → session → build Agent"| MODELS
+  RUN --> JEV
+  RUN --> TOOLS
+  RUN -->|"finalize"| REPORT
+  RUN -.->|"onExec reporting"| RECORDER
+  RUN -->|"--emit-script"| ENGINE
+
+  MODELS --> LLMP
+  MODELS --> AUTH
+  MODELS --> CONFIG
+
+  TOOLS --> DIAG
+  TOOLS --> SNAP
+  TOOLS -->|"bsk commands"| BROWSER
+
+  RECORDER --> LOCATOR
+  LOCATOR --> ENGINE
+  ENGINE -->|"reuses the bsk op layer (createBskOps)"| TOOLS
+  ENGINE -->|"assertions / conclusion"| REPORT
+
+  REPORT --> HTML
+  HTML --> SIDE
+  ENGINE -->|"script paths"| SIDE
+  VARS -.-> RECORDER
+  VARS -.-> ENGINE
+
+  APP --> QUEUE
+  APP --> WB
+  APP --> CS
+  APP --> BATCH
+  QUEUE -->|"runAgent"| RUN
+  BATCH -->|"exit summary"| REPORT
+  XCUT -.->|"setSink merges logs"| APP
+  XCUT -.-> RUN
+  XCUT -.-> REPORT
+```
+
 ## How it works
 
 ```
