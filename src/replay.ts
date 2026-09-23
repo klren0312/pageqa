@@ -705,6 +705,7 @@ async function replayScenario(
   opts: ReplayOptions,
 ): Promise<ScenarioOutcome> {
   const now = opts.now ?? new Date();
+  const startedAt = Date.now();
   const expand = (text: string) => expandVars(text, now);
   let session: string | undefined;
   let outcome: ReplayStepOutcome = {
@@ -761,6 +762,7 @@ async function replayScenario(
     trace,
     steps: scenario.caseSteps,
     usage: emptyUsage(),
+    durationMs: Date.now() - startedAt,
   };
   info(
     `[pageqa] 场景回放结束：${status === "pass" ? "PASS" : "FAIL"}` +
