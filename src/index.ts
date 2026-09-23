@@ -10,6 +10,7 @@ import {
   readSavedLocale,
 } from "./config.js";
 import type { TestReport } from "./report.js";
+import { writeHtmlReportSafe } from "./report-html.js";
 import { runInteractive } from "./tui/app.js";
 import {
   buildReplayScript,
@@ -397,6 +398,7 @@ async function interactiveMode(
   const out = args.json ? result.json : result.text;
   if (args.out) writeFileSync(args.out, out + "\n");
   process.stdout.write(out + "\n");
+  writeHtmlReportSafe(result.report);
   if (scriptError) {
     process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");
     return 1;
@@ -455,6 +457,7 @@ async function replayMode(args: CliArgs): Promise<number> {
     const out = args.json ? result.json : result.text;
     if (args.out) writeFileSync(args.out, out + "\n");
     process.stdout.write(out + "\n");
+    writeHtmlReportSafe(result.report);
     return result.report.status === "pass" ? 0 : 1;
   } catch (err) {
     process.stderr.write(
@@ -614,6 +617,7 @@ async function main(): Promise<number> {
       writeFileSync(args.out, out + "\n");
     }
     process.stdout.write(out + "\n");
+    writeHtmlReportSafe(result.report);
     return exitCodeFor(result.report);
   } catch (err) {
     // 模型不可达是「环境不对」，不是「跑挂了」：给干净的报错 + 出路，不打印一坨栈。
