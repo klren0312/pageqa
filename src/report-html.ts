@@ -7,6 +7,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { t } from "./i18n.js";
+import { info } from "./log.js";
 import {
   formatUsage,
   statusTag,
@@ -248,4 +249,50 @@ ${JS}
 </body>
 </html>
 `;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** 报告文件路径：`<baseDir>/report-YYYYMMDD-HHmmss.html`（时间戳防覆盖）。 */
+export function htmlReportFilePath(baseDir?: string, now?: Date): string {
+  const d = now ?? new Date();
+  const name =
+    `report-${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}` +
+    `-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}.html`;
+  return join(baseDir ?? "pageqa-report", name);
+}
+
+/** 渲染并写盘（自动创建目录）。失败抛给调用方（safe 版负责兜底）。 */
+export function writeHtmlReport(
+  report: TestReport,
+  baseDir?: string,
+  now?: Date,
+): { path: string } {
+  const path = htmlReportFilePath(baseDir, now);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, renderHtml(report), "utf8");
+  return { path };
+}
+
+/**
+ * 写 HTML 报告且永不抛错：路径经 info() 打到 stderr（TUI 下进视口）。
+ * 失败只 warning——HTML 是旁路产物，绝不能改退出码或顶掉 stdout 报告。
+ */
+export function writeHtmlReportSafe(
+  report: TestReport,
+  baseDir?: string,
+  now?: Date,
+): void {
+  try {
+    const { path } = writeHtmlReport(report, baseDir, now);
+    info(t("log.htmlReportWritten", { path }));
+  } catch (err) {
+    info(
+      t("log.htmlReportFailed", {
+        msg: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
 }
