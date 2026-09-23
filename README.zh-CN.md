@@ -251,6 +251,8 @@ Token 消耗: 输入 301 / 输出 117 / 缓存读 9536 / 缓存写 0 / 合计 99
 3. **未跑完时直接点名下一步**：完整性校验的失败项会给出「最后进展」和「未执行到的步骤（第 k/n 步）：<用例原文>」，照着它就能定位到要改的那句。
 4. JSON 报告额外提供 `steps`（用例步骤清单）与 `trace`（执行轨迹数组）字段；套件模式还提供 `scenarios[]`（逐场景的 `name/status/steps/trace/assertions`），便于 CI 侧做失败归因。
 
+- `durationMs`（可选，毫秒）：本场景/套件耗时；套件逐场景明细 `scenarios[].durationMs` 同义。
+
 失败时的报告片段示例：
 
 ```text
@@ -279,6 +281,20 @@ Token 消耗: 输入 446 / 输出 136 / 缓存读 6720 / 缓存写 0 / 合计 73
 - 数据来自各轮 assistant 消息的 `usage`（含自动续跑的轮次），`输入/输出/缓存读/缓存写` 为分项，`合计` 取端点返回的 `totalTokens`。
 - JSON 报告（`--json`）中为 `usage` 字段：`{ input, output, cacheRead, cacheWrite, reasoning, total, calls }`。
 - 若 LLM 端点未返回 usage（合计为 0），会在同一行标注「端点未返回 usage」，避免把 0 误读成真实消耗。
+
+### HTML 报告
+
+每次运行结束（批处理、回放、交互退出）都会在当前目录生成一份可直接用浏览器打开的
+自包含 HTML 报告，路径与生成时间打印在 stderr：
+
+```text
+pageqa-report/report-20260923-153001.html
+```
+
+- 文件名带时间戳，多次运行互不覆盖；`pageqa-report/` 已在 `.gitignore` 中忽略。
+- 内容：整体汇总（场景数/通过/失败/已取消/耗时/token）、逐场景状态与断言、可折叠执行轨迹。
+- HTML 是旁路产物：**不影响** stdout 报告契约与退出码；写盘失败仅 stderr 警告。
+- JSON 报告（`--json`/`--out`）新增可选字段 `durationMs`（毫秒），旧报告无此字段。
 
 ### 快照瘦身与复用（省 token 与时间）
 

@@ -17,7 +17,7 @@ _Avoid_：测试集、suite 项
 _Avoid_：用例来源、源用例、来源文件
 
 **批处理模式（Batch Mode）**：
-非交互的一次运行：stdout 只放最终报告，日志走 stderr，退出码交 CI。
+非交互的一次运行：stdout 只放最终报告，日志走 stderr，退出码交 CI；HTML 报告旁路写入 `pageqa-report/`（不算 stdout 输出）。
 _Avoid_：无头模式、headless、非交互模式
 
 **交互模式（Interactive Mode）**：
