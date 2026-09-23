@@ -5,3 +5,4 @@ dist/
 *.zip
 *.7z
 pageqa-report/
+.superpowers
