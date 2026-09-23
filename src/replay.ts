@@ -827,6 +827,8 @@ export async function runReplayScript(
   }
 
   const outcomes: ScenarioOutcome[] = [];
+  // 多场景套件的墙钟起点（单场景路径保留场景自身的 durationMs，不需要这里）。
+  const suiteStartedAt = Date.now();
   for (const [i, sc] of scenarios.entries()) {
     info(`[pageqa] ═══ 场景 ${i + 1}/${scenarios.length}：${sc.name} ═══`);
     const outcome = await replayScenario(sc.name, sc, opts);
@@ -840,6 +842,7 @@ export async function runReplayScript(
       usage: o.result.usage,
     })),
   );
+  summary.durationMs = Date.now() - suiteStartedAt;
   summary.mode = "replay";
   summary.script = opts.scriptPath;
   const text = renderSuiteText(
