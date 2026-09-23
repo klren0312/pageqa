@@ -4,3 +4,4 @@ dist/
 *.tsbuildinfo
 *.zip
 *.7z
+pageqa-report/

@@ -333,6 +333,8 @@ const catalogs: Record<Locale, Catalog> = {
     "reportHtml.expandAll": "全部展开",
     "reportHtml.collapseAll": "全部收起",
     "reportHtml.noAssertions": "无断言记录",
+    "log.htmlReportWritten": "HTML 报告已生成: {path}",
+    "log.htmlReportFailed": "HTML 报告生成失败: {msg}",
 
     // ── 导航失败诊断（src/bsk/navigate-diagnosis.ts）──
     "nav.notFound":
@@ -836,6 +838,8 @@ const catalogs: Record<Locale, Catalog> = {
     "reportHtml.expandAll": "expand all",
     "reportHtml.collapseAll": "collapse all",
     "reportHtml.noAssertions": "no assertions recorded",
+    "log.htmlReportWritten": "HTML report written: {path}",
+    "log.htmlReportFailed": "HTML report write failed: {msg}",
 
     // ── navigate failure diagnosis ──
     "nav.notFound":

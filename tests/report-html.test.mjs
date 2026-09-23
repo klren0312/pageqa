@@ -1,6 +1,16 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { escapeHtml, formatDurationMs, renderHtml } from "../dist/report-html.js";
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  escapeHtml,
+  formatDurationMs,
+  renderHtml,
+  htmlReportFilePath,
+  writeHtmlReport,
+  writeHtmlReportSafe,
+} from "../dist/report-html.js";
 
 const base = (over = {}) => ({
   status: "pass",
@@ -69,5 +79,45 @@ describe("escapeHtml / formatDurationMs", () => {
     assert.equal(formatDurationMs(1234), "1.2s");
     assert.equal(formatDurationMs(900), "0.9s");
     assert.equal(formatDurationMs(65_000), "1m5s");
+  });
+});
+
+describe("htmlReportFilePath", () => {
+  test("默认在 pageqa-report 下，时间戳格式固定", () => {
+    const p = htmlReportFilePath(undefined, new Date("2026-09-23T08:09:10"));
+    assert.equal(
+      p.replace(/\\/g, "/"),
+      "pageqa-report/report-20260923-080910.html",
+    );
+  });
+});
+
+describe("writeHtmlReport", () => {
+  test("自动建目录，内容为 renderHtml 输出", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pageqa-html-"));
+    try {
+      const report = base({ durationMs: 500 });
+      const { path } = writeHtmlReport(report, dir, new Date("2026-09-23T15:30:01"));
+      assert.equal(path, htmlReportFilePath(dir, new Date("2026-09-23T15:30:01")));
+      assert.ok(path.includes("report-20260923-153001.html"));
+      assert.ok(existsSync(path));
+      const html = readFileSync(path, "utf8");
+      assert.ok(html.includes("PASS"));
+      assert.ok(html.includes("标题包含 pageqa"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("writeHtmlReportSafe 写失败时吞掉异常、不抛出", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pageqa-html-safe-"));
+    try {
+      const blocker = join(dir, "blocker");
+      writeFileSync(blocker, "not a dir");
+      // baseDir 指向一个文件（不是目录）→ mkdir 必失败 → safe 吞掉
+      assert.equal(writeHtmlReportSafe(base(), blocker), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
