@@ -84,6 +84,8 @@ const catalogs: Record<Locale, Catalog> = {
     "err.modelProbeNoReason": "端点未给出失败原因",
     "err.outRequired": "--out 需要一个文件路径参数",
     "err.replayRequired": "--replay 需要一个回放脚本路径",
+    "err.unknownOption":
+      "未知选项：{a}（用 --help 查看全部选项；若用例文本以 - 开头，请放在 -- 之后）",
     "err.extraPositional":
       "多余的位置参数：{a}（只接受一个用例输入；路径含空格请用引号包裹，输出路径请放在 --emit-script 之后）",
     "err.param": "参数错误：{msg}",
@@ -110,6 +112,90 @@ const catalogs: Record<Locale, Catalog> = {
     "err.unhandled": "执行失败（未处理的 Promise rejection）: {msg}",
     "config.created": "配置文件已创建/确认：{path}\n目录：{dir}",
     "config.current": "当前生效配置：{json}",
+
+    // ── 回放脚本（src/replay.ts）──
+    "replay.err.notFound": "找不到回放脚本：{path}",
+    "replay.err.invalidJson": "回放脚本不是合法 JSON：{path}（{msg}）",
+    "replay.err.badFormat": "不是 pageqa 回放脚本（format={format}）：{path}",
+    "replay.err.badVersion":
+      "回放脚本版本不支持（脚本 v{version}，当前支持到 v{supported}）：{path}",
+    "replay.err.noScenarios": "回放脚本没有可执行的场景：{path}",
+    "replay.err.empty":
+      "回放脚本不含任何可执行步骤（录制时模型未成功执行浏览器操作）：{path}\n请先跑一次自然语言用例使其通过，再用 --emit-script 重新生成。",
+    "replay.err.badStepKind": "回放脚本含不支持的步骤类型（{kind}）：{path}",
+    "replay.normalized":
+      "[pageqa] 已把脚本里写死的录制取值还原为占位符（回放时重新展开）：{items}",
+    "replay.drift.missing": "源用例已不存在：{path}",
+    "replay.drift.changed":
+      "源用例内容已变更（{path}）：脚本基于录制时的版本，建议重新用 LLM 跑一次并重新生成",
+    "replay.drift.unreadable": "源用例读取失败（{path}）：{msg}",
+    "replay.locate.similar": "；当前页面中名字相近的 {role} 元素：{items}",
+    "replay.locate.roleOnly":
+      "；当前页面有 {count} 个 role={role} 元素（{items}），但没有名字含「{prefix}」的——多半是点到了另一个同名菜单/按钮",
+    "replay.locate.noRole":
+      "；当前页面中没有 role={role} 的可见元素，说明该菜单/弹窗此刻并未打开",
+    "replay.locate.miss":
+      "无法在当前页面重新定位元素：{desc}（录制时为 {target}）{detail}",
+    "replay.locate.missRef":
+      "无法在当前页面重新定位元素：{target}（引用已失效，且录制时未拿到语义定位符）",
+    "replay.step.label": "回放第 {index} 步（{kind}）",
+    "replay.step.caseRef": "对应用例第 {step} 步：{text}",
+    "replay.assert.unparsed": "无法解析断言结果：{out}",
+    "replay.assert.semanticHint":
+      "该断言在录制时靠 Jev 语义判断成立（字面不含期望文本），字符串匹配必然不成立——可加 --semantic 重试",
+    "replay.assert.stepOk": "{context} 成功",
+    "replay.retry.trace":
+      "[replay-retry] #{index} {kind}（第 {attempt}/{attempts} 次失败）：{reason}",
+    "replay.retry.debug": "[replay] 第 {index} 步失败，准备重试：{reason}",
+    "replay.log.step": "[pageqa] ▶ {label} …",
+    "replay.log.ok": "[pageqa] ✓ {label} {cost}ms{assert}",
+    "replay.log.okAssertPass": "（断言成立）",
+    "replay.log.okAssertFail": "（断言不成立）",
+    "replay.log.skip":
+      "[pageqa] ⚠ {label} {cost}ms 元素未找到，已跳过并继续：{reason}",
+    "replay.log.fail": "[pageqa] ✗ {label} {cost}ms：{reason}",
+    "replay.evidence.attempts": "{reason}；已尝试 {attempts} 次仍失败",
+    "replay.evidence.aborted": "，回放在此停止",
+    "replay.evidence.remaining": "；未执行到的步骤：回放第 {from}~{to} 步",
+    "replay.evidence.continued": "，已跳过该步并继续执行剩余步骤",
+    "replay.log.session": "[pageqa] 回放 session={session}（场景：{name}）",
+    "replay.log.semanticOff":
+      "[pageqa] --semantic 已指定，但 Jev 未启用（缺 enabled/apiKey），断言退回字符串匹配",
+    "replay.summary.executed": "回放 {total} 步，执行 {executed} 步",
+    "replay.summary.skipped": "跳过 {count} 步（元素未找到）",
+    "replay.summary.failed": "失败 {count} 步",
+    "replay.log.scenarioEnd":
+      "[pageqa] 场景回放结束：{status}（执行 {executed}/{total} 步{extra}）",
+    "replay.log.scenarioEnd.skip": "，跳过 {count} 步",
+    "replay.log.scenarioEnd.fail": "，失败 {count} 步",
+    "replay.log.scriptStart":
+      "[pageqa] 回放脚本：{path}，共 {count} 个场景，零模型执行{semantic}",
+    "replay.log.scriptStart.semantic": "（断言使用 Jev 语义判断）",
+    "replay.log.semanticWarn":
+      "[pageqa] 注意：脚本中有 {count} 条断言在录制时靠 Jev 语义判断成立（字面不含期望文本），回放默认用字符串包含匹配必然不成立；需要语义判断请加 --semantic",
+    "replay.log.suiteScenario": "[pageqa] ═══ 场景 {index}/{total}：{name} ═══",
+    "replay.log.suiteSummary": "[pageqa] 回放汇总：{summary}",
+
+    // ── bsk 进程级错误（src/bsk/tools.ts）──
+    "bsk.err.notFound": "未找到 bsk 命令：请先安装 browserskill 并确认 bsk 在 PATH 中",
+    "bsk.err.timeout":
+      "bsk 命令执行超时（{seconds}s）：可能 bsk daemon 未启动或未连接浏览器。请先运行 `bsk session start` 并确认浏览器已连接，再重试。命令：{cmd}",
+    "bsk.err.abortedBefore": "操作已被中止，未执行：bsk {cmd}",
+    "bsk.err.aborted": "操作已被中止：bsk {cmd}",
+    "bsk.daemon.starting":
+      "[pageqa] bsk daemon 未运行，正在后台启动（首次可能需数秒）…",
+    "bsk.err.daemonExit": "bsk daemon 启动失败，退出码 {code}",
+    "bsk.daemon.ready": "[pageqa] bsk daemon 已就绪（{seconds}s）",
+    "bsk.err.daemonTimeout":
+      "bsk daemon 启动超时（30s），请检查 bsk 安装或手动运行 `bsk daemon start`",
+    "bsk.err.noBrowser":
+      "bsk 未连接任何浏览器：pageqa 无法自动连接物理浏览器。\n请在浏览器中安装 bsk 扩展并完成连接（或运行 `bsk session start` 按其提示连接），再重试。",
+    "bsk.connected": "[pageqa] bsk 已连接浏览器 {count} 个",
+    "bsk.err.sessionFailed": "无法创建 bsk session，请确认 bsk daemon 已连接浏览器。",
+    "bsk.err.uploadMissing": "待上传文件不存在：{file}",
+    "bsk.session.closed": "[pageqa] 已关闭 bsk session={session}（浏览器窗口已关闭）",
+    "bsk.session.closeFailed":
+      "[pageqa] 关闭 bsk session={session} 失败（不影响测试结论）：{msg}",
 
     // ── 交互模式（src/tui/app.ts）──
     "tui.title": "pageqa 交互模式",
@@ -155,7 +241,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.languageSwitchFailed":
       "界面语种已切换为 {locale}（写入配置失败：{msg}）",
     "tui.run.usage":
-      "用法：/run <用例文件路径或关键字>（如 /run examples/smoke.md、/run plm）",
+      "用法：/run <用例文件路径或关键字>（如 /run examples/smoke.md、/run github-star）",
     "tui.run.searching": "正在查找用例文件：{hint}",
     "tui.run.notFound":
       "没有找到匹配的用例文件：{hint}\n  可以给一个 .md/.txt 路径，或一个文件名关键字（查找会跳过 node_modules/.git 等目录）",
@@ -600,6 +686,8 @@ const catalogs: Record<Locale, Catalog> = {
     "err.modelProbeNoReason": "the endpoint reported no failure reason",
     "err.outRequired": "--out needs a file path argument",
     "err.replayRequired": "--replay needs a replay script path",
+    "err.unknownOption":
+      "unknown option: {a} (see --help for all options; if the case text starts with -, put it after --)",
     "err.extraPositional":
       "extra positional argument: {a} (only one case input is accepted; quote paths with spaces, put the output path after --emit-script)",
     "err.param": "argument error: {msg}",
@@ -628,6 +716,95 @@ const catalogs: Record<Locale, Catalog> = {
       "execution failed (unhandled Promise rejection): {msg}",
     "config.created": "config file created/confirmed: {path}\ndir: {dir}",
     "config.current": "current effective config: {json}",
+
+    // ── replay script (src/replay.ts) ──
+    "replay.err.notFound": "replay script not found: {path}",
+    "replay.err.invalidJson": "replay script is not valid JSON: {path} ({msg})",
+    "replay.err.badFormat": "not a pageqa replay script (format={format}): {path}",
+    "replay.err.badVersion":
+      "unsupported replay script version (script v{version}, supported up to v{supported}): {path}",
+    "replay.err.noScenarios": "replay script has no executable scenarios: {path}",
+    "replay.err.empty":
+      "replay script contains no executable steps (the model performed no successful browser operations during recording): {path}\nrun the natural-language case to passing first, then regenerate with --emit-script.",
+    "replay.err.badStepKind":
+      "replay script contains an unsupported step kind ({kind}): {path}",
+    "replay.normalized":
+      "[pageqa] restored recorded literal values in the script back to placeholders (re-expanded at replay time): {items}",
+    "replay.drift.missing": "source case file no longer exists: {path}",
+    "replay.drift.changed":
+      "source case content has changed ({path}): the script was recorded against an earlier version; re-run with the LLM and regenerate",
+    "replay.drift.unreadable": "failed to read the source case file ({path}): {msg}",
+    "replay.locate.similar": "; similarly named {role} elements on the current page: {items}",
+    "replay.locate.roleOnly":
+      "; the page has {count} role={role} elements ({items}), but none named like \"{prefix}\" — you probably ended up on another menu/button with the same name",
+    "replay.locate.noRole":
+      "; no visible role={role} element on the current page — the menu/dialog is not open right now",
+    "replay.locate.miss":
+      "cannot relocate the element on the current page: {desc} (recorded as {target}){detail}",
+    "replay.locate.missRef":
+      "cannot relocate the element on the current page: {target} (the reference is stale and no semantic locator was recorded)",
+    "replay.step.label": "replay step {index} ({kind})",
+    "replay.step.caseRef": "maps to case step {step}: {text}",
+    "replay.assert.unparsed": "could not parse the assertion result: {out}",
+    "replay.assert.semanticHint":
+      "this assertion passed via Jev semantic matching at recording time (the expected text does not literally appear), so string matching cannot pass — retry with --semantic",
+    "replay.assert.stepOk": "{context} succeeded",
+    "replay.retry.trace":
+      "[replay-retry] #{index} {kind} (attempt {attempt}/{attempts} failed): {reason}",
+    "replay.retry.debug": "[replay] step {index} failed, about to retry: {reason}",
+    "replay.log.step": "[pageqa] ▶ {label} …",
+    "replay.log.ok": "[pageqa] ✓ {label} {cost}ms{assert}",
+    "replay.log.okAssertPass": " (assertion passed)",
+    "replay.log.okAssertFail": " (assertion failed)",
+    "replay.log.skip":
+      "[pageqa] ⚠ {label} {cost}ms element not found, skipped and continuing: {reason}",
+    "replay.log.fail": "[pageqa] ✗ {label} {cost}ms: {reason}",
+    "replay.evidence.attempts": "{reason}; still failing after {attempts} attempt(s)",
+    "replay.evidence.aborted": ", replay stopped here",
+    "replay.evidence.remaining": "; steps not executed: replay steps {from}~{to}",
+    "replay.evidence.continued":
+      ", this step was skipped and the remaining steps continued",
+    "replay.log.session": "[pageqa] replay session={session} (scenario: {name})",
+    "replay.log.semanticOff":
+      "[pageqa] --semantic was given, but Jev is not enabled (missing enabled/apiKey); assertions fall back to string matching",
+    "replay.summary.executed": "{total} steps replayed, {executed} executed",
+    "replay.summary.skipped": "{count} skipped (element not found)",
+    "replay.summary.failed": "{count} failed",
+    "replay.log.scenarioEnd":
+      "[pageqa] scenario replay finished: {status} ({executed}/{total} steps executed{extra})",
+    "replay.log.scenarioEnd.skip": ", {count} skipped",
+    "replay.log.scenarioEnd.fail": ", {count} failed",
+    "replay.log.scriptStart":
+      "[pageqa] replay script: {path}, {count} scenario(s), zero-model execution{semantic}",
+    "replay.log.scriptStart.semantic": " (assertions use Jev semantic matching)",
+    "replay.log.semanticWarn":
+      "[pageqa] note: {count} assertion(s) in the script passed via Jev semantic matching at recording time (the expected text does not literally appear); replay defaults to string matching and will fail them — use --semantic for semantic matching",
+    "replay.log.suiteScenario": "[pageqa] ═══ scenario {index}/{total}: {name} ═══",
+    "replay.log.suiteSummary": "[pageqa] replay summary: {summary}",
+
+    // ── bsk process-level errors (src/bsk/tools.ts) ──
+    "bsk.err.notFound":
+      "bsk command not found: install browserskill first and make sure bsk is on PATH",
+    "bsk.err.timeout":
+      "bsk command timed out ({seconds}s): the bsk daemon may not be running or no browser is connected. Run `bsk session start` and confirm the browser is connected, then retry. Command: {cmd}",
+    "bsk.err.abortedBefore": "operation aborted, not executed: bsk {cmd}",
+    "bsk.err.aborted": "operation aborted: bsk {cmd}",
+    "bsk.daemon.starting":
+      "[pageqa] bsk daemon is not running; starting it in the background (may take a few seconds on first run)…",
+    "bsk.err.daemonExit": "bsk daemon failed to start, exit code {code}",
+    "bsk.daemon.ready": "[pageqa] bsk daemon is ready ({seconds}s)",
+    "bsk.err.daemonTimeout":
+      "bsk daemon startup timed out (30s); check the bsk installation or run `bsk daemon start` manually",
+    "bsk.err.noBrowser":
+      "bsk has no connected browser: pageqa cannot attach to a physical browser by itself.\nInstall the bsk extension in your browser and complete the connection (or run `bsk session start` and follow its prompts), then retry.",
+    "bsk.connected": "[pageqa] bsk has {count} connected browser(s)",
+    "bsk.err.sessionFailed":
+      "could not create a bsk session; make sure the bsk daemon has a connected browser.",
+    "bsk.err.uploadMissing": "file to upload does not exist: {file}",
+    "bsk.session.closed":
+      "[pageqa] closed bsk session={session} (browser window closed)",
+    "bsk.session.closeFailed":
+      "[pageqa] failed to close bsk session={session} (does not affect the test outcome): {msg}",
 
     // ── interactive mode ──
     "tui.title": "pageqa interactive mode",
@@ -673,7 +850,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.languageSwitchFailed":
       "UI language switched to {locale} (failed to write config: {msg})",
     "tui.run.usage":
-      "usage: /run <case file path or keyword> (e.g. /run examples/smoke.md, /run plm)",
+      "usage: /run <case file path or keyword> (e.g. /run examples/smoke.md, /run github-star)",
     "tui.run.searching": "looking for a case file: {hint}",
     "tui.run.notFound":
       "no matching case file: {hint}\n  give a .md/.txt path, or a filename keyword (the search skips node_modules/.git and similar directories)",
@@ -1075,9 +1252,9 @@ Examples:
 
 let current: Locale = detectLocale();
 
-/** 解析 locale 字符串（容错：未知值回退中文）。 */
+/** 解析 locale 字符串（容错：未知值回退中文；`en-US` 这类写法按前缀认成英文）。 */
 export function parseLocale(value: string | undefined): Locale {
-  return value === "en" ? "en" : "zh";
+  return value?.toLowerCase().startsWith("en") ? "en" : "zh";
 }
 
 /**

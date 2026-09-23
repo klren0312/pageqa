@@ -133,12 +133,12 @@ export function resolveCaseFile(
     collect(direct, cwd, "", all, 0);
     return pack(all);
   }
-  // 3) 关键字：按「相对 cwd 的路径片段」匹配（`examples/plm` 也能命中）。
+  // 3) 关键字：按「相对 cwd 的路径片段」匹配（`examples/smoke` 也能命中）。
   const pattern = cleaned.replace(/^\.\//, "").toLowerCase();
   const all: string[] = [];
   collect(cwd, cwd, pattern, all, 0);
   if (all.length > 0) return pack(all);
-  // 退一步：只用文件名匹配（应对 `examples//plm`、带盘符的怪输入等）。
+  // 退一步：只用文件名匹配（应对 `examples//smoke`、带盘符的怪输入等）。
   const name = basename(cleaned).toLowerCase().replace(CASE_EXT, "");
   if (!name || name === pattern) return pack(all);
   const byName: string[] = [];
@@ -149,8 +149,8 @@ export function resolveCaseFile(
 /**
  * 让模型从候选里挑一个：**只给它文件名，不给文件内容**。
  *
- * 这是「让 AI 自行查找」的边界——模型负责语义匹配（「跑一下那个 plm 的长流程」
- * → `examples/plm-product-bom.md`），读取与编排仍归 pageqa。
+ * 这是「让 AI 自行查找」的边界——模型负责语义匹配（「跑一下 github-star 那个用例」
+ * → `examples/github-star.md`），读取与编排仍归 pageqa。
  */
 export function buildPickPrompt(
   hint: string,

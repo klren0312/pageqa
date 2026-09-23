@@ -591,7 +591,7 @@ describe("运行时加载用例文件：/run 的候选解析", () => {
   };
   write("examples/smoke.md", "## A\n\n打开 x\n");
   write("examples/smoke-mobile.md", "## B\n\n打开 y\n");
-  write("examples/plm-product-bom.md", "## C\n\n打开 z\n");
+  write("examples/order-bom.md", "## C\n\n打开 z\n");
   write("docs/adr/0001-x.md", "## D\n\n打开 d\n");
   write("notes.txt", "## E\n\n打开 e\n");
   write("node_modules/pkg/hidden.md", "## F\n\n打开 f\n");
@@ -613,7 +613,7 @@ describe("运行时加载用例文件：/run 的候选解析", () => {
     assert.deepEqual(
       hit.candidates.map((p) => displayPath(p, dir)).sort(),
       [
-        "examples/plm-product-bom.md",
+        "examples/order-bom.md",
         "examples/smoke-mobile.md",
         "examples/smoke.md",
       ],
@@ -621,9 +621,9 @@ describe("运行时加载用例文件：/run 的候选解析", () => {
   });
 
   test("关键字唯一命中就直接加载（不必敲全路径）", () => {
-    const hit = resolveCaseFile("plm", dir);
+    const hit = resolveCaseFile("bom", dir);
     assert.equal(hit.kind, "one");
-    assert.equal(displayPath(hit.path, dir), "examples/plm-product-bom.md");
+    assert.equal(displayPath(hit.path, dir), "examples/order-bom.md");
   });
 
   test("关键字命中多个 → 交给上层挑选，浅层优先且顺序稳定", () => {
@@ -659,13 +659,13 @@ describe("让模型从候选里挑用例文件", () => {
   const dir = mkdtempSync(join(tmpdir(), "pageqa-pick-"));
   const candidates = [
     join(dir, "examples/smoke.md"),
-    join(dir, "examples/plm-product-bom.md"),
+    join(dir, "examples/order-bom.md"),
   ];
 
   test("提示里只给文件名，不给文件内容", () => {
-    const prompt = buildPickPrompt("跑一下 plm 那个长流程", candidates, dir);
+    const prompt = buildPickPrompt("跑一下 bom 那个长流程", candidates, dir);
     assert.match(prompt, /1\. examples\/smoke\.md/);
-    assert.match(prompt, /2\. examples\/plm-product-bom\.md/);
+    assert.match(prompt, /2\. examples\/order-bom\.md/);
     assert.match(prompt, /只回答/);
   });
 
@@ -702,7 +702,7 @@ describe("回放脚本按来源拆分", () => {
   test("同来源进同一组，无来源的场景单独成组（键为 null）", () => {
     const groups = groupRecordingsBySource([
       rec("A", "examples/smoke.md"),
-      rec("B", "examples/plm.md"),
+      rec("B", "examples/order.md"),
       rec("C", "examples/smoke.md"),
       rec("D"),
     ]);
@@ -712,7 +712,7 @@ describe("回放脚本按来源拆分", () => {
       ["A", "C"],
     );
     assert.deepEqual(
-      groups.get("examples/plm.md").map((r) => r.name),
+      groups.get("examples/order.md").map((r) => r.name),
       ["B"],
     );
     assert.deepEqual(

@@ -199,6 +199,9 @@ export class JevClient {
         for (const [id, ans] of Object.entries(result.answers ?? {})) {
           validateAnswer(id, ans);
         }
+        // 成功路径也要清超时计时器：不清的话它会挂到 DEFAULT_TIMEOUT 才触发，
+        // 每次成功调用都留一个 15s 的僵尸定时器拖着事件循环。
+        clearTimeout(timer);
         if (this.debug) {
           const answer = result.answers?.["assertion_check"];
           const noul = answer?.type === "noul" ? answer.noul : undefined;

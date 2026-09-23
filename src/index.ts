@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { ModelUnreachableError, runAgent, runSuite } from "./agent.js";
 import {
   ensureConfigDir,
@@ -66,8 +66,7 @@ interface CliArgs {
   error?: string;
 }
 
-function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = {
+export function parseArgs(argv: string[]): CliArgs {  const args: CliArgs = {
     json: false,
     suite: false,
     initConfig: false,
@@ -101,7 +100,9 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "--session": {
         const v = argv[++i];
-        if (v === undefined) {
+        // 以 - 开头的「值」多半是下一个选项被吞了（如 `--session --json`）：
+        // 宁可报缺参，也不拿一个 flag 当 session id 去跑。
+        if (v === undefined || v.startsWith("-")) {
           args.error = t("err.sessionRequired");
           return args;
         }
@@ -119,7 +120,7 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "--locale": {
         const v = argv[++i];
-        if (v === undefined) {
+        if (v === undefined || v.startsWith("-")) {
           args.error = t("err.localeRequired", { arg: "--locale" });
           return args;
         }
@@ -129,7 +130,7 @@ function parseArgs(argv: string[]): CliArgs {
       }
       case "--out": {
         const v = argv[++i];
-        if (v === undefined) {
+        if (v === undefined || v.startsWith("-")) {
           args.error = t("err.outRequired");
           return args;
         }
@@ -141,7 +142,7 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "--replay": {
         const v = argv[++i];
-        if (v === undefined) {
+        if (v === undefined || v.startsWith("-")) {
           args.error = t("err.replayRequired");
           return args;
         }
@@ -171,17 +172,33 @@ function parseArgs(argv: string[]): CliArgs {
       case "--no-tui":
         args.noTui = true;
         break;
-      default:
-        if (!a.startsWith("-")) {
-          // 只接受一个用例输入。此前是「后者覆盖前者」，`--emit-script ./replay`
-          // 这类写法一旦没被识别成输出路径，就会静默把用例换成 `./replay` 去跑，
-          // 看起来像正常启动、实际测的是完全无关的文本。这里改为直接报错。
+      case "--":
+        // `--` 之后一律按位置参数处理：内联用例文本以 - 开头时用它兜底
+        // （否则会被当成未知选项报错）。
+        for (i += 1; i < argv.length; i++) {
+          const rest = argv[i];
           if (args.input !== undefined) {
-            args.error = t("err.extraPositional", { a });
+            args.error = t("err.extraPositional", { a: rest });
             return args;
           }
-          args.input = a;
+          args.input = rest;
         }
+        break;
+      default:
+        if (a.startsWith("-")) {
+          // 未知选项不能静默吞掉：`--emti-script`（拼错）被忽略的话，
+          // 用户以为在录回放脚本，实际什么都没发生。
+          args.error = t("err.unknownOption", { a });
+          return args;
+        }
+        // 只接受一个用例输入。此前是「后者覆盖前者」，`--emit-script ./replay`
+        // 这类写法一旦没被识别成输出路径，就会静默把用例换成 `./replay` 去跑，
+        // 看起来像正常启动、实际测的是完全无关的文本。这里改为直接报错。
+        if (args.input !== undefined) {
+          args.error = t("err.extraPositional", { a });
+          return args;
+        }
+        args.input = a;
     }
   }
   return args;
@@ -680,16 +697,22 @@ async function main(): Promise<number> {
   }
 }
 
-main()
-  .then((code) => process.exit(code))
-  .catch((err) => {
-    process.stderr.write(
-      t("err.execFailed", {
-        msg: err instanceof Error ? (err.stack ?? String(err)) : String(err),
-      }) + "\n",
-    );
-    process.exit(1);
-  });
+// 只有作为主模块执行（pageqa bin）时才启动 CLI；被单测 import 时只取 parseArgs。
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main()
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      process.stderr.write(
+        t("err.execFailed", {
+          msg: err instanceof Error ? (err.stack ?? String(err)) : String(err),
+        }) + "\n",
+      );
+      process.exit(1);
+    });
+}
 
 // 兜底：main() 的 catch 只能捕获其 Promise 链内的错误。
 // 工具执行、事件订阅回调等异步路径上抛出的异常不会被它捕获，

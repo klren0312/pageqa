@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { t } from "../i18n.js";
 import { JevClient } from "../jev.js";
 import { debugLog, info, timer } from "../log.js";
 import { slimSnapshot } from "../snapshot.js";
@@ -21,6 +22,11 @@ import {
  * 回放（replay.ts）直接用操作层，因此「录制时怎么操作」与「回放时怎么操作」是同一条命令路径。
  */
 
+/**
+ * 单条 bsk 命令的默认超时。
+ *
+ * `wait-ms` 这类命令的耗时由调用方指定，不能套这个默认值——见 `bsk()` 的 timeoutMs 参数。
+ */
 const BSK_TIMEOUT_MS = 60_000;
 
 /** 操作被调用方主动中止（交互模式下按 Esc）。 */
@@ -47,11 +53,15 @@ let commandChain: Promise<unknown> = Promise.resolve();
  * 渲染、不收键，Esc 也停不下来（与 daemon 轮询必须异步是同一个原因，见 bskStatusJsonAsync）。
  * `signal` 触发时直接 kill 子进程，否则「中止」只能等当前这条命令自己跑完（最坏 60s）。
  */
-function bsk(args: string[], signal?: AbortSignal): Promise<string> {
+function bsk(
+  args: string[],
+  signal?: AbortSignal,
+  timeoutMs: number = BSK_TIMEOUT_MS,
+): Promise<string> {
   // 上一条成功还是失败都要继续跑下一条：单条命令失败不该堵死整个队列。
   const run = commandChain.then(
-    () => runBsk(args, signal),
-    () => runBsk(args, signal),
+    () => runBsk(args, signal, timeoutMs),
+    () => runBsk(args, signal, timeoutMs),
   );
   commandChain = run.then(
     () => undefined,
@@ -60,24 +70,28 @@ function bsk(args: string[], signal?: AbortSignal): Promise<string> {
   return run;
 }
 
-function runBsk(args: string[], signal?: AbortSignal): Promise<string> {
+function runBsk(
+  args: string[],
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const done = timer();
     debugLog("[bsk] $ bsk " + args.join(" "));
     if (signal?.aborted) {
-      reject(new BskAbortError(`操作已被中止，未执行：bsk ${args.join(" ")}`));
+      reject(new BskAbortError(t("bsk.err.abortedBefore", { cmd: args.join(" ") })));
       return;
     }
     let aborted = false;
     const child = execFile(
       "bsk",
       args,
-      { encoding: "utf-8", timeout: BSK_TIMEOUT_MS, windowsHide: true },
+      { encoding: "utf-8", timeout: timeoutMs, windowsHide: true },
       (err, stdout) => {
         signal?.removeEventListener("abort", onAbort);
         // 必须先判中止：被 kill 出来的错误同样是 SIGTERM，后判会被误报成「命令超时」。
         if (aborted) {
-          reject(new BskAbortError(`操作已被中止：bsk ${args.join(" ")}`));
+          reject(new BskAbortError(t("bsk.err.aborted", { cmd: args.join(" ") })));
           return;
         }
         if (!err) {
@@ -88,18 +102,16 @@ function runBsk(args: string[], signal?: AbortSignal): Promise<string> {
         debugLog(`[bsk] $ bsk ${args[0] ?? ""} 失败（${done()}ms）`);
         const e = err as { code?: string; signal?: string };
         if (e.code === "ENOENT") {
-          reject(
-            new Error(
-              "未找到 bsk 命令：请先安装 browserskill 并确认 bsk 在 PATH 中",
-            ),
-          );
+          reject(new Error(t("bsk.err.notFound")));
           return;
         }
         if (e.code === "ETIMEDOUT" || e.signal === "SIGTERM") {
           reject(
             new Error(
-              `bsk 命令执行超时（${BSK_TIMEOUT_MS / 1000}s）：可能 bsk daemon 未启动或未连接浏览器。` +
-                `请先运行 \`bsk session start\` 并确认浏览器已连接，再重试。命令：bsk ${args.join(" ")}`,
+              t("bsk.err.timeout", {
+                seconds: Math.round(timeoutMs / 1000),
+                cmd: args.join(" "),
+              }),
             ),
           );
           return;
@@ -132,11 +144,7 @@ function bskStatusJsonAsync(): Promise<unknown | null> {
         if (err) {
           const e = err as { code?: string };
           if (e.code === "ENOENT") {
-            reject(
-              new Error(
-                "未找到 bsk 命令：请先安装 browserskill 并确认 bsk 在 PATH 中",
-              ),
-            );
+            reject(new Error(t("bsk.err.notFound")));
             return;
           }
           resolve(null);
@@ -163,10 +171,12 @@ async function connectedBrowserCount(): Promise<number> {
 function startDaemon(): Promise<void> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    info("[pageqa] bsk daemon 未运行，正在后台启动（首次可能需数秒）…");
+    info(t("bsk.daemon.starting"));
     const child = spawn("bsk", ["daemon", "start"], {
       detached: true,
       stdio: "ignore",
+      // Windows 下 detached 子进程默认会弹出一个控制台窗口；daemon 是后台进程，不该有窗口。
+      windowsHide: true,
     });
     child.unref();
 
@@ -174,7 +184,9 @@ function startDaemon(): Promise<void> {
     const poll = async () => {
       try {
         if (child.exitCode !== null && child.exitCode !== 0) {
-          reject(new Error(`bsk daemon 启动失败，退出码 ${child.exitCode}`));
+          reject(
+            new Error(t("bsk.err.daemonExit", { code: child.exitCode })),
+          );
           return;
         }
       } catch {
@@ -190,17 +202,15 @@ function startDaemon(): Promise<void> {
       }
       if (status !== null) {
         info(
-          `[pageqa] bsk daemon 已就绪（${((Date.now() - started) / 1000).toFixed(1)}s）`,
+          t("bsk.daemon.ready", {
+            seconds: ((Date.now() - started) / 1000).toFixed(1),
+          }),
         );
         resolve();
         return;
       }
       if (Date.now() > deadline) {
-        reject(
-          new Error(
-            "bsk daemon 启动超时（30s），请检查 bsk 安装或手动运行 `bsk daemon start`",
-          ),
-        );
+        reject(new Error(t("bsk.err.daemonTimeout")));
         return;
       }
       debugLog(
@@ -216,11 +226,14 @@ let readyPromise: Promise<void> | null = null;
 
 /**
  * 自动确保 bsk 就绪：启动 daemon（若未运行）+ 校验浏览器连接（若未连则报错）。
- * 整个进程只真正执行一次（readyPromise 缓存）。
+ * 同一进程最多一个在飞的检查；**成功后**才缓存结果。
+ *
+ * 失败不能缓存：「此刻未连接浏览器」是交互模式的常态（用户连上之后下一条用例就该能跑），
+ * 若把 rejected 的 promise 缓存住，本进程会拿第一次的失败答复所有后续调用，再无恢复机会。
  */
 export function ensureBskReady(): Promise<void> {
   if (readyPromise) return readyPromise;
-  readyPromise = (async () => {
+  const attempt = (async () => {
     debugLog("[bsk] 查询 daemon 状态…");
     if ((await bskStatusJsonAsync()) === null) {
       await startDaemon();
@@ -229,13 +242,15 @@ export function ensureBskReady(): Promise<void> {
     }
     const n = await connectedBrowserCount();
     if (n === 0) {
-      throw new Error(
-        "bsk 未连接任何浏览器：pageqa 无法自动连接物理浏览器。\n" +
-          "请在浏览器中安装 bsk 扩展并完成连接（或运行 `bsk session start` 按其提示连接），再重试。",
-      );
+      throw new Error(t("bsk.err.noBrowser"));
     }
-    info(`[pageqa] bsk 已连接浏览器 ${n} 个`);
+    info(t("bsk.connected", { count: n }));
   })();
+  attempt.catch(() => {
+    // 只清掉自己这次的结果：并发场景下 readyPromise 可能已被下一次调用替换。
+    if (readyPromise === attempt) readyPromise = null;
+  });
+  readyPromise = attempt;
   return readyPromise;
 }
 
@@ -457,7 +472,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       signal?: AbortSignal,
     ): Promise<string> {
       if (!existsSync(file)) {
-        throw new Error(`待上传文件不存在：${file}`);
+        throw new Error(t("bsk.err.uploadMissing", { file }));
       }
       markStale();
       const args = ["upload"];
@@ -486,7 +501,9 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       // 等待本身就是为了让页面变化（异步渲染/动画/弹窗），因此必须置为不新鲜：
       // 回放的「每步重试前重新取快照」正是靠它生效的。
       markStale();
-      await bsk(["wait-ms", String(ms)], signal);
+      // 超时按等待时长放宽：一律套默认 60s 的话 wait(90_000) 必然中途被杀，
+      // 报出的还是「daemon 未启动」这种南辕北辙的提示。
+      await bsk(["wait-ms", String(ms)], signal, ms + 30_000);
       return `已等待 ${ms}ms`;
     },
 
@@ -841,14 +858,19 @@ export async function ensureSession(existing?: string): Promise<string> {
   }
   debugLog("[bsk] 创建新的 session…");
   const out = await bsk(["session", "start", "--json"]);
+  // 两种情形都要走正则兜底：输出不是 JSON（某些 bsk 版本会带进度行），
+  // 或 JSON 里偏偏没有 session_id——只在 catch 里兜底会漏掉后一种。
   try {
-    const json = JSON.parse(out);
-    if (json?.session_id) return json.session_id;
+    const json = JSON.parse(out) as { session_id?: unknown } | null;
+    if (typeof json?.session_id === "string" && json.session_id.length > 0) {
+      return json.session_id;
+    }
   } catch {
-    const m = out.match(/session_id["\s:]+([a-z0-9]+)/i);
-    if (m) return m[1];
+    // 不是 JSON，落到下面的文本兜底。
   }
-  throw new Error("无法创建 bsk session，请确认 bsk daemon 已连接浏览器。");
+  const m = out.match(/session_id["\s:]+([a-z0-9]+)/i);
+  if (m?.[1]) return m[1];
+  throw new Error(t("bsk.err.sessionFailed"));
 }
 
 /**
@@ -864,11 +886,13 @@ export async function closeSession(session: string): Promise<void> {
     debugLog(`[bsk] 关闭 session ${session}（同时关闭 Agent Window）…`);
     await bsk(["session", "stop", session, "--quiet"]);
     debugLog(`[bsk] session ${session} 已关闭（${done()}ms）`);
-    info(`[pageqa] 已关闭 bsk session=${session}（浏览器窗口已关闭）`);
+    info(t("bsk.session.closed", { session }));
   } catch (err) {
     info(
-      `[pageqa] 关闭 bsk session=${session} 失败（不影响测试结论）：` +
-        (err instanceof Error ? err.message : String(err)),
+      t("bsk.session.closeFailed", {
+        session,
+        msg: err instanceof Error ? err.message : String(err),
+      }),
     );
   }
 }
