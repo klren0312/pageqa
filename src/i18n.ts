@@ -316,6 +316,24 @@ const catalogs: Record<Locale, Catalog> = {
     "report.suiteSummaryBase": "共 {n} 个场景，通过 {passed} 个",
     "report.suiteSummaryCancelled": "，已取消 {cancelled} 个",
 
+    // ── HTML 报告（src/report-html.ts）──
+    "reportHtml.generatedAt": "生成时间: {time}",
+    "reportHtml.duration": "耗时: {dur}",
+    "reportHtml.durationLabel": "耗时",
+    "reportHtml.total": "总场景",
+    "reportHtml.countPass": "通过",
+    "reportHtml.countFail": "失败",
+    "reportHtml.countCancelled": "已取消",
+    "reportHtml.scenario": "场景",
+    "reportHtml.steps": "用例步骤",
+    "reportHtml.expectation": "期望",
+    "reportHtml.verdict": "结论",
+    "reportHtml.evidence": "证据",
+    "reportHtml.trace": "执行轨迹",
+    "reportHtml.expandAll": "全部展开",
+    "reportHtml.collapseAll": "全部收起",
+    "reportHtml.noAssertions": "无断言记录",
+
     // ── 导航失败诊断（src/bsk/navigate-diagnosis.ts）──
     "nav.notFound":
       "无法打开 {url}：浏览器报 {code}（此错误码尚未收录，未做解释）。",
@@ -801,6 +819,23 @@ const catalogs: Record<Locale, Catalog> = {
     "report.suiteSummaryBase":
       "{n} scenario(s) in total, {passed} passed",
     "report.suiteSummaryCancelled": ", {cancelled} cancelled",
+
+    "reportHtml.generatedAt": "generated at: {time}",
+    "reportHtml.duration": "duration: {dur}",
+    "reportHtml.durationLabel": "duration",
+    "reportHtml.total": "total",
+    "reportHtml.countPass": "pass",
+    "reportHtml.countFail": "fail",
+    "reportHtml.countCancelled": "cancelled",
+    "reportHtml.scenario": "scenario",
+    "reportHtml.steps": "case steps",
+    "reportHtml.expectation": "expectation",
+    "reportHtml.verdict": "verdict",
+    "reportHtml.evidence": "evidence",
+    "reportHtml.trace": "execution trace",
+    "reportHtml.expandAll": "expand all",
+    "reportHtml.collapseAll": "collapse all",
+    "reportHtml.noAssertions": "no assertions recorded",
 
     // ── navigate failure diagnosis ──
     "nav.notFound":

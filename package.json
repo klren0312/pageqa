@@ -16,7 +16,7 @@
     "start": "node dist/index.js",
     "pretest": "npm run build",
     "test": "node --test tests/smoke.test.mjs",
-    "test:unit": "npm run build && node --test tests/report.test.mjs tests/replay.test.mjs tests/snapshot.test.mjs tests/tui.test.mjs tests/agent.test.mjs tests/navigate-diagnosis.test.mjs tests/credentials.test.mjs tests/model-catalog.test.mjs",
+    "test:unit": "npm run build && node --test tests/report.test.mjs tests/report-html.test.mjs tests/replay.test.mjs tests/snapshot.test.mjs tests/tui.test.mjs tests/agent.test.mjs tests/navigate-diagnosis.test.mjs tests/credentials.test.mjs tests/model-catalog.test.mjs",
     "prepublishOnly": "npm run build",
     "serve:smoke": "serve -l 18888 examples"
   },
