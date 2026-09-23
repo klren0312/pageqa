@@ -7,7 +7,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getLocale, t } from "./i18n.js";
-import { info } from "./log.js";
 import {
   formatUsage,
   statusTag,
@@ -281,7 +280,7 @@ export function htmlReportFilePath(baseDir?: string, now?: Date): string {
   return join(baseDir ?? "pageqa-report", name);
 }
 
-/** 渲染并写盘（自动创建目录）。失败抛给调用方（safe 版负责兜底）。 */
+/** 渲染并写盘（自动创建目录）。失败抛给调用方：结果与提示由 side-outputs 统一交代。 */
 export function writeHtmlReport(
   report: TestReport,
   baseDir?: string,
@@ -291,25 +290,4 @@ export function writeHtmlReport(
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, renderHtml(report), "utf8");
   return { path };
-}
-
-/**
- * 写 HTML 报告且永不抛错：路径经 info() 打到 stderr（TUI 下进视口）。
- * 失败只 warning——HTML 是旁路产物，绝不能改退出码或顶掉 stdout 报告。
- */
-export function writeHtmlReportSafe(
-  report: TestReport,
-  baseDir?: string,
-  now?: Date,
-): void {
-  try {
-    const { path } = writeHtmlReport(report, baseDir, now);
-    info(t("log.htmlReportWritten", { path }));
-  } catch (err) {
-    info(
-      t("log.htmlReportFailed", {
-        msg: err instanceof Error ? err.message : String(err),
-      }),
-    );
-  }
 }
