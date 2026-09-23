@@ -505,6 +505,101 @@ pageqa examples/element-plus-upload.md
 - 像 `el-upload` 这类「点击按钮 → 页面 JS 触发隐藏 input」的组件，首次尝试可能返回 `did not activate a file input`（时序问题，不是权限问题）；此时重试一次即可成功。
 - 上传动作成功不等于用例通过：**真伪仍由页面断言决定**。若站点把文件提交到外部接口而接口不可用（例如 element-plus 文档示例提交到 `run.mocky.io`，本机证书校验失败），组件会在上传失败后移除该文件，此时「断言文件出现在列表中」会如实报 FAIL——这是被测页面的真实行为，不是工具问题。
 
+## 架构
+
+下图是**分层与模块视角**：哪一层拥有什么、产物在模块之间怎么流动；运行时的先后顺序见下一节「工作原理」。
+
+```mermaid
+flowchart TD
+  subgraph ENTRY["CLI 入口 · src/index.ts"]
+    CLI["parseArgs · main · detectInteractive<br/>批处理 / 交互 --tui / 回放 --replay / --help·--version·--init-config"]
+  end
+
+  subgraph ORCH["编排 · src/agent.ts"]
+    RUN["runAgent / runSuite：初始化 → 执行（≤5 轮续跑）→ 收敛"]
+  end
+
+  subgraph LLMC["LLM 与配置"]
+    MODELS["models.ts 模型目录 · 探活 · 解析"]
+    LLMP["llm.ts OpenAI 兼容 provider"]
+    AUTH["auth.ts 凭据（~/.pageqa/auth.json）"]
+    CONFIG["config.ts 配置（~/.pageqa/config.json）"]
+    JEV["jev.ts 语义断言（可选）"]
+  end
+
+  subgraph BSK["bsk 工具层 · src/bsk"]
+    TOOLS["tools.ts 9 个工具<br/>navigate·snapshot·click·fill·upload·hover·scroll·wait·assert_text<br/>异步 · 可中止 · 全局串行"]
+    DIAG["navigate-diagnosis.ts 导航失败翻译成人话"]
+    SNAP["snapshot.ts 快照瘦身"]
+  end
+
+  BROWSER["真实浏览器（由 bsk daemon 连接）"]
+
+  subgraph REC["录制 → 回放（零模型）"]
+    RECORDER["record.ts 录制成功操作"]
+    LOCATOR["locator.ts 语义定位符"]
+    ENGINE["replay.ts 回放脚本与引擎"]
+  end
+
+  subgraph REP["报告与旁路产物"]
+    REPORT["report.ts 文本 / JSON 与套件汇总"]
+    HTML["report-html.ts 自包含 HTML"]
+    SIDE["side-outputs.ts 产物清单（stderr）"]
+    VARS["vars.ts 占位符展开 / 还原"]
+  end
+
+  subgraph TUI["交互模式 · src/tui"]
+    APP["app.ts 全屏 TUI（日志视口 + 输入框）"]
+    QUEUE["queue.ts 运行队列（串行）"]
+    WB["writeback.ts 追加场景写回用例文件"]
+    CS["case-source.ts /run 解析"]
+    BATCH["batches.ts 会话批次归档"]
+  end
+
+  XCUT["横切：i18n.ts 本地化 · log.ts 日志（sink）· version.ts"]
+
+  CLI -->|"批处理"| RUN
+  CLI -->|"--replay"| ENGINE
+  CLI -->|"--tui / TTY 自动识别"| APP
+  CLI -.->|"语种"| XCUT
+
+  RUN -->|"初始化：探活 → bsk 就绪 → session → 建 Agent"| MODELS
+  RUN --> JEV
+  RUN --> TOOLS
+  RUN -->|"收敛结果"| REPORT
+  RUN -.->|"onExec 上报"| RECORDER
+  RUN -->|"--emit-script"| ENGINE
+
+  MODELS --> LLMP
+  MODELS --> AUTH
+  MODELS --> CONFIG
+
+  TOOLS --> DIAG
+  TOOLS --> SNAP
+  TOOLS -->|"bsk 命令"| BROWSER
+
+  RECORDER --> LOCATOR
+  LOCATOR --> ENGINE
+  ENGINE -->|"复用操作层 createBskOps"| TOOLS
+  ENGINE -->|"断言 / 结论"| REPORT
+
+  REPORT --> HTML
+  HTML --> SIDE
+  ENGINE -->|"脚本路径"| SIDE
+  VARS -.-> RECORDER
+  VARS -.-> ENGINE
+
+  APP --> QUEUE
+  APP --> WB
+  APP --> CS
+  APP --> BATCH
+  QUEUE -->|"runAgent"| RUN
+  BATCH -->|"退出汇总"| REPORT
+  XCUT -.->|"setSink 汇入日志"| APP
+  XCUT -.-> RUN
+  XCUT -.-> REPORT
+```
+
 ## 工作原理
 
 ```
