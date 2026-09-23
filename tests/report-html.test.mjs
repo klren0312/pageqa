@@ -136,6 +136,30 @@ describe("renderHtml", () => {
       setLocale(prev);
     }
   });
+
+  test("HTML 标题不带 === 装饰，h1 与页签一致", () => {
+    const html = renderHtml(base());
+    assert.ok(html.includes("<title>页面测试报告</title>"));
+    assert.ok(html.includes("<h1>页面测试报告"));
+    assert.ok(!html.includes("<title>==="));
+    assert.ok(!html.includes("<h1>==="));
+  });
+
+  test("套件文档标题用套件名且无 ===", () => {
+    const html = renderHtml(
+      base({ scenarios: [], assertions: [], summary: "共 0 个场景，通过 0 个" }),
+    );
+    assert.ok(html.includes("<title>页面测试套件报告</title>"));
+    assert.ok(!html.includes("<h1>==="));
+  });
+
+  test("单场景节标题用「用例明细」，耗时不挤掉标题", () => {
+    const html = renderHtml(base({ durationMs: 1234, trace: ["[tool] navigate"] }));
+    assert.ok(html.includes("<h2>用例明细"));
+    assert.ok(html.includes("耗时: 1.2s"));
+    assert.ok(!html.includes("<h2>==="));
+    assert.ok(!html.includes("<h2>耗时:"));
+  });
 });
 
 describe("escapeHtml / formatDurationMs", () => {

@@ -333,6 +333,9 @@ const catalogs: Record<Locale, Catalog> = {
     "reportHtml.expandAll": "全部展开",
     "reportHtml.collapseAll": "全部收起",
     "reportHtml.noAssertions": "无断言记录",
+    "reportHtml.pageTitle": "页面测试报告",
+    "reportHtml.pageTitleSuite": "页面测试套件报告",
+    "reportHtml.detail": "用例明细",
     "log.htmlReportWritten": "HTML 报告已生成: {path}",
     "log.htmlReportFailed": "HTML 报告生成失败: {msg}",
 
@@ -838,6 +841,9 @@ const catalogs: Record<Locale, Catalog> = {
     "reportHtml.expandAll": "expand all",
     "reportHtml.collapseAll": "collapse all",
     "reportHtml.noAssertions": "no assertions recorded",
+    "reportHtml.pageTitle": "page test report",
+    "reportHtml.pageTitleSuite": "page test suite report",
+    "reportHtml.detail": "case details",
     "log.htmlReportWritten": "HTML report written: {path}",
     "log.htmlReportFailed": "HTML report write failed: {msg}",
 
