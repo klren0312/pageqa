@@ -9,6 +9,7 @@ import {
   formatUsage,
   mergeUsage,
   numberSteps,
+  summarizeSuite,
 } from "../dist/report.js";
 
 // 纯单元测试：只依赖 dist/report.js，不需要 bsk / LLM。
@@ -320,5 +321,68 @@ describe("Token 用量统计", () => {
 
   test("无用量数据时给出不可用提示", () => {
     assert.ok(formatUsage(undefined).includes("不可用"));
+  });
+});
+
+describe("report durationMs", () => {
+  test("summarizeSuite 逐场景带 durationMs，整体为各场景之和", () => {
+    const mk = (status, durationMs) => ({
+      name: "s-" + status,
+      report: {
+        status,
+        assertions: [],
+        transcript: "",
+        ...(durationMs === undefined ? {} : { durationMs }),
+      },
+      usage: emptyUsage(),
+    });
+    const summary = summarizeSuite([
+      mk("pass", 1000),
+      mk("fail", 2500),
+      mk("cancelled", undefined),
+    ]);
+    assert.equal(summary.scenarios.length, 3);
+    assert.equal(summary.scenarios[0].durationMs, 1000);
+    assert.equal(summary.scenarios[1].durationMs, 2500);
+    assert.equal(summary.scenarios[2].durationMs, undefined);
+    assert.equal(summary.durationMs, 3500);
+    // 无任何场景带耗时时整体不写字段（JSON 向后兼容）
+    const bare = summarizeSuite([mk("pass", undefined)]);
+    assert.equal(bare.durationMs, undefined);
+    assert.ok(!("durationMs" in bare.scenarios[0]));
+  });
+});
+
+describe("summarizeSuite 明细 summary/skipped", () => {
+  const mk = (over = {}) => ({
+    name: "s",
+    report: {
+      status: "pass",
+      assertions: [],
+      transcript: "",
+      ...over,
+    },
+    usage: emptyUsage(),
+  });
+
+  test("成员带 summary/skipped 时复制进 ScenarioDetail", () => {
+    const summary = summarizeSuite([
+      mk({
+        summary: "回放 5 步，执行 4 步",
+        skipped: ["第 3 步：点击弹窗关闭按钮"],
+      }),
+    ]);
+    const sc = summary.scenarios[0];
+    assert.equal(sc.summary, "回放 5 步，执行 4 步");
+    assert.deepEqual(sc.skipped, ["第 3 步：点击弹窗关闭按钮"]);
+  });
+
+  test("成员未带 summary/skipped 时键不出现（JSON 向后兼容）", () => {
+    const summary = summarizeSuite([mk()]);
+    assert.ok(!("summary" in summary.scenarios[0]));
+    assert.ok(!("skipped" in summary.scenarios[0]));
+    const parsed = JSON.parse(JSON.stringify(summary.scenarios[0]));
+    assert.ok(!("summary" in parsed));
+    assert.ok(!("skipped" in parsed));
   });
 });
