@@ -8,9 +8,14 @@ import {
   CONFIG_PATH,
   loadConfig,
   readSavedLocale,
+  readSideOutputPrefs,
 } from "./config.js";
 import type { TestReport } from "./report.js";
-import { writeHtmlReportSafe } from "./report-html.js";
+import {
+  emitSideOutputs,
+  writeReportSideOutput,
+  type ScriptOutcome,
+} from "./side-outputs.js";
 import { runInteractive } from "./tui/app.js";
 import {
   buildReplayScript,
@@ -253,27 +258,35 @@ function scriptPathForSource(sourcePath: string | null): string {
  * 显式给了路径却撞上多个来源时**直接报错**：静默只收其中一个等于丢数据，而「脚本与
  * 用例文件一对一」是 ADR-0001 立下的不变量。一个场景都没跑过时不落盘——「压根没跑」
  * 不是证据，落盘只会多一个需要判断「这个空脚本是什么」的文件。
+ *
+ * 只返回结果、不打日志：路径与「为什么没生成」由收尾的产物清单统一交代（ADR-0011 决策五）。
+ * 没有落点的场景不再兜底写到 cwd（决策四）：脚本贴的是「当前打开的用例文件」，没有打开的
+ * 用例文件时，往工作目录扔一个隐式的 pageqa.replay.json 最容易被忽略。
  */
-function emitInteractiveScripts(
+function buildInteractiveScripts(
   recordings: ScenarioRecording[],
   explicitPath: string | undefined,
-): void {
-  if (recordings.length === 0) {
-    info(t("log.scriptSkippedNoScenarios"));
-    return;
-  }
+): ScriptOutcome {
+  if (recordings.length === 0) return { kind: "none" };
   const groups = groupRecordingsBySource(recordings);
   if (explicitPath && groups.size > 1) {
     throw new Error(
       t("err.emitMultiSource", {
         n: groups.size,
-        paths: [...groups.keys()]
-          .map((p) => p ?? "pageqa.replay.json")
-          .join("、"),
+        paths: [...groups.keys()].map((p) => p ?? "-").join("、"),
       }),
     );
   }
+  const paths: string[] = [];
+  let noTarget = 0;
   for (const [sourcePath, group] of groups) {
+    // 无落点的追加场景不再兜底写到 cwd：脚本贴的是「当前打开的用例文件」，
+    // 没有打开的用例文件时，往工作目录扔一个隐式的 pageqa.replay.json 最容易被忽略
+    // （ADR-0011 决策四）。显式给了路径时仍按它写——那是用户明确要求。
+    if (!sourcePath && !explicitPath) {
+      noTarget += group.length;
+      continue;
+    }
     const target = explicitPath ?? scriptPathForSource(sourcePath);
     // 写回之后源文件内容已变：必须重新读它算 hash，否则第一次回放就报「源用例已变更」。
     // 文件在运行中被删/改名时照常出脚本，只是没有漂移检测的依据（hash 为 null）。
@@ -287,16 +300,10 @@ function emitInteractiveScripts(
     }
     const script = buildReplayScript(group, { sourcePath, sourceText });
     writeReplayScript(target, script);
-    const steps = script.scenarios.reduce((n, s) => n + s.steps.length, 0);
-    info(
-      t("log.replayScriptGeneratedInteractive", {
-        path: target,
-        scenes: script.scenarios.length,
-        steps,
-      }),
-    );
-    info(t("log.replayNext", { path: target }));
+    paths.push(target);
   }
+  if (paths.length === 0) return { kind: "no-target", count: noTarget };
+  return { kind: "written", paths, ...(noTarget > 0 ? { noTarget } : {}) };
 }
 
 /**
@@ -385,20 +392,30 @@ async function interactiveMode(
     info(t("log.lostScenarios", { n: result.unwritten }));
   }
 
+  // ── 旁路产物：测试报告与回放脚本；显式 --emit-script 优先于 /setting 的开关 ──
+  const prefs = readSideOutputPrefs();
+  const reportOutcome = writeReportSideOutput(result.report, prefs);
   let scriptError: string | undefined;
-  if (args.emitScript) {
+  let scriptOutcome: ScriptOutcome;
+  if (args.emitScript || prefs.replayScript) {
     try {
-      emitInteractiveScripts(result.recordings, args.emitScriptPath);
+      scriptOutcome = buildInteractiveScripts(
+        result.recordings,
+        args.emitScriptPath,
+      );
     } catch (err) {
       // 报告仍要打出来（用户可能等了十几分钟），脚本这头的错如实上 stderr 并反映到退出码。
       scriptError = err instanceof Error ? err.message : String(err);
+      scriptOutcome = { kind: "failed", error: scriptError };
     }
+  } else {
+    scriptOutcome = { kind: "off" };
   }
 
   const out = args.json ? result.json : result.text;
   if (args.out) writeFileSync(args.out, out + "\n");
   process.stdout.write(out + "\n");
-  writeHtmlReportSafe(result.report);
+  emitSideOutputs(reportOutcome, scriptOutcome);
   if (scriptError) {
     process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");
     return 1;
@@ -457,7 +474,8 @@ async function replayMode(args: CliArgs): Promise<number> {
     const out = args.json ? result.json : result.text;
     if (args.out) writeFileSync(args.out, out + "\n");
     process.stdout.write(out + "\n");
-    writeHtmlReportSafe(result.report);
+    // 回放用的是现成的脚本、不产出脚本：清单里不列脚本行（ADR-0011 决策五）。
+    emitSideOutputs(writeReportSideOutput(result.report), { kind: "na" });
     return result.report.status === "pass" ? 0 : 1;
   } catch (err) {
     process.stderr.write(
@@ -548,9 +566,14 @@ async function main(): Promise<number> {
   const vars = captureRunVars(now);
   const hasScenarios = /^##\s+/m.test(input);
   const suiteMode = hasScenarios || args.suite;
+  const prefs = readSideOutputPrefs();
+  // 显式 --emit-script 永远先生效（ADR-0011 决策三）；否则看 /setting 的开关。
+  // 默认生成时只贴「当前打开的用例文件」：内联文本没有落点，不生成（决策四）。
   const scriptPath = args.emitScript
     ? (args.emitScriptPath ?? defaultScriptPath(rawInput, isFile))
-    : undefined;
+    : prefs.replayScript && isFile
+      ? defaultScriptPath(rawInput, true)
+      : undefined;
 
   // ── 交互模式：跑用例的同时可以提交新场景（会写回落点）──
   const interactive = detectInteractive(args, isFile, true);
@@ -583,41 +606,52 @@ async function main(): Promise<number> {
   }
 
   try {
+    // 报告里的 `script` 字段保持现状：只有显式 `--emit-script` 才写进去；默认生成的那些
+    // 路径由收尾的产物清单交代（ADR-0011 决策五），不往 stdout 报告里塞。
+    const reportedScriptPath = args.emitScript ? scriptPath : undefined;
     const result = suiteMode
       ? await runSuite(input, {
           session: args.session,
           debug: args.debug,
           vars,
-          scriptPath,
+          scriptPath: reportedScriptPath,
         })
       : await runAgent(input, {
           session: args.session,
           debug: args.debug,
           vars,
-          scriptPath,
+          scriptPath: reportedScriptPath,
         });
+    let scriptError: string | undefined;
+    let scriptOutcome: ScriptOutcome;
     if (scriptPath) {
-      const script = buildReplayScript(result.recordings, {
-        sourcePath: isFile ? rawInput : null,
-        sourceText,
-      });
-      writeReplayScript(scriptPath, script);
-      const steps = script.scenarios.reduce((n, s) => n + s.steps.length, 0);
-      info(
-        t("log.replayScriptGenerated", {
-          path: scriptPath,
-          scenes: script.scenarios.length,
-          steps,
-        }),
-      );
-      info(t("log.replayNext", { path: scriptPath }));
+      try {
+        const script = buildReplayScript(result.recordings, {
+          sourcePath: isFile ? rawInput : null,
+          sourceText,
+        });
+        writeReplayScript(scriptPath, script);
+        scriptOutcome = { kind: "written", paths: [scriptPath] };
+      } catch (err) {
+        scriptError = err instanceof Error ? err.message : String(err);
+        scriptOutcome = { kind: "failed", error: scriptError };
+      }
+    } else {
+      // 开关开着却没有落点（内联文本）：说清楚为什么没有，别让「默认开着却没有」像坏了。
+      scriptOutcome = prefs.replayScript
+        ? { kind: "no-target", count: 1 }
+        : { kind: "off" };
     }
     const out = args.json ? result.json : result.text;
     if (args.out) {
       writeFileSync(args.out, out + "\n");
     }
     process.stdout.write(out + "\n");
-    writeHtmlReportSafe(result.report);
+    emitSideOutputs(writeReportSideOutput(result.report, prefs), scriptOutcome);
+    if (scriptError) {
+      process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");
+      return 1;
+    }
     return exitCodeFor(result.report);
   } catch (err) {
     // 模型不可达是「环境不对」，不是「跑挂了」：给干净的报错 + 出路，不打印一坨栈。

@@ -1,0 +1,84 @@
+{
+  "format": "pageqa-replay",
+  "version": 1,
+  "recordedAt": "2026-09-23T05:37:05.601Z",
+  "source": {
+    "path": "./examples\\smoke.md",
+    "hash": "0ecb1b58de665e97"
+  },
+  "scenarios": [
+    {
+      "name": "A1 打开页面并断言标题",
+      "caseSteps": [
+        "打开 https://example.com 并断言标题包含 Example"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "https://example.com"
+        },
+        {
+          "kind": "assert_text",
+          "step": 1,
+          "expectation": "Example Domain"
+        }
+      ]
+    },
+    {
+      "name": "A2 交互流程（点击链接 + 等待 + 断言）",
+      "caseSteps": [
+        "打开 https://example.com 。点击页面上的「Learn more」链接，等待页面加载，然后断言页面包含 'IANA'。"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "https://example.com"
+        },
+        {
+          "kind": "click",
+          "step": 1,
+          "target": "@e1",
+          "locator": {
+            "role": "link",
+            "name": "Learn more",
+            "nth": 0,
+            "target": "@e1",
+            "path": [
+              "RootWebArea \"Example Domain\""
+            ]
+          }
+        },
+        {
+          "kind": "wait",
+          "step": 1,
+          "ms": 2000
+        },
+        {
+          "kind": "assert_text",
+          "step": 1,
+          "expectation": "IANA"
+        }
+      ]
+    },
+    {
+      "name": "A3 失败场景（断言不存在文本）",
+      "caseSteps": [
+        "打开 https://example.com 并断言页面包含 'THIS_TEXT_SHOULD_NOT_EXIST_XYZ'"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "https://example.com"
+        },
+        {
+          "kind": "assert_text",
+          "step": 1,
+          "expectation": "THIS_TEXT_SHOULD_NOT_EXIST_XYZ"
+        }
+      ]
+    }
+  ]
+}

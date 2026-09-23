@@ -44,16 +44,9 @@ const catalogs: Record<Locale, Catalog> = {
     "log.sessionNote": "，session={id}",
     "log.debugNote": "，debug=on（stderr 含调试明细）",
     "log.scriptWillEmit": "[pageqa] 运行结束将生成回放脚本：{path}",
-    "log.replayScriptGenerated":
-      "[pageqa] 回放脚本已生成：{path}（{scenes} 个场景，共 {steps} 步）",
-    "log.replayScriptGeneratedInteractive":
-      "[pageqa] 回放脚本已生成：{path}（{scenes} 个场景，共 {steps} 步；已取消的场景不含在内）",
-    "log.replayNext": "[pageqa] 下次可零模型回放：pageqa --replay {path}",
     "log.wroteBackScenarios": "[pageqa] 已写回 {n} 个追加场景到 {path}",
     "log.lostScenarios":
       "[pageqa] 本次有 {n} 个追加场景没有落点、未写入任何文件（关掉就没了）",
-    "log.scriptSkippedNoScenarios":
-      "[pageqa] 本次没有跑过任何场景，未生成回放脚本",
     "log.caseStart": "[pageqa] 用例开始：{text}（{chars} 字符，{steps} 个步骤）",
     "log.llmReady": "[pageqa] LLM 已就绪：model={model}",
     "log.checkModel": "[pageqa] 检查模型连通性：{model}…",
@@ -123,7 +116,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.hint":
       "Enter 提交 · Shift+Enter 换行 · Esc 中止当前场景 · ↑↓/PgUp/PgDn 滚日志 · Ctrl+P 历史 · Ctrl+C 收工 · /help",
     "tui.help":
-      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择本次会话使用的模型（Ctrl+S 设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /toggle-language  切换界面语种并保存到配置（zh ⇄ en）\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（输入/输出/缓存读/缓存写/合计/调用次数，每轮 LLM 调用后刷新）",
+      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择本次会话使用的模型（Ctrl+S 设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（输入/输出/缓存读/缓存写/合计/调用次数，每轮 LLM 调用后刷新）",
     "tui.scroll.paused": "↓ 已暂停跟随 · End 回到底部",
     "tui.appended": "（追加）",
     "tui.originAdded": "追加",
@@ -157,7 +150,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cancelNotFound":
       "没有找到可取消的待办 #{arg}（已开始执行的场景请用 Esc 中止）",
     "tui.unknownCmd":
-      "未知命令：/{cmd}（可用：/help /status /run <文件> /new /cancel <n> /model /login /logout /toggle-language /exit）",
+      "未知命令：/{cmd}（可用：/help /status /run <文件> /new /cancel <n> /model /login /logout /setting /exit）",
     "tui.languageSwitched": "界面语种已切换为 {locale}（已保存到配置）",
     "tui.languageSwitchFailed":
       "界面语种已切换为 {locale}（写入配置失败：{msg}）",
@@ -196,8 +189,19 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cmd.login": "登录一个 provider（API Key 或订阅登录）",
     "tui.cmd.logout": "移除已登录 provider 的本地凭据",
     "tui.cmd.help": "显示本帮助",
-    "tui.cmd.toggleLanguage": "切换界面语种（zh ⇄ en）并保存到配置",
+    "tui.cmd.setting": "修改设置（测试报告 / 回放脚本 / 语言）",
     "tui.cmd.exit": "收工（等同于 Ctrl+C）",
+
+    // ── /setting 面板 ──
+    "tui.setting.title": "设置（Enter 切换，Esc 关闭）",
+    "tui.setting.report": "测试报告（HTML）",
+    "tui.setting.replayScript": "回放脚本",
+    "tui.setting.locale": "语言",
+    "tui.setting.on": "开",
+    "tui.setting.off": "关",
+    "tui.setting.hint": "↑↓ 选择 · Enter 切换 · Esc 关闭 · 配置: {path}",
+    "tui.setting.saved": "已更新：{name} = {value}",
+    "tui.setting.failed": "写入配置失败：{msg}",
 
     // ── 模型切换与登录 ──
     "tui.model.status": "模型 {model}",
@@ -336,8 +340,23 @@ const catalogs: Record<Locale, Catalog> = {
     "reportHtml.pageTitle": "页面测试报告",
     "reportHtml.pageTitleSuite": "页面测试套件报告",
     "reportHtml.detail": "用例明细",
-    "log.htmlReportWritten": "HTML 报告已生成: {path}",
-    "log.htmlReportFailed": "HTML 报告生成失败: {msg}",
+    // ── 本次产物清单（src/side-outputs.ts；三条出口收尾各打一次，只走 stderr）──
+    "log.sideOutputsTitle": "[pageqa] 本次产物：",
+    "log.sideOutputReport": "[pageqa]   测试报告: {path}",
+    "log.sideOutputReportOff":
+      "[pageqa]   测试报告: 未生成（/setting 中已关闭）",
+    "log.sideOutputReportFailed": "[pageqa]   测试报告: 写入失败（{msg}）",
+    "log.sideOutputScript": "[pageqa]   回放脚本: {path}",
+    "log.sideOutputScriptOff":
+      "[pageqa]   回放脚本: 未生成（/setting 中已关闭）",
+    "log.sideOutputScriptNone":
+      "[pageqa]   回放脚本: 未生成（本次没有可回放的动作）",
+    "log.sideOutputScriptNoTarget":
+      "[pageqa]   回放脚本: 未生成（{n} 个场景没有落点文件）",
+    "log.sideOutputScriptFailed": "[pageqa]   回放脚本: 写入失败（{msg}）",
+    "log.sideOutputReplay": "[pageqa]   回放方式: pageqa --replay {path}",
+    "log.sideOutputReplayMany":
+      "[pageqa]   回放方式: pageqa --replay <上面任一份脚本路径>",
 
     // ── 导航失败诊断（src/bsk/navigate-diagnosis.ts）──
     "nav.notFound":
@@ -529,18 +548,10 @@ const catalogs: Record<Locale, Catalog> = {
     "log.debugNote": ", debug=on (stderr shows debug details)",
     "log.scriptWillEmit":
       "[pageqa] a replay script will be generated at the end: {path}",
-    "log.replayScriptGenerated":
-      "[pageqa] replay script generated: {path} ({scenes} scenarios, {steps} steps)",
-    "log.replayScriptGeneratedInteractive":
-      "[pageqa] replay script generated: {path} ({scenes} scenarios, {steps} steps; cancelled scenarios excluded)",
-    "log.replayNext":
-      "[pageqa] next time, replay with zero models: pageqa --replay {path}",
     "log.wroteBackScenarios":
       "[pageqa] wrote back {n} appended scenario(s) to {path}",
     "log.lostScenarios":
       "[pageqa] {n} appended scenario(s) had no write-back target and were not written to any file (they are gone once you exit)",
-    "log.scriptSkippedNoScenarios":
-      "[pageqa] no scenario ran this session, no replay script generated",
     "log.caseStart":
       "[pageqa] case starts: {text} ({chars} chars, {steps} steps)",
     "log.llmReady": "[pageqa] LLM ready: model={model}",
@@ -617,7 +628,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.hint":
       "Enter submit · Shift+Enter newline · Esc abort current scenario · ↑↓/PgUp/PgDn scroll log · Ctrl+P history · Ctrl+C finish · /help",
     "tui.help":
-      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model used by this session (Ctrl+S sets the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /toggle-language  switch the UI language and save to config (zh ⇄ en)\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (input / output / cache read / cache write / total / call count, refreshed after each LLM call)",
+      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model used by this session (Ctrl+S sets the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (input / output / cache read / cache write / total / call count, refreshed after each LLM call)",
     "tui.scroll.paused": "↓ follow paused · End to jump to bottom",
     "tui.appended": " (appended)",
     "tui.originAdded": "appended",
@@ -651,7 +662,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cancelNotFound":
       "no cancellable pending item #{arg} (for an already-running scenario use Esc to abort)",
     "tui.unknownCmd":
-      "unknown command: /{cmd} (available: /help /status /run <file> /new /cancel <n> /model /login /logout /toggle-language /exit)",
+      "unknown command: /{cmd} (available: /help /status /run <file> /new /cancel <n> /model /login /logout /setting /exit)",
     "tui.languageSwitched": "UI language switched to {locale} (saved to config)",
     "tui.languageSwitchFailed":
       "UI language switched to {locale} (failed to write config: {msg})",
@@ -695,9 +706,20 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cmd.login": "sign in a provider (API key or subscription login)",
     "tui.cmd.logout": "remove locally stored credentials for a provider",
     "tui.cmd.help": "show this help",
-    "tui.cmd.toggleLanguage":
-      "switch the UI language (zh ⇄ en) and save to config",
+    "tui.cmd.setting":
+      "change settings (test report / replay script / language)",
     "tui.cmd.exit": "finish (same as Ctrl+C)",
+
+    // ── /setting panel ──
+    "tui.setting.title": "settings (Enter toggles, Esc closes)",
+    "tui.setting.report": "test report (HTML)",
+    "tui.setting.replayScript": "replay script",
+    "tui.setting.locale": "language",
+    "tui.setting.on": "on",
+    "tui.setting.off": "off",
+    "tui.setting.hint": "↑↓ select · Enter toggles · Esc closes · config: {path}",
+    "tui.setting.saved": "updated: {name} = {value}",
+    "tui.setting.failed": "failed to write config: {msg}",
 
     // ── model switching & login ──
     "tui.model.status": "model {model}",
@@ -844,8 +866,25 @@ const catalogs: Record<Locale, Catalog> = {
     "reportHtml.pageTitle": "page test report",
     "reportHtml.pageTitleSuite": "page test suite report",
     "reportHtml.detail": "case details",
-    "log.htmlReportWritten": "HTML report written: {path}",
-    "log.htmlReportFailed": "HTML report write failed: {msg}",
+    // ── side outputs summary (src/side-outputs.ts) ──
+    "log.sideOutputsTitle": "[pageqa] side outputs:",
+    "log.sideOutputReport": "[pageqa]   test report: {path}",
+    "log.sideOutputReportOff":
+      "[pageqa]   test report: not generated (turned off in /setting)",
+    "log.sideOutputReportFailed":
+      "[pageqa]   test report: write failed ({msg})",
+    "log.sideOutputScript": "[pageqa]   replay script: {path}",
+    "log.sideOutputScriptOff":
+      "[pageqa]   replay script: not generated (turned off in /setting)",
+    "log.sideOutputScriptNone":
+      "[pageqa]   replay script: not generated (no replayable action this run)",
+    "log.sideOutputScriptNoTarget":
+      "[pageqa]   replay script: not generated ({n} scenario(s) had no write-back target)",
+    "log.sideOutputScriptFailed":
+      "[pageqa]   replay script: write failed ({msg})",
+    "log.sideOutputReplay": "[pageqa]   replay with: pageqa --replay {path}",
+    "log.sideOutputReplayMany":
+      "[pageqa]   replay with: pageqa --replay <any script path above>",
 
     // ── navigate failure diagnosis ──
     "nav.notFound":
