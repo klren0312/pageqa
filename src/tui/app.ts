@@ -93,6 +93,7 @@ import {
   type SessionBatch,
 } from "./batches.js";
 import { accent, dim, editorTheme, err, ok, title, warn } from "./theme.js";
+import { frameLines, overlayInnerWidth } from "./overlay-frame.js";
 import {
   arrowKeysBelongToLog,
   KEYBINDINGS,
@@ -110,7 +111,14 @@ import {
   resolveCaseFile,
 } from "./case-source.js";
 import { getLocale, setLocale, t } from "../i18n.js";
-import { CONFIG_PATH, saveLocale, saveModelSelection } from "../config.js";
+import {
+  CONFIG_PATH,
+  readSideOutputPrefs,
+  saveLocale,
+  saveModelSelection,
+  saveSideOutputPref,
+  type SideOutputPrefs,
+} from "../config.js";
 import { AUTH_PATH } from "../auth.js";
 import {
   createModelCatalog,
@@ -282,6 +290,9 @@ export async function runInteractive(
   input: string,
   opts: InteractiveOptions,
 ): Promise<InteractiveRunResult> {
+  // 交互会话整体墙钟起点：取函数入口（含 TUI 装配与首次 resolveInitialChoice），
+  // 代表「整个交互过程」的跨度，退出汇总时用它覆盖 summarizeSuite 的成员求和。
+  const interactiveStartedAt = Date.now();
   const {
     TuiAltScreen,
     ProcessTerminal,
@@ -300,8 +311,25 @@ export async function runInteractive(
     visibleWidth,
   } = await import("@earendil-works/pi-tui");
 
+  /** 浮层外框：内容按内宽渲染，边框与填充交给 `frameLines`（见 ./overlay-frame.ts）。 */
+  class OverlayFrame implements Component {
+    constructor(private readonly child: Component) {}
+
+    invalidate(): void {
+      this.child.invalidate?.();
+    }
+
+    render(width: number): string[] {
+      return frameLines(
+        this.child.render(overlayInnerWidth(width)),
+        width,
+        truncateToWidth,
+      );
+    }
+  }
+
   /**
-   * 浮层根组件：负责「标题 + 列表 + 提示」的布局，并把按键转交给内部的 SelectList。
+   * 浮层根组件：负责「标题 + 列表 + 提示」的布局，加一圈边框，并把按键转交给内部的 SelectList。
    *
    * 必须自己实现 `handleInput`：pi-tui 只把按键交给**聚焦组件**，而 VStack/Container
    * 只做布局、不向子组件转发输入，不实现的话方向键/回车会全部石沉大海。
@@ -309,12 +337,12 @@ export async function runInteractive(
   // 动态 import 拿到的 `SelectList` 是值而非类型，类里要引用实例类型只能这样推导。
   type SelectListInstance = InstanceType<typeof SelectList>;
 
-  class SelectorOverlay extends VStack {
+  class SelectorOverlay extends OverlayFrame {
     constructor(
       private readonly list: SelectListInstance,
       children: StackChild[],
     ) {
-      super(children);
+      super(new VStack(children));
     }
 
     handleInput(data: string): void {
@@ -491,7 +519,7 @@ export async function runInteractive(
   function openSelector(
     titleText: string,
     items: SelectItem[],
-    opts: { allowSaveDefault?: boolean } = {},
+    opts: { allowSaveDefault?: boolean; hint?: string } = {},
   ): Promise<SelectorPick | undefined> {
     return new Promise((resolve) => {
       const list = new SelectList(
@@ -505,7 +533,10 @@ export async function runInteractive(
         {
           component: new Text(
             dim(
-              opts.allowSaveDefault ? t("tui.model.hint") : t("tui.select.hint"),
+              opts.hint ??
+                (opts.allowSaveDefault
+                  ? t("tui.model.hint")
+                  : t("tui.select.hint")),
             ),
             1,
             1,
@@ -725,6 +756,87 @@ export async function runInteractive(
       }
     }
     updateStatus();
+  }
+
+  /** 面板里语言项显示的名字：语种名本身不翻译。 */
+  function localeLabel(): string {
+    return getLocale() === "en" ? "English" : "中文";
+  }
+
+  /** 切换界面语种并写回配置：`/setting` 面板与 `/toggle-language` 别名共用。 */
+  function switchLocale(): void {
+    const next = getLocale() === "en" ? "zh" : "en";
+    setLocale(next);
+    try {
+      saveLocale(next);
+      append(t("tui.languageSwitched", { locale: next }));
+    } catch (err2) {
+      append(t("tui.languageSwitchFailed", { locale: next, msg: msgOf(err2) }));
+    }
+    // 底部提示行与命令补全描述都是构建时写死的文本，这里手动刷新一下。
+    hintLine.setText(dim(t("tui.hint")));
+    installAutocomplete();
+    updateStatus();
+  }
+
+  /**
+   * `/setting`：修改旁路产物开关与语言（ADR-0011 决策二）。
+   *
+   * 切换即写回配置并**重开面板**：三项常常一次要改不止一项，让用户关掉再敲一次 `/setting`
+   * 是多余的一步。Esc 关面板。语言并入这里之后，`/toggle-language` 只作为未文档化的别名
+   * 保留（不进 `/help`、不进补全），老习惯不被打断。
+   */
+  async function openSettingPanel(): Promise<void> {
+    for (;;) {
+      const prefs = readSideOutputPrefs();
+      const items: SelectItem[] = [
+        {
+          value: "htmlReport",
+          label: t("tui.setting.report"),
+          description: prefs.htmlReport
+            ? t("tui.setting.on")
+            : t("tui.setting.off"),
+        },
+        {
+          value: "replayScript",
+          label: t("tui.setting.replayScript"),
+          description: prefs.replayScript
+            ? t("tui.setting.on")
+            : t("tui.setting.off"),
+        },
+        {
+          value: "locale",
+          label: t("tui.setting.locale"),
+          description: localeLabel(),
+        },
+      ];
+      const pick = await openSelector(t("tui.setting.title"), items, {
+        hint: t("tui.setting.hint", { path: CONFIG_PATH }),
+      });
+      if (!pick) return;
+      if (pick.value === "locale") {
+        switchLocale();
+        continue;
+      }
+      const key: keyof SideOutputPrefs =
+        pick.value === "htmlReport" ? "htmlReport" : "replayScript";
+      const next = !prefs[key];
+      try {
+        saveSideOutputPref(key, next);
+        append(
+          t("tui.setting.saved", {
+            name: t(
+              key === "htmlReport"
+                ? "tui.setting.report"
+                : "tui.setting.replayScript",
+            ),
+            value: next ? t("tui.setting.on") : t("tui.setting.off"),
+          }),
+        );
+      } catch (err2) {
+        append(err(t("tui.setting.failed", { msg: msgOf(err2) })));
+      }
+    }
   }
 
   /** `/model`：列出可用模型并切换。 */
@@ -1095,7 +1207,7 @@ export async function runInteractive(
       { name: "model", description: t("tui.cmd.model") },
       { name: "login", description: t("tui.cmd.login") },
       { name: "logout", description: t("tui.cmd.logout") },
-      { name: "toggle-language", description: t("tui.cmd.toggleLanguage") },
+      { name: "setting", description: t("tui.cmd.setting") },
       { name: "help", description: t("tui.cmd.help") },
       { name: "exit", description: t("tui.cmd.exit") },
     ];
@@ -1364,24 +1476,13 @@ export async function runInteractive(
         // 滚轮步长从常量注入，免得帮助里的数字与 `./keys.ts` 慢慢对不上。
         append(t("tui.help", { wheel: WHEEL_SCROLL_LINES }));
         break;
-      case "toggle-language": {
-        // 切语种并把结果写回配置文件：下次启动直接生效。
-        const next = getLocale() === "en" ? "zh" : "en";
-        setLocale(next);
-        try {
-          saveLocale(next);
-          append(t("tui.languageSwitched", { locale: next }));
-        } catch (err2) {
-          append(
-            t("tui.languageSwitchFailed", { locale: next, msg: msgOf(err2) }),
-          );
-        }
-        // 底部提示行与命令补全描述都是构建时写死的文本，这里手动刷新一下。
-        hintLine.setText(dim(t("tui.hint")));
-        installAutocomplete();
-        updateStatus();
+      case "setting":
+        void openSettingPanel();
         break;
-      }
+      case "toggle-language":
+        // 未文档化的别名（不进 /help、不进补全）：新入口是 /setting，老习惯不被打断。
+        switchLocale();
+        break;
       case "status":
         append(statusText());
         break;
@@ -1592,6 +1693,7 @@ export async function runInteractive(
   ]);
   const members = total.members;
   const summary = summarizeSuite(members);
+  summary.durationMs = Date.now() - interactiveStartedAt;
   if (opts.scriptPath) summary.script = opts.scriptPath;
   const text = renderSuiteText(summary, members, total.names);
   const recordings = total.recordings;

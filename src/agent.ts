@@ -736,6 +736,7 @@ function finalizeResult(
   const report = buildReport(input, transcript, session.assertions, {
     cancelled: aborted,
   });
+  report.durationMs = Date.now() - startedAt;
   // 报告里标注回放脚本的落盘位置（真正写文件由 CLI 在运行结束后完成）
   if (opts.scriptPath) report.script = opts.scriptPath;
   if (aborted) {
@@ -837,6 +838,7 @@ export async function runSuite(
   setDebug(opts.debug ?? false);
   const scenarios = splitScenarios(script);
   const results: AgentRunResult[] = [];
+  const suiteStartedAt = Date.now();
   info(
     t("log.suiteStart", {
       n: scenarios.length,
@@ -873,6 +875,7 @@ export async function runSuite(
       usage: results[i].usage,
     })),
   );
+  summary.durationMs = Date.now() - suiteStartedAt;
   if (opts.scriptPath) summary.script = opts.scriptPath;
   return {
     report: summary,

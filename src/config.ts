@@ -39,8 +39,17 @@ export interface PageQaConfig {
    */
   modelProvider: string;
   jev: JevConfig;
-  /** 界面/日志/报告语种（"zh" | "en"）；交互模式 /toggle-language 会写回这里。 */
+  /** 界面/日志/报告语种（"zh" | "en"）；交互模式 /setting 会写回这里。 */
   locale?: string;
+  /**
+   * 是否生成 HTML 测试报告（**旁路产物**之一）。**缺失视为开**。
+   *
+   * 刻意不放进 DEFAULTS：写回配置时会先把 DEFAULTS 摊平进文件，把默认值放进
+   * DEFAULTS 等于每次改语言都往用户配置里补两个他从没碰过的布尔值（见 ADR-0011 决策一）。
+   */
+  htmlReport?: boolean;
+  /** 是否默认生成回放脚本（**旁路产物**之一）。**缺失视为开**，理由同上。 */
+  replayScript?: boolean;
 }
 
 const DEFAULTS: PageQaConfig = {
@@ -99,21 +108,80 @@ export function loadConfig(): PageQaConfig {
 }
 
 /**
- * 只读地取配置文件里已保存的语种（**不会**创建文件）。
+ * 只读地解析配置文件原文（**不会**创建文件）；不存在或损坏时返回空对象。
  *
- * 单独开这个口子，是为了让「按配置决定初始语种」这件事不必先落一个配置文件——
- * `--help`、参数报错这类路径不该产生磁盘副作用。
+ * 单独开这个口子，是为了让「按配置决定行为」这类读取不必先落一个配置文件——
+ * `--help`、参数报错、旁路产物开关都不该产生磁盘副作用。
  */
-export function readSavedLocale(): string | undefined {
-  if (!existsSync(CONFIG_PATH)) return undefined;
+function readRawConfig(): Record<string, unknown> {
+  if (!existsSync(CONFIG_PATH)) return {};
   try {
-    const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as {
-      locale?: unknown;
-    };
-    return typeof parsed.locale === "string" ? parsed.locale : undefined;
+    const parsed: unknown = JSON.parse(readConfigText());
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : {};
   } catch {
-    return undefined;
+    return {};
   }
+}
+
+/**
+ * 读配置文件文本并剥掉 BOM。
+ *
+ * Windows 上的记事本、PowerShell 的 `Set-Content -Encoding utf8`、以及不少编辑器保存 JSON
+ * 时会带上 UTF-8 BOM，而 `JSON.parse` 见到 BOM 直接抛错——那会让**整份配置**被当成空的，
+ * 用户「明明关了开关却还是生成」的困惑就来自这里。
+ */
+function readConfigText(): string {
+  return readFileSync(CONFIG_PATH, "utf8").replace(/^\uFEFF/, "");
+}
+
+/** 只读地取配置文件里已保存的语种（**不会**创建文件）。 */
+export function readSavedLocale(): string | undefined {
+  const raw = readRawConfig();
+  return typeof raw.locale === "string" ? raw.locale : undefined;
+}
+
+/** 旁路产物的两个开关（见 ADR-0011）：默认全开，缺失即视为开。 */
+export interface SideOutputPrefs {
+  /** 生成 HTML 测试报告到 `pageqa-report/`。 */
+  htmlReport: boolean;
+  /** 默认生成回放脚本（贴当前打开的用例文件；`--emit-script` 显式请求优先）。 */
+  replayScript: boolean;
+}
+
+/** 旁路产物开关的默认值：两个都开。 */
+export const SIDE_OUTPUT_DEFAULTS: SideOutputPrefs = {
+  htmlReport: true,
+  replayScript: true,
+};
+
+/**
+ * 只读地取旁路产物开关（**不会**创建文件）；键缺失或类型不对即视为默认的「开」。
+ *
+ * 只认布尔值：配置文件是用户手写的，`"false"` 这种字符串不该被当成关——
+ * 静默地把字符串当真会让人以为「我明明关了」。
+ */
+export function readSideOutputPrefs(): SideOutputPrefs {
+  const raw = readRawConfig();
+  return {
+    htmlReport:
+      typeof raw.htmlReport === "boolean"
+        ? raw.htmlReport
+        : SIDE_OUTPUT_DEFAULTS.htmlReport,
+    replayScript:
+      typeof raw.replayScript === "boolean"
+        ? raw.replayScript
+        : SIDE_OUTPUT_DEFAULTS.replayScript,
+  };
+}
+
+/** 把某一个旁路产物开关持久化（保留其它字段）；供交互模式 /setting 使用。 */
+export function saveSideOutputPref(
+  key: keyof SideOutputPrefs,
+  enabled: boolean,
+): void {
+  updateUserConfig({ [key]: enabled });
 }
 
 /**
@@ -127,10 +195,8 @@ function updateUserConfig(patch: Record<string, unknown>): void {
   let current: Record<string, unknown> = {};
   if (existsSync(CONFIG_PATH)) {
     try {
-      current = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Record<
-        string,
-        unknown
-      >;
+      // 带 BOM 的文件也要能读：读失败会把用户已有的字段整份丢掉（只留下本次 patch）。
+      current = JSON.parse(readConfigText()) as Record<string, unknown>;
     } catch {
       current = {};
     }
@@ -163,8 +229,7 @@ function readConfigFile(): Partial<PageQaConfig> {
     return createDefaultConfigFile();
   }
   try {
-    const raw = readFileSync(CONFIG_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<PageQaConfig>;
+    const parsed = JSON.parse(readConfigText()) as Partial<PageQaConfig>;
     return {
       baseUrl: parsed.baseUrl ?? DEFAULTS.baseUrl,
       apiKey: parsed.apiKey ?? DEFAULTS.apiKey,

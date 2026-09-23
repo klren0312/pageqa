@@ -43,6 +43,8 @@ export interface TestReport {
   trace?: string[];
   /** 用例的步骤清单（按行编号），用于把「第 k 步」映射回用例原文。 */
   steps?: string[];
+  /** 本次运行耗时（毫秒）：单场景为墙钟时间；套件为整体跨度或各场景之和。未采集时不写。 */
+  durationMs?: number;
   /** 套件模式下的逐场景明细（含各自的 steps/trace），便于 CI 侧做失败归因。 */
   scenarios?: ScenarioDetail[];
 }
@@ -56,6 +58,12 @@ export interface ScenarioDetail {
   assertions: AssertionResult[];
   /** 场景来源标注（用例文件路径，或「追加」）；批处理模式不设此字段。 */
   origin?: string;
+  /** 该场景耗时（毫秒）；成员报告未采集时不写。 */
+  durationMs?: number;
+  /** 场景摘要（成员报告有才写）。 */
+  summary?: string;
+  /** 回放中因「元素未找到」被跳过的步骤（非空才写）。 */
+  skipped?: string[];
 }
 
 /** 单次 LLM 调用的原始用量（pi-ai 的 `Usage`，字段允许缺失）。 */
@@ -472,8 +480,15 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
     (acc, m) => mergeUsage(acc, m.usage),
     emptyUsage(),
   );
+  const durations = members
+    .map((m) => m.report.durationMs)
+    .filter((d): d is number => typeof d === "number");
+  const durationMs = durations.length > 0
+    ? durations.reduce((a, b) => a + b, 0)
+    : undefined;
   return {
     status: overall,
+    ...(durationMs === undefined ? {} : { durationMs }),
     assertions: members.flatMap((m) =>
       m.report.assertions.map((a) => ({
         ...a,
@@ -495,8 +510,13 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
       steps: m.report.steps ?? [],
       trace: m.report.trace ?? [],
       assertions: m.report.assertions,
+      ...(typeof m.report.durationMs === "number"
+        ? { durationMs: m.report.durationMs }
+        : {}),
       // 只有调用方给出了来源才写这个字段：批处理模式的 JSON 与历史逐字一致。
       ...(m.origin ? { origin: m.origin } : {}),
+      ...(m.report.summary ? { summary: m.report.summary } : {}),
+      ...(m.report.skipped?.length ? { skipped: m.report.skipped } : {}),
     })),
     usage,
   };
