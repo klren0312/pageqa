@@ -60,6 +60,10 @@ export interface ScenarioDetail {
   origin?: string;
   /** 该场景耗时（毫秒）；成员报告未采集时不写。 */
   durationMs?: number;
+  /** 场景摘要（成员报告有才写）。 */
+  summary?: string;
+  /** 回放中因「元素未找到」被跳过的步骤（非空才写）。 */
+  skipped?: string[];
 }
 
 /** 单次 LLM 调用的原始用量（pi-ai 的 `Usage`，字段允许缺失）。 */
@@ -511,6 +515,8 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
         : {}),
       // 只有调用方给出了来源才写这个字段：批处理模式的 JSON 与历史逐字一致。
       ...(m.origin ? { origin: m.origin } : {}),
+      ...(m.report.summary ? { summary: m.report.summary } : {}),
+      ...(m.report.skipped?.length ? { skipped: m.report.skipped } : {}),
     })),
     usage,
   };

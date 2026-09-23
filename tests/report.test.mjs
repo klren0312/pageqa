@@ -352,3 +352,37 @@ describe("report durationMs", () => {
     assert.ok(!("durationMs" in bare.scenarios[0]));
   });
 });
+
+describe("summarizeSuite 明细 summary/skipped", () => {
+  const mk = (over = {}) => ({
+    name: "s",
+    report: {
+      status: "pass",
+      assertions: [],
+      transcript: "",
+      ...over,
+    },
+    usage: emptyUsage(),
+  });
+
+  test("成员带 summary/skipped 时复制进 ScenarioDetail", () => {
+    const summary = summarizeSuite([
+      mk({
+        summary: "回放 5 步，执行 4 步",
+        skipped: ["第 3 步：点击弹窗关闭按钮"],
+      }),
+    ]);
+    const sc = summary.scenarios[0];
+    assert.equal(sc.summary, "回放 5 步，执行 4 步");
+    assert.deepEqual(sc.skipped, ["第 3 步：点击弹窗关闭按钮"]);
+  });
+
+  test("成员未带 summary/skipped 时键不出现（JSON 向后兼容）", () => {
+    const summary = summarizeSuite([mk()]);
+    assert.ok(!("summary" in summary.scenarios[0]));
+    assert.ok(!("skipped" in summary.scenarios[0]));
+    const parsed = JSON.parse(JSON.stringify(summary.scenarios[0]));
+    assert.ok(!("summary" in parsed));
+    assert.ok(!("skipped" in parsed));
+  });
+});

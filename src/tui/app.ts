@@ -282,6 +282,9 @@ export async function runInteractive(
   input: string,
   opts: InteractiveOptions,
 ): Promise<InteractiveRunResult> {
+  // 交互会话整体墙钟起点：取函数入口（含 TUI 装配与首次 resolveInitialChoice），
+  // 代表「整个交互过程」的跨度，退出汇总时用它覆盖 summarizeSuite 的成员求和。
+  const interactiveStartedAt = Date.now();
   const {
     TuiAltScreen,
     ProcessTerminal,
@@ -1592,6 +1595,7 @@ export async function runInteractive(
   ]);
   const members = total.members;
   const summary = summarizeSuite(members);
+  summary.durationMs = Date.now() - interactiveStartedAt;
   if (opts.scriptPath) summary.script = opts.scriptPath;
   const text = renderSuiteText(summary, members, total.names);
   const recordings = total.recordings;

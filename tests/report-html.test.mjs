@@ -11,6 +11,7 @@ import {
   writeHtmlReport,
   writeHtmlReportSafe,
 } from "../dist/report-html.js";
+import { getLocale, setLocale } from "../dist/i18n.js";
 
 const base = (over = {}) => ({
   status: "pass",
@@ -67,6 +68,73 @@ describe("renderHtml", () => {
     );
     assert.ok(!html.includes("<script>alert(1)</script>"));
     assert.ok(html.includes("&lt;script&gt;"));
+  });
+
+  test("空 scenarios 仍是套件视图：零计数 + 套件标题 + 汇总行", () => {
+    const html = renderHtml(
+      base({
+        status: "pass",
+        scenarios: [],
+        assertions: [],
+        summary: "共 0 个场景，通过 0 个",
+      }),
+    );
+    assert.ok(html.includes("页面测试套件报告"));
+    assert.ok(html.includes("汇总: 共 0 个场景，通过 0 个"));
+    assert.ok(html.includes("<b>0</b>总场景"));
+    assert.ok(!html.includes("<b>1</b>总场景"));
+    assert.ok(html.includes("<b>0</b>通过"));
+  });
+
+  test("套件场景节渲染 summary 与 skipped", () => {
+    const html = renderHtml(
+      base({
+        status: "pass",
+        assertions: [],
+        scenarios: [
+          {
+            name: "A 回放",
+            status: "pass",
+            steps: [],
+            trace: [],
+            assertions: [],
+            summary: "回放 5 步，执行 4 步",
+            skipped: ["第 3 步：<b>关闭</b>弹窗"],
+          },
+        ],
+      }),
+    );
+    assert.ok(html.includes("摘要: 回放 5 步，执行 4 步"));
+    assert.ok(html.includes("跳过 1 步"));
+    assert.ok(html.includes("第 3 步：&lt;b&gt;关闭&lt;/b&gt;弹窗"));
+    assert.ok(!html.includes("<b>关闭</b>弹窗"));
+  });
+
+  test("套件场景节未带 summary/skipped 时不渲染对应块", () => {
+    const html = renderHtml(
+      base({
+        status: "pass",
+        assertions: [],
+        summary: "共 1 个场景，通过 1 个",
+        scenarios: [
+          { name: "A", status: "pass", steps: [], trace: [], assertions: [] },
+        ],
+      }),
+    );
+    assert.ok(!html.includes("跳过 0 步"));
+    assert.ok(!html.includes("摘要: 回放"));
+  });
+
+  test("lang 跟随当前语种", () => {
+    const prev = getLocale();
+    try {
+      setLocale("zh");
+      assert.ok(renderHtml(base()).includes('<html lang="zh">'));
+      setLocale("en");
+      assert.ok(renderHtml(base()).includes('<html lang="en">'));
+    } finally {
+      setLocale(prev);
+    }
   });
 });
 

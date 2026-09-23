@@ -6,7 +6,7 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { t } from "./i18n.js";
+import { getLocale, t } from "./i18n.js";
 import { info } from "./log.js";
 import {
   formatUsage,
@@ -92,6 +92,18 @@ function scenarioSection(sc: ScenarioDetail, index: number, total: number): stri
   );
   parts.push(stepsList(sc.steps));
   parts.push(assertionsTable(sc.assertions));
+  if (sc.skipped?.length) {
+    const items = sc.skipped.map((s) => `<li>${escapeHtml(s)}</li>`).join("");
+    parts.push(
+      `<h3>${escapeHtml(t("report.skipped", { n: sc.skipped.length }))}</h3>` +
+        `<ul class="skipped">${items}</ul>`,
+    );
+  }
+  if (sc.summary) {
+    parts.push(
+      `<p class="summary">${escapeHtml(t("report.summary", { text: sc.summary }))}</p>`,
+    );
+  }
   parts.push(traceDetails(sc.trace));
   parts.push(`</section>`);
   return parts.join("\n");
@@ -188,7 +200,8 @@ function setPageDetails(open) {
  */
 export function renderHtml(report: TestReport): string {
   const scenarios = report.scenarios ?? [];
-  const isSuite = scenarios.length > 0;
+  // 空数组仍是套件视图（交互退出可能一个场景都没跑）：不能退回单场景的 total=1/pass=1。
+  const isSuite = report.scenarios !== undefined;
   const counts = isSuite
     ? countUp(scenarios)
     : countUp([report]);
@@ -215,7 +228,7 @@ export function renderHtml(report: TestReport): string {
     : "";
 
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="${escapeHtml(getLocale())}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
