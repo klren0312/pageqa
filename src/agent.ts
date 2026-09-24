@@ -19,6 +19,7 @@ import {
   ensureSession,
   ensureBskReady,
 } from "./bsk/tools.js";
+import { flushDownloadCleanup } from "./downloads.js";
 import { JevClient } from "./jev.js";
 import { loadConfig } from "./config.js";
 import { debugLog, info, setDebug } from "./log.js";
@@ -103,6 +104,7 @@ const DEFAULT_SYSTEM_PROMPT = [
   "- snapshot(): 读取页面 aria 树与可见文本（标题、段落、链接、按钮等），并定位元素",
   "- click(target) / fill(target, value) / hover(target): 元素交互，target 用 @eN 引用或 CSS 选择器",
   "- upload(target, file): 上传本地文件到文件输入框/上传区域，target 传触发上传的元素（或省略由工具自动查找）",
+  "- download(target, expectName?): 捕获一次浏览器下载并落盘，target 传**触发下载的元素**（导出按钮，或确认弹框里的「确定」按钮）；expectName 可传文件名通配（如 *.xlsx）。它本身就是一条断言：捕获到且文件名符合即「成立」，捕获不到（超时）或文件名不符即「不成立」",
   "- scroll(target) / wait(ms): 滚动与等待",
   "- assert_text(expectation): 断言页面是否包含某文本，返回「成立/不成立」与证据",
   "",
@@ -143,6 +145,9 @@ const DEFAULT_SYSTEM_PROMPT = [
   "- 严禁在步骤未执行完的情况下给出「测试通过」结论；宁可报告某步骤失败，也不要静默省略步骤。",
   "- 不要编造未观察到的内容；若元素不存在、导航失败或页面未打开，明确说明。",
   "- 涉及文件上传时必须用 upload 工具：原生系统文件选择框无法被自动化点击，直接 click 上传按钮会卡住流程。",
+  "- 涉及文件下载（导出报表、下载附件等）时必须用 download 工具，并把触发下载的元素直接交给它：**不要先 click 再等待下载**——点击引发的下载只能由该工具自己捕获，先 click 会让那次下载流走、没人接，随后必然报「没捕获到下载」。",
+  "- 用例要求校验下载的文件名时（如「文件名应以 .xlsx 结尾」「下载的文件名包含 xxx」），把该要求写成通配传给 download 的 expectName（如 `*.xlsx`、`*报表*`）；只在「文件下载下来了」这一件事上校验时不用传。",
+  "- 导出类按钮点下去常常要等服务端生成文件：download 默认最多等 60 秒，如果用例明确写了更长的等待（如「最多等 2 分钟」），把毫秒数传给 timeoutMs。",
   "",
   "只输出测试结论与证据，不要输出多余解释。",
 ].join("\n");
@@ -730,6 +735,11 @@ function finalizeResult(
       (agentError ?? "无"),
   );
   if (agentError) events.push("\n[agent-error] " + agentError + "\n");
+
+  // 场景跑到这里，工具调用都结束了：把「通过即清理」登记过的下载产物统一删掉。
+  // 放在场景收尾而不是捕获后立刻删——同一场景里后面的步骤/断言可能还要用这个文件
+  //（见 downloads.ts 的 flushDownloadCleanup）。
+  flushDownloadCleanup();
 
   const aborted = wasAborted(session.abortSignal, agent);
   const transcript = events.join("");

@@ -157,6 +157,8 @@ const catalogs: Record<Locale, Catalog> = {
     "replay.evidence.attempts": "{reason}；已尝试 {attempts} 次仍失败",
     "replay.evidence.aborted": "，回放在此停止",
     "replay.evidence.remaining": "；未执行到的步骤：回放第 {from}~{to} 步",
+    "replay.download.triggerMissing":
+      "找不到下载的触发元素，无法捕获下载（这一步是断言，不按「元素未找到」跳过）：{reason}",
     "replay.evidence.continued": "，已跳过该步并继续执行剩余步骤",
     "replay.log.session": "[pageqa] 回放 session={session}（场景：{name}）",
     "replay.log.semanticOff":
@@ -193,6 +195,30 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.connected": "[pageqa] bsk 已连接浏览器 {count} 个",
     "bsk.err.sessionFailed": "无法创建 bsk session，请确认 bsk daemon 已连接浏览器。",
     "bsk.err.uploadMissing": "待上传文件不存在：{file}",
+    // 下载断言（src/bsk/tools.ts 的 download 工具 + src/downloads.ts）
+    "bsk.download.expectation": "导出的文件已下载到本地",
+    "bsk.download.expectationNamed": "下载的文件名匹配 {pattern}",
+    "bsk.download.captured":
+      "浏览器已捕获一次下载并落盘：{path}（{bytes} 字节{extra}）",
+    "bsk.download.evidenceMime": "MIME {mime}",
+    "bsk.download.evidenceDanger": "内容分级 {level}",
+    "bsk.download.triggerError":
+      "点不到下载的触发元素，这一步没能执行：{detail}（先重新 snapshot 拿到当前的 @eN 或修正选择器，再调用 download；它必须由本工具自己点击触发元素）",
+    "bsk.download.notCaptured":
+      "{seconds} 秒内没有捕获到任何下载事件：触发元素点了，但没有产生下载（导出请求没返回、被浏览器拦截，或点的元素本身不触发下载）。bsk 原始输出：{detail}",
+    "bsk.download.captureNotReady":
+      "。bsk 侧报的是「下载捕获未就绪」（daemon 刚重启/升级后常见，本工具已自动重试过一次）：重连一下 bsk 浏览器扩展、或稍等片刻再跑，通常即可恢复",
+    "bsk.download.notWritten":
+      "捕获到下载但文件没有落盘：{path}（bsk 报告下载成功，却读不到该文件——可能被移动/删除，或目录权限不足）",
+    "bsk.download.empty":
+      "捕获到的文件是 0 字节：{path}（导出内容可能为空，或下载中途被中断）",
+    "bsk.download.nameMismatch":
+      "下载的文件名不符合期望 {pattern}：实际是 {name}（文件已落盘：{path}）",
+    "bsk.download.retrying":
+      "[pageqa] download 首次没有捕获到下载，重试一次（最多再等 {seconds} 秒）：{detail}",
+    "bsk.download.retried": "；首次点击未被捕获，重试一次后成功",
+    "bsk.download.cleanupScheduled":
+      "；按规则会在本次运行收尾时清理该文件（要留档就在用例里显式指定 out，或把配置项 downloadCleanup 设为 false）",
     "bsk.session.closed": "[pageqa] 已关闭 bsk session={session}（浏览器窗口已关闭）",
     "bsk.session.closeFailed":
       "[pageqa] 关闭 bsk session={session} 失败（不影响测试结论）：{msg}",
@@ -445,6 +471,9 @@ const catalogs: Record<Locale, Catalog> = {
     "log.sideOutputReplay": "[pageqa]   回放方式: pageqa --replay {path}",
     "log.sideOutputReplayMany":
       "[pageqa]   回放方式: pageqa --replay <上面任一份脚本路径>",
+    "log.sideOutputDownload": "[pageqa]   下载产物: {path}",
+    "log.sideOutputDownloadCleaned":
+      "[pageqa]   下载产物: {path}（断言成立后已清理）",
 
     // ── 导航失败诊断（src/bsk/navigate-diagnosis.ts）──
     "nav.notFound":
@@ -762,6 +791,8 @@ const catalogs: Record<Locale, Catalog> = {
     "replay.evidence.attempts": "{reason}; still failing after {attempts} attempt(s)",
     "replay.evidence.aborted": ", replay stopped here",
     "replay.evidence.remaining": "; steps not executed: replay steps {from}~{to}",
+    "replay.download.triggerMissing":
+      "the download trigger element could not be found, so no download could be captured (this step is an assertion, it is NOT skipped like an element-not-found): {reason}",
     "replay.evidence.continued":
       ", this step was skipped and the remaining steps continued",
     "replay.log.session": "[pageqa] replay session={session} (scenario: {name})",
@@ -801,6 +832,31 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.err.sessionFailed":
       "could not create a bsk session; make sure the bsk daemon has a connected browser.",
     "bsk.err.uploadMissing": "file to upload does not exist: {file}",
+    // download assertion (the `download` tool in src/bsk/tools.ts + src/downloads.ts)
+    "bsk.download.expectation": "the exported file has been downloaded locally",
+    "bsk.download.expectationNamed":
+      "the downloaded file name matches {pattern}",
+    "bsk.download.captured":
+      "the browser captured one download and wrote it to disk: {path} ({bytes} bytes{extra})",
+    "bsk.download.evidenceMime": "MIME {mime}",
+    "bsk.download.evidenceDanger": "content rating {level}",
+    "bsk.download.triggerError":
+      "the download trigger element could not be clicked, so this step never ran: {detail} (take a fresh snapshot to get the current @eN or fix the selector, then call download again; the tool must click the trigger itself)",
+    "bsk.download.notCaptured":
+      "no download event was captured within {seconds}s: the trigger element was clicked, but no download happened (the export request never returned, the browser blocked it, or the element does not trigger a download). Raw bsk output: {detail}",
+    "bsk.download.captureNotReady":
+      ". bsk reports its download capture is not ready (common right after a daemon restart/upgrade; the tool already retried once) — reconnect the bsk browser extension or wait a moment and run again",
+    "bsk.download.notWritten":
+      "a download was captured but the file is not on disk: {path} (bsk reported success yet the file cannot be read — it may have been moved/deleted, or the directory is not writable)",
+    "bsk.download.empty":
+      "the captured file is 0 bytes: {path} (the export may be empty, or the download was interrupted)",
+    "bsk.download.nameMismatch":
+      "the downloaded file name does not match the expectation {pattern}: actual name is {name} (the file is on disk: {path})",
+    "bsk.download.retrying":
+      "[pageqa] the first download attempt captured nothing; retrying once (up to {seconds}s more): {detail}",
+    "bsk.download.retried": "; the first click was not captured, the retry succeeded",
+    "bsk.download.cleanupScheduled":
+      "; the file will be removed when this run finishes (to keep it, give `out` in the case or set `downloadCleanup` to false)",
     "bsk.session.closed":
       "[pageqa] closed bsk session={session} (browser window closed)",
     "bsk.session.closeFailed":
@@ -1070,6 +1126,9 @@ const catalogs: Record<Locale, Catalog> = {
     "log.sideOutputReplay": "[pageqa]   replay with: pageqa --replay {path}",
     "log.sideOutputReplayMany":
       "[pageqa]   replay with: pageqa --replay <any script path above>",
+    "log.sideOutputDownload": "[pageqa]   downloaded file: {path}",
+    "log.sideOutputDownloadCleaned":
+      "[pageqa]   downloaded file: {path} (removed after the assertion passed)",
 
     // ── navigate failure diagnosis ──
     "nav.notFound":

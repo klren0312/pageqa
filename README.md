@@ -242,6 +242,18 @@ Key points:
 - Cannot be combined with `--json` (needs exclusive stdout), `--replay` (sub-second, zero-model, no waiting), or `--session` (conflicts with "each scenario has its own session").
 - Batch mode (pipes, redirection, `--json`, CI) behavior is unchanged: `tests/smoke.test.mjs` goes through piped stdio and degrades automatically.
 
+### Writing cases: assertion lines must line up with the assertions tools produce
+
+The report's integrity check compares "how many assertion lines the case has" with "how many assertion results were actually produced", so **the number of lines containing the word 断言 (assert) must equal the number of tool calls that produce an assertion**:
+
+- Each `assert_text` produces one assertion → one "assert the page contains …" line maps to exactly one.
+- `download` (see "Export and download") **is itself an assertion** → say so on that very line (e.g. "… capture the exported file and assert the file is on disk"). Do **not** add a separate "assert the file was downloaded" line: the case would count 2 while the tools produce 1, and the run ends with a **false** "all assertions in the case executed (actual 1/2)".
+- Incidental checks that are not meant to decide pass/fail (e.g. "confirm no export-failure message appeared") must **not** be written as 断言: no tool result corresponds to them.
+- Two occurrences of 断言 on one line count as two; phrasings that treat it as a topic (`断言失败/不成立/结果/的/写法/…`) are excluded, everything else counts (rule in `countAssertions`, `src/report.ts`).
+- **Comments do not count**: `#` headings and `>` comment lines count neither as steps nor as assertions (same rule as `numberSteps`), so explanatory text in a case never inflates the expected count — only real step lines count.
+
+This also drives the agent's continuation logic: when the expected count exceeds the produced one, pageqa appends one more "continue the remaining steps" round — a wasted round that still ends with "not all assertions executed". `examples/sms-log.md`'s S2 is written this way.
+
 ### Failure diagnosis (step numbering + execution trace)
 
 On a long-flow failure, seeing only "steps done: 23/42" is useless for fixing the case — you don't know which line of the case it got stuck on. For this:
@@ -313,7 +325,10 @@ On exit, a single summary lists both paths and the replay command:
 [pageqa]   test report: pageqa-report/report-20260923-153001.html
 [pageqa]   replay script: examples/smoke.replay.json
 [pageqa]   replay with: pageqa --replay examples/smoke.replay.json
+[pageqa]   downloaded file: C:\Users\me\.pageqa\downloads\20260923-153012-report.xls (removed after the assertion passed)
 ```
+
+Files captured by the `download` tool are listed one per line (see "Export and download"). They have **no "generate it or not" switch**: turning one off would not make the file disappear, it would only make it unfindable. The line appears only when a file was captured, and entries removed after a passing assertion are marked (`(removed after the assertion passed)`) so the path never lies. The default location is `~/.pageqa/downloads` (change it with `downloadDir` in `~/.pageqa/config.json`); whether the file is removed after the assertion passes is controlled by `downloadCleanup` (**missing means on**).
 
 Turn either one off with `/setting` in interactive mode (three rows: `test report (HTML)` / `replay script` / `language`; `↑↓` to select, `Enter` to toggle, `Esc` to close). The switches live in `~/.pageqa/config.json` as `htmlReport` / `replayScript` — **keys you never touched are never written**, and a missing key means "on".
 
@@ -339,7 +354,7 @@ A single snapshot of a long page can be thousands to tens of thousands of charac
 
 Therefore **the text the model sees and the text used for locator parsing are the same copy**, with role/name/ancestor path unchanged; `--debug` prints the character-count change of each slimming.
 
-**2) Reuse**: all actions that mutate the page (`navigate`/`click`/`fill`/`upload`/`hover`/`scroll`/`wait`) invalidate the previous snapshot, so reuse only happens **after pure reads**:
+**2) Reuse**: all actions that mutate the page (`navigate`/`click`/`fill`/`upload`/`download`/`hover`/`scroll`/`wait`) invalidate the previous snapshot, so reuse only happens **after pure reads**:
 
 - the model does `snapshot` then immediately `assert_text` → the assertion reuses that snapshot directly, saving a bsk round-trip (assertion window 5s, `snapshot`'s own dedup window 1s); note the assertion's literal match uses the **pre-slimming** full snapshot — slimming only affects the context fed to the model, not the page full text the assertion relies on;
 - in replay, "previous step was an assertion, next step needs to locate an element" is the same; before a retry it does `wait`, which necessarily invalidates, so the existing behavior of "re-fetch a snapshot on every retry" is preserved.
@@ -506,6 +521,39 @@ Key points (pitfalls hit before):
 - Components like `el-upload` ("click button → page JS triggers hidden input") may return `did not activate a file input` on the first try (a timing issue, not a permission issue); retrying once then succeeds.
 - A successful upload does not mean the case passed: **truth is still decided by the page assertion**. If a site submits the file to an external interface that is unavailable (e.g. the element-plus doc example submits to `run.mocky.io`, whose cert validation fails locally), the component removes the file after the upload fails, and "assert the file appears in the list" will honestly report FAIL — this is the real behavior of the page under test, not a tool problem.
 
+### Export and download
+
+Write "click Export, confirm in the dialog, and verify the file has been downloaded" in a script, and the agent calls the `download` tool to complete it (run the two "download" scenarios in `examples/smoke-test.md`; start the local page with `pnpm serve:smoke` first):
+
+```md
+## E1 export a file
+
+Open http://localhost:18888/smoke-test-page.html
+Click the "文件下载" link, then the "导出数据" button
+Use the download tool on the "确定" button inside the confirmation dialog as the trigger, and capture the exported file (the name ends with .txt, so pass `*.txt` as expectName)
+```
+
+```bash
+pageqa examples/smoke-test.md
+```
+
+Key points:
+
+- **Use `download`, and never `click` the trigger first**: a click-triggered download can only be caught by that tool (like `upload`, it clicks `target` itself). Click first and the download is gone, so the step necessarily reports "no download captured". bsk's `download` also requires a target (omitting it fails with `missing target`).
+- `target` is the element that **triggers the download** — usually the export button itself, or the "确定" button in the "export → confirm" dialog.
+- **Write the file-name expectation as a glob** (`*`/`?`, case-insensitive; without it only "a file was downloaded" is judged):
+  - "the name contains something" → `*报表*`;
+  - "only the extension matters" → `*.xls`;
+  - exact name → `导出报表.xls` (no wildcard means equality).
+  The landed name carries a timestamp prefix (`20260924-101530-导出报表.xls`), so **matching on "contains" or on the extension is more robust than hard-coding the full name** (`expectName` is checked against both the landed name and the server-suggested name).
+- **Where it lands**: by default `~/.pageqa/downloads/<timestamp>-<server-suggested name>` (config key `downloadDir`; the timestamp prefix is why repeated runs never overwrite each other). Give `out` in the case to write to an exact path, where overwriting is allowed. The exit summary lists the real path.
+- **Files whose assertion passed are removed when the scenario finishes** (`downloadCleanup`, missing means on): nobody looks at those files when a case passes, and a hundred regression runs would pile up a hundred files. The deletion happens **after the scenario has run**, not right after the capture — later steps/assertions in the same scenario can still see the file. **Three cases always keep it**: the case gave an explicit `out` (that file is what you asked for), the assertion failed (the file is the thing you inspect), or `downloadCleanup` is set to `false`. Entries that were really deleted are marked in the exit summary (a failed deletion is not marked, so the path never lies).
+- **The wait limit defaults to 60s**: exports are often generated server-side, so pass `timeoutMs` when the case asks for a longer wait ("wait up to 2 minutes" → `120000`).
+- **Match `expectName` against what bsk actually reports**: the `<a download="…">` attribute is **not** used — the server-suggested name bsk reports comes from the **URL's file name**, or from the server's `Content-Disposition` on a real site. Run once, read the actual name in the evidence, then decide the glob.
+- **"No download captured" is retried once inside the tool**: measured — bsk's download capture has a **cold start**: the very first capture after a daemon/browser restart (or upgrade) always fails, and the same element succeeds immediately on the second try. And "nothing captured" is an **assertion verdict you cannot wash off** (a later successful click leaves the FAIL in the report), so the tool absorbs that jitter itself: same element, same wait limit, at most 2 clicks; a successful retry is noted in the evidence. The cost is that a genuine "no download" case waits up to 2×`timeoutMs`. When both attempts fail and bsk reports `download_capture_failed`, the evidence says the capture is not ready — reconnect the bsk browser extension rather than inspecting the page under test.
+- **Three kinds of failure**: the trigger element cannot be clicked = the step never ran (tool error, the model re-snapshots and retries); clicked but no download within the limit (including that one retry) = assertion fails; the file landed but the name does not match = assertion fails (evidence carries the actual name). At replay time a missing trigger is also a FAIL, **not skipped** as "element not found" — skipping would wash "should have downloaded but didn't" into a pass.
+- Judgement rules, path strategy and trade-offs: `docs/adr/0012`.
+
 ## Architecture
 
 The diagram below is the **layered/module view** — which layer owns what and how artifacts flow between modules; the runtime sequence is in "How it works" immediately after.
@@ -529,7 +577,7 @@ flowchart TD
   end
 
   subgraph BSK["bsk tool layer · src/bsk"]
-    TOOLS["tools.ts 9 tools<br/>navigate·snapshot·click·fill·upload·hover·scroll·wait·assert_text<br/>async · abortable · globally serial"]
+    TOOLS["tools.ts 10 tools<br/>navigate·snapshot·click·fill·upload·download·hover·scroll·wait·assert_text<br/>async · abortable · globally serial"]
     DIAG["navigate-diagnosis.ts turn navigation failures into plain language"]
     SNAP["snapshot.ts snapshot slimming"]
   end
@@ -606,7 +654,7 @@ flowchart TD
 ```
 Natural-language intent
    └─> pi-agent-core Agent (LLM: pi-ai custom provider -> configurable OpenAI-compatible endpoint)
-          └─> bsk tools: navigate / snapshot / click / fill / upload / hover / scroll / wait / assert_text
+          └─> bsk tools: navigate / snapshot / click / fill / upload / download / hover / scroll / wait / assert_text
                  └─> real browser (connected by bsk)
           └─> conclusion & evidence -> report (text/JSON) + exit code
           └─> by default: record successful operations -> replay script (*.replay.json; off in /setting)
@@ -625,6 +673,7 @@ Available tools (`src/bsk/tools.ts`):
 - `snapshot()` read the page's aria tree and visible text (titles, paragraphs, links, buttons, etc.); before returning it slims (see "Snapshot slimming and reuse"), and reuses the previous copy when no page change in the short term
 - `click(target)` / `fill(target, value)` / `hover(target)` element interactions (target referenced by `@eN` or CSS selector)
 - `upload(target, file)` upload a local file (target is the element that triggers the file picker; omitted means bsk auto-finds the file input)
+- `download(target, expectName?, out?, timeoutMs?)` capture one browser download and write it to disk (target is the element that **triggers the download**; the tool clicks it itself); it is also an assertion: captured with a matching file name = pass, timeout / write failure / name mismatch = fail
 - `scroll(target)` / `wait(ms)` scroll and wait
 - `assert_text(expectation)` assert whether the page contains the specified text, returning "established / not established" and evidence
 
@@ -670,7 +719,8 @@ src/
   agent.ts       orchestrator (pi-agent-core Agent + bsk tools + report)
   llm.ts         LLM backend (pi-ai custom provider -> configurable OpenAI-compatible endpoint)
   log.ts         progress log (writes stderr by default; sink injectable via setSink, interactive mode merges into the UI viewport)
-  bsk/tools.ts   browserskill operation layer and tool layer (async, abortable, globally serial; includes upload and recording reporting)
+  bsk/tools.ts   browserskill operation layer and tool layer (async, abortable, globally serial; includes upload/download and recording reporting)
+  downloads.ts   download artifact paths (sanitizing, timestamped naming, rename) + captured-file list
   bsk/navigate-diagnosis.ts  translate navigation failures into plain language (translate only, don't guess; pass through verbatim if unrecognized)
   tui/app.ts     interactive mode UI (pi-tui TuiAltScreen: scrolling log viewport + fixed input box, lazily loaded)
   tui/queue.ts   run queue (scenario serial execution, append, cancel, abort)
@@ -688,9 +738,10 @@ examples/
   smoke.md                   example suite (A1–A3)
   github-star.md            GitHub Star case
   element-plus-upload.md    file upload case (click "Click to upload" to upload a local image)
+  sms-log.md                sms-log case (filter by phone/channel/date, then export and verify the download)
 tests/smoke.test.mjs  end-to-end verification
-tests/report.test.mjs / tests/replay.test.mjs / tests/snapshot.test.mjs / tests/tui.test.mjs
-  unit tests (no browser/LLM/TTY dependency): report parsing, locator and replay, snapshot slimming, appended-scenario writeback, run queue, "cancelled" judgment, log sink, runtime case-file lookup (/run), per-source replay script splitting, scenario origins in the report
+tests/report.test.mjs / tests/replay.test.mjs / tests/downloads.test.mjs / tests/snapshot.test.mjs / tests/tui.test.mjs
+  unit tests (no browser/LLM/TTY dependency): report parsing, locator and replay, download artifact naming and its four outcomes, snapshot slimming, appended-scenario writeback, run queue, "cancelled" judgment, log sink, runtime case-file lookup (/run), per-source replay script splitting, scenario origins in the report
 ```
 
 ---

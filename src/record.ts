@@ -12,7 +12,7 @@ import { restorePlaceholders, type RunVarValue } from "./vars.js";
 
 /** 工具层上报的一次执行（ok=false 表示 bsk 报错，录制时会被忽略）。 */
 export interface ToolExecEvent {
-  /** 工具名：navigate / snapshot / click / fill / upload / hover / scroll / wait / assert_text。 */
+  /** 工具名：navigate / snapshot / click / fill / upload / download / hover / scroll / wait / assert_text。 */
   name: string;
   /** 模型给出的入参。 */
   params: Record<string, unknown>;
@@ -132,6 +132,27 @@ export class Recorder {
           step,
           file: restore(text("file")),
           ...(target ? { target, locator } : { locator: null }),
+        });
+        return;
+      }
+      case "download": {
+        const { target, locator } = targetOf();
+        // 没有触发元素这一步就没有意义：下载只能由本工具自己点击触发（bsk 的 download 要求 target）。
+        if (!target) return;
+        const rawOut = text("out");
+        const expectName = text("expectName").trim();
+        const ms = Number(p["timeoutMs"]);
+        this.steps.push({
+          kind: "download",
+          step,
+          target,
+          locator,
+          // 落盘路径与文件名期望按占位符写法存：显式路径里写 `${date}` 的用例，
+          // 回放时要重新展开（与 fill.value 同一条规则）。
+          ...(rawOut ? { out: restore(rawOut) } : {}),
+          ...(expectName ? { expectName } : {}),
+          // 只有用例真的指定过等待上限才写进脚本：写死一个默认值会让将来改默认值失效。
+          ...(Number.isFinite(ms) && ms > 0 ? { timeoutMs: ms } : {}),
         });
         return;
       }

@@ -45,12 +45,16 @@ _Avoid_：中断、中止、跳过
 _Avoid_：指令、命令行
 
 **动作（Action）**：
-一次浏览器操作（navigate / click / fill / upload / hover / scroll / wait），是回放脚本的最小执行单位。
+一次浏览器操作（navigate / click / fill / upload / download / hover / scroll / wait），是回放脚本的最小执行单位。
 _Avoid_：操作指令、tool call
 
 **断言（Assertion）**：
-对页面内容的校验，决定场景结论是 PASS 还是 FAIL。
+对页面内容或浏览器侧可观察结果（如「文件已下载」）的校验，决定场景结论是 PASS 还是 FAIL。
 _Avoid_：检查点、验证点
+
+**下载产物（Downloaded Artifact）**：
+一次成功捕获并落盘、内容由被测网站决定的文件；它的存在本身即构成「下载已发生」的证据。断言不成立时保留原件（它正是排查对象），成立后按偏好清理。
+_Avoid_：下载文件、导出文件、附件
 
 **录制（Recording）**：
 一次带模型的运行中，把成功执行过的动作与断言记下来的过程。

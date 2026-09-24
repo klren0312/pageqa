@@ -207,6 +207,44 @@
       background-color: #e8f0fe;
       color: #007bff;
     }
+
+    a.btn {
+      display: inline-block;
+      text-decoration: none;
+    }
+
+    .download-status {
+      margin-top: 1rem;
+    }
+
+    .modal-mask {
+      position: fixed;
+      inset: 0;
+      background-color: rgba(0,0,0,0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+    }
+
+    .modal-body {
+      background-color: #fff;
+      padding: 1.5rem 2rem;
+      border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+      text-align: center;
+      min-width: 280px;
+    }
+
+    .modal-body p {
+      margin-bottom: 1.25rem;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+    }
   </style>
 </head>
 <body>
@@ -215,6 +253,7 @@
     <a href="#/form1" class="nav-link" data-route="/form1">表单页面 1</a>
     <a href="#/form2" class="nav-link" data-route="/form2">表单页面 2</a>
     <a href="#/upload" class="nav-link" data-route="/upload">文件上传</a>
+    <a href="#/download" class="nav-link" data-route="/download">文件下载</a>
   </nav>
 
   <main class="content">
@@ -326,7 +365,39 @@
         <div class="upload-status" id="uploadStatus"></div>
       </div>
     </section>
+
+    <section id="download" class="route-content" data-route="/download" style="display:none;">
+      <h1>文件下载</h1>
+      <div class="download-section">
+        <div class="form-group">
+          <label>直接下载</label>
+          <!--
+            关于文件名：download 属性只是给浏览器用户的建议名，实测 bsk 报回来的
+            `suggested_filename` 取的是 **URL 里的文件名**（download-sample.txt）。
+            真实系统里导出名的来源是服务端 `Content-Disposition`（名字由后端决定），
+            所以这里不刻意造别的名字——那会让人误以为用例该按它去匹配。
+          -->
+          <p><a id="directDownload" class="btn" href="download-sample.txt" download="download-sample.txt">下载示例文件</a></p>
+        </div>
+
+        <div class="form-group">
+          <label>导出（需要在确认弹框里点「确定」才会开始下载）</label>
+          <button type="button" id="exportBtn" class="btn">导出数据</button>
+          <div class="download-status" id="downloadStatus"></div>
+        </div>
+      </div>
+    </section>
   </main>
+
+  <div class="modal-mask" id="exportModal" style="display:none;">
+    <div class="modal-body">
+      <p>确认导出当前数据？</p>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="exportCancel">取消</button>
+        <button type="button" class="btn" id="exportConfirm">确定</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     function toggleDropdown(dropdownId) {
@@ -523,6 +594,45 @@
             }
             uploadBtn.disabled = false;
           }, 1500);
+        });
+      }
+
+      // ── 文件下载：直接下载（静态文件）+ 导出（确认弹框后才下载）──
+      // 两种链路都要有：直接下载对应「点一下就有文件」，导出对应真实系统里
+      // 「先弹确认框、点确定才下载」的写法——后者的触发元素是弹框里的「确定」按钮，
+      // 正好覆盖 download 工具最容易踩的那个坑（先 click 再捕获，下载就流走了）。
+      const exportBtn = document.getElementById('exportBtn');
+      const exportModal = document.getElementById('exportModal');
+      const exportCancel = document.getElementById('exportCancel');
+      const exportConfirm = document.getElementById('exportConfirm');
+      const downloadStatus = document.getElementById('downloadStatus');
+
+      if (exportBtn && exportModal) {
+        exportBtn.addEventListener('click', () => {
+          exportModal.style.display = 'flex';
+        });
+      }
+
+      if (exportCancel && exportModal) {
+        exportCancel.addEventListener('click', () => {
+          exportModal.style.display = 'none';
+        });
+      }
+
+      if (exportConfirm && exportModal) {
+        exportConfirm.addEventListener('click', () => {
+          exportModal.style.display = 'none';
+          // 与真实系统一致：确认之后由页面发起一次下载（文件名取 URL 里的，见上方注释）。
+          const link = document.createElement('a');
+          link.href = 'download-sample.txt';
+          link.download = 'download-sample.txt';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          if (downloadStatus) {
+            // 成功提示常驻：agent 从「点确定」到「回头断言」要经历若干次 LLM 往返
+            downloadStatus.innerHTML = '<div class="success-message">导出成功</div>';
+          }
         });
       }
     });

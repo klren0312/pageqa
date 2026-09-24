@@ -56,6 +56,20 @@ export interface PageQaConfig {
   htmlReport?: boolean;
   /** 是否默认生成回放脚本（**旁路产物**之一）。**缺失视为开**，理由同上。 */
   replayScript?: boolean;
+  /**
+   * 下载产物的落盘目录：`download` 动作捕获到的文件写在这里。**缺失用默认目录**
+   * （`~/.pageqa/downloads`），理由同上——不放进 DEFAULTS。
+   *
+   * 相对路径按当前工作目录解析；不存在的目录由捕获时按需创建。
+   */
+  downloadDir?: string;
+  /**
+   * 断言成立后是否清理捕获到的文件。**缺失视为开**（通过就清掉，回归不堆垃圾）。
+   *
+   * 只作用于「默认落盘路径 + 断言成立」这一种情况：用例显式给了 `out`、或断言不成立
+   * （失败时的文件正是排查对象）时一律保留。要留档就把这项设为 false，或在用例里写 `out`。
+   */
+  downloadCleanup?: boolean;
 }
 
 const DEFAULTS: PageQaConfig = {
@@ -74,6 +88,15 @@ const DEFAULTS: PageQaConfig = {
 
 export const CONFIG_DIR = join(homedir(), ".pageqa");
 export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
+
+/**
+ * 下载产物的默认落盘目录。
+ *
+ * 刻意不落在当前工作目录（那是用例文件与报告的所在地，下载文件是**被测网站给的字节**，
+ * 混进去既容易误提交、也容易和用例同名文件撞上），也不落在用户的浏览器下载目录
+ * （pageqa 未必知道它在哪，且会污染用户自己的下载历史）。
+ */
+export const DEFAULT_DOWNLOAD_DIR = join(CONFIG_DIR, "downloads");
 
 /** 读取配置：合并 默认值 < 用户文件 < 环境变量。返回最终生效配置。 */
 export function loadConfig(): PageQaConfig {
@@ -180,6 +203,29 @@ export function readSideOutputPrefs(): SideOutputPrefs {
         ? raw.replayScript
         : SIDE_OUTPUT_DEFAULTS.replayScript,
   };
+}
+
+/**
+ * 只读地取下载产物目录（**不会**创建文件）；未配置或类型不对时用默认目录。
+ *
+ * 与 `readSideOutputPrefs` 同一个口子：读配置决定行为，不产生磁盘副作用。
+ */
+export function readDownloadDir(): string {
+  const raw = readRawConfig();
+  const configured =
+    typeof raw.downloadDir === "string" ? raw.downloadDir.trim() : "";
+  return configured || DEFAULT_DOWNLOAD_DIR;
+}
+
+/**
+ * 只读地取「断言成立后是否清理下载产物」（**不会**创建文件）。
+ *
+ * **缺失视为开**，与 ADR-0011 决策一同一套口径；只认布尔值，字符串 `"false"` 不当成关
+ * （静默把字符串当真会让人以为「我明明关了」）。
+ */
+export function readDownloadCleanup(): boolean {
+  const raw = readRawConfig();
+  return typeof raw.downloadCleanup === "boolean" ? raw.downloadCleanup : true;
 }
 
 /** 把某一个旁路产物开关持久化（保留其它字段）；供交互模式 /setting 使用。 */

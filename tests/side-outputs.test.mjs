@@ -161,6 +161,25 @@ describe("renderSideOutputLines", () => {
     );
   });
 
+  test("下载产物逐条列出，已清理的注明「已清理」（路径不撒谎）", () => {
+    const lines = renderSideOutputLines({ kind: "written", path: "p" }, { kind: "na" }, [
+      { path: "C:/dl/a.xls", cleaned: false },
+      { path: "C:/dl/b.xls", cleaned: true },
+    ]);
+    assert.ok(lines.includes("[pageqa]   下载产物: C:/dl/a.xls"));
+    assert.ok(
+      lines.includes("[pageqa]   下载产物: C:/dl/b.xls（断言成立后已清理）"),
+    );
+  });
+
+  test("没有下载产物时不打这一行（每次运行都报「无」是噪声）", () => {
+    const lines = renderSideOutputLines({ kind: "written", path: "p" }, { kind: "na" });
+    assert.equal(
+      lines.filter((l) => l.includes("下载产物")).length,
+      0,
+    );
+  });
+
   test("写盘失败如实写出原因，不隐藏", () => {
     const lines = renderSideOutputLines(
       { kind: "failed", error: "EACCES" },

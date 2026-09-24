@@ -256,15 +256,28 @@ export function buildReport(
 
 /** 统计用例（自然语言测试步骤）中的断言数量，用于校验执行完整性。
  *
- * 只统计「断言 <描述>」这类真正的断言行，排除「断言」被当作讨论对象的叙述用法
- * （如「断言失败时记录日志」「请检查断言结果」「断言的写法」）。
+ * 只统计「断言 <描述>」这类真正的断言行，排除两类不该算的：
+ * 1. 标题行与引用说明行（`#` / `>`）——注释不是用例内容（与 numberSteps 同一口径）；
+ * 2. 「断言」被当作讨论对象的叙述用法（如「断言失败时记录日志」「请检查断言结果」）。
  *
  * 早期实现直接统计「断言」二字出现次数，会把叙述性文字也算成断言，
  * 使期望断言数虚高，进而把实际已全部通过的正常用例误判为
  * 「用例中的断言全部执行（实际 N/M）」，造成假失败。
  */
 export function countAssertions(script: string): number {
-  return (script.match(ASSERTION_PATTERN) ?? []).length;
+  // 标题行与引用说明行（`#` / `>`）先剔掉：它们既不是步骤（numberSteps 同样忽略），
+  // 也不该被当成断言。以前这里是对整段正文做正则，于是**用例里写解释文字会自己挖坑**——
+  // 「下载的判定口径见 docs/adr/0012：…即断言成立」这种说明会把期望断言数顶高一条，
+  // 收尾就报「用例中的断言全部执行（实际 2/3）」的假失败，而人只会以为是功能坏了。
+  // 口径与 numberSteps 保持一致：注释不是用例内容。
+  const body = script
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trim();
+      return !trimmed.startsWith("#") && !trimmed.startsWith(">");
+    })
+    .join("\n");
+  return (body.match(ASSERTION_PATTERN) ?? []).length;
 }
 
 /**

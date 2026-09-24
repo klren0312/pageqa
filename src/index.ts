@@ -10,6 +10,7 @@ import {
   readSavedLocale,
   readSideOutputPrefs,
 } from "./config.js";
+import { downloadedFiles } from "./downloads.js";
 import type { TestReport } from "./report.js";
 import {
   emitSideOutputs,
@@ -440,7 +441,7 @@ async function interactiveMode(
   const out = args.json ? result.json : result.text;
   if (args.out) writeFileSync(args.out, out + "\n");
   process.stdout.write(out + "\n");
-  emitSideOutputs(reportOutcome, scriptOutcome);
+  emitSideOutputs(reportOutcome, scriptOutcome, downloadedFiles());
   if (scriptError) {
     process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");
     return 1;
@@ -500,7 +501,7 @@ async function replayMode(args: CliArgs): Promise<number> {
     if (args.out) writeFileSync(args.out, out + "\n");
     process.stdout.write(out + "\n");
     // 回放用的是现成的脚本、不产出脚本：清单里不列脚本行（ADR-0011 决策五）。
-    emitSideOutputs(writeReportSideOutput(result.report), { kind: "na" });
+    emitSideOutputs(writeReportSideOutput(result.report), { kind: "na" }, downloadedFiles());
     return result.report.status === "pass" ? 0 : 1;
   } catch (err) {
     process.stderr.write(
@@ -677,7 +678,11 @@ async function main(): Promise<number> {
       writeFileSync(args.out, out + "\n");
     }
     process.stdout.write(out + "\n");
-    emitSideOutputs(writeReportSideOutput(result.report, prefs), scriptOutcome);
+    emitSideOutputs(
+      writeReportSideOutput(result.report, prefs),
+      scriptOutcome,
+      downloadedFiles(),
+    );
     if (scriptError) {
       process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");
       return 1;
