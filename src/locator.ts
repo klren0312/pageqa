@@ -110,12 +110,19 @@ function pathLabel(role: string, name: string): string {
   return `${role || "?"} ${JSON.stringify(shown)}`;
 }
 
+/** 折叠标记只在行尾出现（瘦身时追加到最后），锚住行尾免得把元素名里的 `[x2: …]` 当成语法。 */
+const FOLD_MARK = /\[x\d+: ([^\]]*)\]\s*$/;
+const refIndex = (ref: string): number => Number(ref.match(/\d+/)?.[0] ?? 0);
+
 /**
  * 解析 bsk 快照文本里所有带引用的行，得到「引用 -> 角色/可访问名/祖先路径」。
  *
  * 缩进即层级：维护一个缩进栈，遇到更浅或同级的新行就弹出更深/同级的节点，
  * 因此每个引用都能拿到「它在哪个区域（tabpanel / dialog / 某个标题）之下」。
  * `@vom` / `@view` / `@layers` / `L1 page` 等元信息行不参与树。
+ *
+ * 瘦身后的快照里，同名元素会被折进 host 行尾的 `[xN: @eA @eB …]` 标记（见 snapshot.ts）。
+ * 这些成员继承 host 行的角色/可访问名/路径 —— 它们本来就是同名元素，靠名字与序号仍可寻址。
  */
 export function parseSnapshotRefs(snapshotText: string): SnapshotRef[] {
   const refs: SnapshotRef[] = [];
@@ -128,29 +135,35 @@ export function parseSnapshotRefs(snapshotText: string): SnapshotRef[] {
     const indent = indentWidth(line);
 
     const refMatch = body.match(/^@e(\d+)\b\s*(.*)$/);
-    const { role, name } = parseRoleName(refMatch ? refMatch[2] : body);
 
     // 弹出所有「缩进 >= 当前」的节点，剩下的就是本行的祖先
     while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
       stack.pop();
     }
+    let label: string | null = null;
     if (refMatch) {
-      refs.push({
-        ref: `@e${refMatch[1]}`,
-        role,
-        name,
-        path: stack
-          .map((e) => e.label)
-          .filter((l): l is string => l !== null)
-          .slice(-PATH_DEPTH_MAX),
-      });
+      const { role, name } = parseRoleName(refMatch[2]);
+      const path = stack
+        .map((e) => e.label)
+        .filter((l): l is string => l !== null)
+        .slice(-PATH_DEPTH_MAX);
+      refs.push({ ref: `@e${refMatch[1]}`, role, name, path });
+      const fold = refMatch[2].match(FOLD_MARK);
+      if (fold) {
+        for (const id of fold[1].matchAll(/@?(e\d+)/g)) {
+          refs.push({ ref: `@${id[1]}`, role, name, path });
+        }
+      }
+      label = name ? pathLabel(role, name) : null;
+    } else {
+      const { role, name } = parseRoleName(body);
+      label = name ? pathLabel(role, name) : null;
     }
-    stack.push({
-      indent,
-      label: name ? pathLabel(role, name) : null,
-    });
+    stack.push({ indent, label });
   }
-  return refs;
+  // bsk 的 `@eN` 编号即文档序。折叠会把同名成员挪到 host 行尾，这里按编号归一次序，
+  // 保证「同名第几个」（resolveLocator 的 nth）在折叠前后指向同一个元素。
+  return refs.sort((a, b) => refIndex(a.ref) - refIndex(b.ref));
 }
 
 /**
@@ -241,8 +254,12 @@ export function resolveLocator(
       const best = scored[0].score;
       const top = scored.filter((c) => c.score === best);
       if (top.length === 1) return top[0].ref;
-      return top[locator.nth >= 0 && locator.nth < top.length ? locator.nth : 0]
-        .ref;
+      // `nth` 是在**全同名文档序**（pool）里记的，不能直接拿去索引按分数筛过并排序后的
+      // `top` —— 两个序号空间不是一回事，实测在重页面上会静默指到同名池里的另一个元素。
+      // 正确做法：先按 pool 还原「录制时那一个」，它若还在最优路径候选里就采信它。
+      const byNth = pool[locator.nth >= 0 ? locator.nth : -1];
+      if (byNth && top.some((c) => c.ref === byNth.ref)) return byNth.ref;
+      return top[0].ref;
     }
   }
 

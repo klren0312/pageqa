@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>原型 · ref 行瘦身 —— 砍引用数会不会砍掉定位能力</title>
+<style>
+  :root { --ink:#1a1a1a; --muted:#6b7280; --line:#e5e7eb; --accent:#2f6f4f; --bad:#b3261e; --warn:#a15c00; --bg:#fbfbfa; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:30px 26px 90px; font:14px/1.65 "Segoe UI","Microsoft YaHei",system-ui,sans-serif; color:var(--ink); background:var(--bg); }
+  .wrap { max-width:1280px; margin:0 auto; }
+  h1 { font-size:21px; margin:0 0 4px; }
+  h2 { font-size:15px; margin:32px 0 10px; padding-bottom:6px; border-bottom:1px solid var(--line); }
+  .proto { display:inline-block; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:#fff; background:var(--warn); padding:2px 8px; border-radius:3px; vertical-align:2px; }
+  .q { background:#fff; border:1px solid var(--line); border-left:3px solid var(--accent); padding:13px 17px; margin:14px 0 0; color:#374151; }
+  button, label { font:inherit; cursor:pointer; }
+  button { background:#fff; border:1px solid #cbd5d1; color:var(--ink); padding:6px 11px; border-radius:4px; margin:0 6px 6px 0; }
+  button:hover { border-color:var(--accent); }
+  button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.done { opacity:.4; }
+  .ck { display:inline-block; margin:0 14px 6px 0; background:none; border:none; padding:0; }
+  table { border-collapse:collapse; width:100%; background:#fff; font-size:13px; }
+  th,td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  th { background:#f3f4f3; font-weight:600; font-size:12px; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .ok { color:var(--accent); font-weight:600; } .miss { color:var(--bad); font-weight:600; } .drift { color:var(--warn); font-weight:600; }
+  .kpis { display:flex; gap:10px; flex-wrap:wrap; }
+  .kpi { background:#fff; border:1px solid var(--line); padding:9px 13px; min-width:142px; }
+  .kpi .v { font-size:19px; font-variant-numeric:tabular-nums; }
+  .kpi .l { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  pre { background:#10151c; color:#d7dde5; padding:12px 14px; border-radius:5px; max-height:330px; overflow:auto; font:12px/1.5 Consolas,monospace; white-space:pre-wrap; word-break:break-all; margin:0; }
+  pre mark { background:#3b2f10; color:#f0c674; }
+  .muted { color:var(--muted); }
+  .bar { height:9px; background:var(--line); border-radius:5px; overflow:hidden; margin-top:6px; max-width:620px; }
+  .bar i { display:block; height:100%; background:var(--accent); } .bar i.over { background:var(--bad); }
+  .tabs { margin-bottom:12px; }
+  .scen { background:#fff; border:1px solid var(--line); padding:13px 15px; }
+  .row { display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start; }
+  .note { font-size:12.5px; color:var(--muted); margin:7px 0 0; }
+  code { background:#eef0ef; padding:1px 4px; border-radius:3px; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>ref 行瘦身 <span class="proto">原型 · 可丢弃</span></h1>
+<div class="q">
+  <b>问题：</b>重页面上 bsk 快照有 684 个 <code>@eN</code> 可交互元素行（35.9k 字符），而 <code>src/snapshot.ts</code> 规定这些行「永不截断、永不丢弃」——
+  于是 20k 字符预算在引用数超过约 210 时<b>必然击穿</b>（实测超 3.3×），单次快照还比 40k 的上下文中限更大。<br>
+  <b>如果按「同名折叠 → 剥标注 → 降级为计数」逐级砍这些行，语义定位（role + name + 祖先路径 + 同名序号）还能把每个定位符解析回它原本那个 <code>@eN</code> 吗？</b>
+  <div class="note" style="margin-top:10px">
+    判据：把页面上<b>每一个</b>可交互元素都当成「录制时点过的元素」建定位符，再拿瘦身后的文本重解析。
+    <span class="ok">命中</span> = 解析回原来那个；<span class="drift">指错</span> = 落到别的元素（假通过，最危险）；<span class="miss">未命中</span> = 回放按「跳过」处理。
+    三页数据都是真实抓的快照，不是构造样本。
+  </div>
+  <div class="note" style="margin-top:8px;color:var(--ink)">
+    <b>跑出来的答案：</b>能压，但不是靠丢引用，而是靠把同名叶子折叠成一行 —— 跨区块折叠把重页从 65,437 → 38,462 字符（交给模型的上下文省 41%），
+    684 个引用<b>全部仍可寻址</b>，且<b>指错从现状的 16 条降到 0</b>；中等页面（Form 页 450 引用）直接进 20k 预算（19,986）。
+    两个反直觉的结论：①「折叠时花字符补回祖先路径」是净亏（字符只省 5%，指错反涨到 105）；②「降级成纯计数以省字符」等于毁掉定位（514 条指错）。
+    另外：抓取耗时由<b>原始</b>大小决定（瘦身在抓取之后），所以这档瘦身省的是上下文与 token，不是那 ~2.8s 的往返。
+  </div>
+</div>
+
+<h2>1 · 现场状态</h2>
+<div class="kpis" id="kpis"></div>
+<div id="budgetbar"></div>
+
+<h2>2 · 自由试验</h2>
+<div class="row">
+  <div style="min-width:300px">
+    <div class="muted" style="font-size:12px">页面</div><div id="pages"></div>
+    <div class="muted" style="font-size:12px;margin-top:8px">削减档位（在现有瘦身规则之上叠加，按顺序生效）</div>
+    <div id="stages"></div>
+    <div class="muted" style="font-size:12px;margin-top:8px">字符预算 <span id="budgetv"></span></div>
+    <input type="range" id="budget" min="2000" max="70000" step="1000" value="20000">
+    <div class="note">勾「现状」= 完全复刻生产规则（<code>src/snapshot.ts</code>），用来核对原型没跑偏。</div>
+  </div>
+  <div style="flex:1;min-width:430px">
+    <table id="score"></table>
+    <div class="note">「同名重复」= 该 role+name 页面出现多次，只能靠祖先路径/序号区分。指错集中在这一组。</div>
+  </div>
+</div>
+
+<h2>3 · 瘦身后交给模型的文本（前 90 行）</h2>
+<div class="note">黄色高亮 = 折叠行：一个元素独占一行，同名其余成员收进 <code>[xN: @e…]</code>，引用号仍在故仍可寻址。</div>
+<pre id="preview"></pre>
+
+<h2>4 · 逐元素明细（只看没命中的，前 25 条）</h2>
+<table id="detail"></table>
+
+<h2>5 · 引导走查（每段都会重置现场）</h2>
+<div class="tabs" id="tabs"></div>
+<div class="scen"><div id="scendesc"></div><div style="margin-top:11px" id="scenbtns"></div><pre id="scenlog" style="margin-top:11px"></pre></div>
+
+<script>
+// ===== BEGIN PURE MODULE (liftable) =====
+// 纯字符串：不碰 DOM、不碰 bsk、不联网。与 src/locator.ts + src/snapshot.ts 同源。
+
+const indentWidth = (line) => { let n = 0; for (const ch of line) { if (ch === " ") n++; else if (ch === "\t") n += 2; else break; } return n; };
+const parseRoleName = (text) => {
+  const r = text.match(/^([A-Za-z][A-Za-z0-9_-]*)/), m = text.match(/"([^"]*)"/);
+  return { role: r ? r[1] : "", name: m ? m[1] : "" };
+};
+const isMeta = (b) => b.startsWith("@vom") || b.startsWith("@view") || b.startsWith("@layers") || /^L\d+\b/.test(b);
+const PATH_NAME_MAX = 60, PATH_DEPTH_MAX = 3;
+const pathLabel = (role, name) => `${role || "?"} ${JSON.stringify(name.length > PATH_NAME_MAX ? name.slice(0, PATH_NAME_MAX - 3) + "..." : name)}`;
+
+/** 快照 → 引用清单。除「认得折叠标记」外，与生产 parseSnapshotRefs 等价。 */
+function parseRefs(text) {
+  const refs = [], stack = [];
+  for (const line of text.split(/\r?\n/)) {
+    const body = line.trim();
+    if (!body || isMeta(body)) continue;
+    const indent = indentWidth(line);
+    while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+    const m = body.match(/^@(e\d+)\b\s*(.*)$/);
+    let label = null;
+    if (m) {
+      const { role, name } = parseRoleName(m[2]);
+      const path = stack.map((e) => e.label).filter((l) => l !== null).slice(-PATH_DEPTH_MAX);
+      refs.push({ ref: "@" + m[1], role, name, path });
+      const fold = m[2].match(/\[x\d+: ([^\]]*)\]/);
+      if (fold) for (const fm of fold[1].matchAll(/@(e\d+)(?:⟨([^⟩]*)⟩)?/g)) {
+        // 折叠成员默认继承 host 行的祖先路径；带 ⟨…⟩ 时换成它自己的最深祖先（④ 档花字符买消歧）。
+        refs.push(fm[2]
+          ? { ref: "@" + fm[1], role, name, path: path.slice(0, -1).concat(fm[2].replace(/·/g, " ")) }
+          : { ref: "@" + fm[1], role, name, path });
+      }
+      label = name ? pathLabel(role, name) : null;
+    } else {
+      const { role, name } = parseRoleName(body);
+      label = name ? pathLabel(role, name) : null;
+    }
+    stack.push({ indent, label });
+  }
+  return refs;
+}
+const isRef = (t) => /^@?e\d+$/.test(t.trim());
+const normRef = (t) => (t.trim().startsWith("@") ? "" : "@") + t.trim();
+
+function buildLocator(target, text) {
+  const original = target.trim();
+  const bare = { role: "", name: "", nth: -1, target: original, path: [] };
+  if (!isRef(original)) return bare;
+  const ref = normRef(original);
+  const refs = parseRefs(text);
+  const self = refs.find((r) => r.ref === ref);
+  if (!self || (!self.role && !self.name)) return bare;
+  const same = refs.filter((r) => r.role === self.role && r.name === self.name);
+  return { role: self.role, name: self.name, nth: same.findIndex((r) => r.ref === ref), target: original, path: self.path };
+}
+function pathScore(want, got) {
+  let s = 0; const d = Math.min(want.length, got.length);
+  for (let i = 1; i <= d; i++) { if (want[want.length - i] !== got[got.length - i]) break; s++; }
+  return s;
+}
+function resolveLocator(loc, text) {
+  const { role, name } = loc;
+  if (!name && !role) return null;
+  const refs = parseRefs(text);
+  const exact = refs.filter((r) => r.role === role && r.name === name);
+  const fuzzy = exact.length ? exact : refs.filter((r) => r.role === role && name.length > 0 && r.name.includes(name));
+  const pool = fuzzy.length ? fuzzy : refs.filter((r) => name.length > 0 && r.name === name);
+  if (!pool.length) return null;
+  if (pool.length === 1) return pool[0].ref;
+  const path = loc.path || [];
+  if (path.length) {
+    const scored = pool.map((r) => ({ ref: r.ref, s: pathScore(path, r.path) })).filter((c) => c.s > 0).sort((a, b) => b.s - a.s);
+    if (scored.length) {
+      const top = scored.filter((c) => c.s === scored[0].s);
+      if (top.length === 1) return top[0].ref;
+      return top[loc.nth >= 0 && loc.nth < top.length ? loc.nth : 0].ref;
+    }
+  }
+  return pool[loc.nth >= 0 && loc.nth < pool.length ? loc.nth : 0].ref;
+}
+
+/** 行分类 + 关键行标记（ref 行与其祖先链），与 src/snapshot.ts 同规则。 */
+function scan(text) {
+  const recs = [];
+  const stack = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const body = raw.trim();
+    if (!body) { recs.push({ raw, body, indent: 0, kind: "empty", keep: false, ref: null, role: "", name: "", path: [] }); continue; }
+    const indent = indentWidth(raw);
+    while (stack.length && recs[stack[stack.length - 1]].indent >= indent) stack.pop();
+    let kind = "text";
+    if (isMeta(body)) kind = "meta";
+    else if (/^@e\d+\b/.test(body)) kind = "ref";
+    const m = body.match(/^@(e\d+)\b\s*(.*)$/);
+    const rn = parseRoleName(m ? m[2] : body);
+    recs.push({ raw, body, indent, kind, keep: kind !== "text",
+      ref: m ? "@" + m[1] : null, role: rn.role, name: rn.name,
+      parent: stack.length ? stack[stack.length - 1] : -1,
+      path: stack.map((i) => recs[i].pathLabel).filter(Boolean) });
+    recs[recs.length - 1].pathLabel = rn.name ? pathLabel(rn.role, rn.name) : null;
+    stack.push(recs.length - 1);
+  }
+  const st = [];
+  recs.forEach((l, i) => {
+    if (l.kind === "empty") return;
+    while (st.length && recs[st[st.length - 1]].indent >= l.indent) st.pop();
+    if (l.kind === "ref") st.forEach((j) => (recs[j].keep = true));
+    st.push(i);
+  });
+  return recs;
+}
+
+/** 剥掉 ` [ctx: …]`，括号配对（能吃掉 `[ctx: v-if [ ]]` 这种嵌套）。 */
+function stripCtx(line) {
+  let out = "", i = 0;
+  while (i < line.length) {
+    if (line.startsWith("[ctx:", i)) {
+      let d = 0, j = i;
+      for (; j < line.length; j++) { if (line[j] === "[") d++; else if (line[j] === "]") { d--; if (!d) { j++; break; } } }
+      while (out.endsWith(" ")) out = out.slice(0, -1);
+      i = j; continue;
+    }
+    out += line[i++];
+  }
+  return out;
+}
+
+/**
+ * 同名折叠：把同 role+name 的**叶子** ref 行收进第一处，其余成员以 `@eN` 记号并进 host 行尾。
+ * 只折叶子 —— 删掉一个还有别的 ref 挂在下面的容器行，会连带毁掉那些后代的祖先路径。
+ * mode="region"：只合并**同一直接父节点下**的同名叶子（共享祖先路径，序号也不会跨区漂移）。
+ * mode="global"：跨区块也合并，省得更多，但把不同区域的同名元素混进一行 —— 消歧要靠 path 档补。
+ */
+function foldSame(recs, mode, keepPath) {
+  const groups = new Map();
+  recs.forEach((r, i) => {
+    if (r.kind !== "ref") return;
+    const k = r.role + "\u0000" + r.name + (mode === "region" ? "\u0000" + (r.path.at(-1) || "#" + r.parent) : "");
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(i);
+  });
+  const drop = new Set(), fold = new Map();
+  for (const idxs of groups.values()) {
+    if (idxs.length < 2) continue;
+    const leaves = idxs.filter((i) => !hasOtherRefBelow(recs, i, idxs));
+    if (leaves.length < 2) continue;
+    const items = [];
+    for (const i of leaves.slice(1)) {
+      drop.add(i);
+      let tok = recs[i].ref;
+      if (keepPath) {
+        const t = recs[i].path.at(-1);
+        // 折叠成员之间用空格分隔，故路径里的空格换成间隔号，否则解析会散架。
+        if (t) tok += "\u27e8" + t.replace(/ /g, "\u00b7") + "\u27e9";
+      }
+      items.push(tok);
+    }
+    fold.set(leaves[0], { n: items.length + 1, items });
+  }
+  return { drop, fold };
+}
+/** 该行子树里是否还挂着**别的名下**的 ref（有则不能删这行）。 */
+function hasOtherRefBelow(recs, i, group) {
+  for (let j = i + 1; j < recs.length; j++) {
+    if (recs[j].kind === "empty") continue;
+    if (recs[j].indent <= recs[i].indent) return false;
+    if (recs[j].kind === "ref" && !group.includes(j)) return true;
+  }
+  return false;
+}
+
+/** 生产 src/snapshot.ts 的预算常量（这里照抄，用来核对原型没跑偏）。 */
+const PROD_BUDGET = 20_000;
+const SLIM_TRIGGER = 8_000;
+
+const STAGES = ["foldRegion", "foldGlobal", "ctx", "path", "degrade", "dropGroups"];
+const STAGE_LABEL = {
+  foldRegion: "① 同名折叠·同区块内（兄弟元素共享祖先路径）",
+  foldGlobal: "② 同名折叠·跨区块（更省，路径要 ④ 才补得回）",
+  ctx: "③ 剥 [ctx:] 标注",
+  path: "④ 折叠成员带上自己最深祖先（花字符换消歧）",
+  degrade: "⑤ 折叠标记降级成纯计数（丢引用号）",
+  dropGroups: "⑥ 整块折叠区压成一行计数",
+};
+
+/**
+ * 生产瘦身 + ref 削减档位。
+ * on = 勾选档位；budget 只决定 ⑤⑥ 动用与否（①~④ 与生产规则无条件执行）。
+ */
+function slim(text, on, budget) {
+  const recs = scan(text);
+  const mode = on.has("foldGlobal") ? "global" : on.has("foldRegion") ? "region" : null;
+  const { drop, fold } = mode ? foldSame(recs, mode, on.has("path")) : { drop: new Set(), fold: new Map() };
+  const lines = [];
+  let truncated = 0, dropped = 0;
+  for (let i = 0; i < recs.length; i++) {
+    const r = recs[i];
+    if (r.kind === "empty") continue;
+    if (drop.has(i)) { dropped++; continue; }
+    let t = r.raw;
+    if (r.kind === "ref") {
+      if (on.has("ctx")) t = stripCtx(t);
+      if (fold.has(i)) {
+        const f = fold.get(i);
+        t = t + " [x" + f.n + ": " + f.items.join(" ") + "]";
+      }
+    } else if (r.keep) {
+      if (t.length > 160) t = clipAncestor(r);
+    } else if (t.length > 160) { t = t.slice(0, 160) + "…（已截断 " + (t.length - 160) + " 字符）"; truncated++; }
+    lines.push({ text: t, key: r.keep || fold.has(i) });
+  }
+  // 生产规则：小页面不折腾（原文原样，连空行都不动）
+  if (text.length <= SLIM_TRIGGER && truncated === 0 && dropped === 0 && drop.size === 0) {
+    return finish(text, on, budget, { truncated: 0, dropped: 0 });
+  }
+  let total = lines.reduce((n, l) => n + l.text.length + 1, 0);
+  if (total > PROD_BUDGET) {
+    for (const l of lines) if (!l.key && l.text.length > 80) { l.text = l.text.slice(0, 80) + "…"; truncated++; }
+    total = lines.reduce((n, l) => n + l.text.length + 1, 0);
+  }
+  if (total > PROD_BUDGET) {
+    for (const l of lines.filter((x) => !x.key).sort((a, b) => b.text.length - a.text.length)) {
+      if (total <= PROD_BUDGET) break;
+      total -= l.text.length + 1; l.text = ""; dropped++;
+    }
+  }
+  const out = lines.filter((l) => l.text).map((l) => l.text).join("\n");
+  return finish(out, on, budget, { truncated, dropped });
+}
+
+/** 预算还超时的两级 ref 侧兜底（⑤⑥），以及统计。 */
+function finish(body, on, budget, base) {
+  let lines = body.split("\n");
+  let total = body.length, degraded = 0, groupDropped = 0;
+  const sizes = () => lines.map((l, i) => [l.length, i]).sort((a, b) => b[0] - a[0]);
+  if (total > budget && on.has("degrade")) {
+    for (const [len, i] of sizes()) {
+      if (total <= budget) break;
+      const m = lines[i].match(/\[x(\d+): ([^\]]*)\]/);
+      if (!m || len < 40) continue;
+      lines[i] = lines[i].replace(/\s*\[x\d+: [^\]]*\]/, " [x" + m[1] + " 引用号已省略]") + (m[2] ? " " + m[2].split(" ")[0] : "");
+      total = lines.join("\n").length; degraded++;
+    }
+  }
+  if (total > budget && on.has("dropGroups")) {
+    for (const [len, i] of sizes()) {
+      if (total <= budget) break;
+      const m = lines[i].match(/\[x(\d+)/);
+      if (!m || len < 40) continue;
+      lines[i] = lines[i].replace(/\s*\[x\d+[^\]]*\]/, " [x" + m[1] + " 整块省略]").slice(0, 90);
+      total = lines.join("\n").length; groupDropped++;
+    }
+  }
+  const out = lines.join("\n");
+  return {
+    text: out,
+    chars: out.length,
+    refs: parseRefs(out).length,
+    refLines: out.split("\n").filter((l) => /^\s*@e\d/.test(l)).length,
+    truncated: base.truncated, dropped: base.dropped, degraded, groupDropped,
+  };
+}
+function clipAncestor(r) {
+  const indent = r.raw.slice(0, r.raw.length - r.raw.trimStart().length);
+  const name = r.name;
+  if (!name) return r.raw.slice(0, 160) + "…";
+  return `${indent}${r.role ? r.role + " " : ""}${JSON.stringify(name.length > 120 ? name.slice(0, 120) + "…" : name)}`;
+}
+
+const PROTO_API = { scan, parseRefs, buildLocator, resolveLocator, slim, STAGES, STAGE_LABEL, isRef };
+// ===== END PURE MODULE =====
+window.PROTO = PROTO_API;
+</script>
+
+<script id="data">window.SNAPS = __DATA__;</script>
+
+<script>
+const S = window.PROTO, DB = window.SNAPS;
+const ALL = new Set(S.STAGES);
+const st = { page: Object.keys(DB)[0], on: new Set(), budget: 20000 };
+const $ = (id) => document.getElementById(id);
+const num = (n) => n.toLocaleString();
+
+let corpusCache = {};
+function corpus(page) {
+  if (corpusCache[page]) return corpusCache[page];
+  const raw = DB[page].raw;
+  const seen = new Set(), items = [];
+  for (const r of S.parseRefs(raw)) {
+    if (!r.ref || seen.has(r.ref)) continue;
+    seen.add(r.ref);
+    items.push({ loc: S.buildLocator(r.ref, raw), want: r.ref });
+  }
+  const names = {};
+  for (const it of items) { const k = it.loc.role + "\u0000" + it.loc.name; names[k] = (names[k] || 0) + 1; }
+  for (const it of items) it.dup = names[it.loc.role + "\u0000" + it.loc.name] > 1;
+  corpusCache[page] = items;
+  return items;
+}
+const BASE = { on: new Set(), budget: 70000, label: "现状（复刻生产规则）" };
+
+let last;
+function run() {
+  const raw = DB[st.page].raw;
+  const base = S.slim(raw, new Set(), 70000);
+  const slim = S.slim(raw, st.on, st.budget);
+  for (const it of corpus(st.page)) {
+    const got = S.resolveLocator(it.loc, slim.text);
+    it.verdict = got === it.want ? "hit" : got === null ? "miss" : "drift";
+    it.got = got;
+    if (it.baseVerdict === undefined) {
+      const g0 = S.resolveLocator(it.loc, base.text);
+      it.baseVerdict = g0 === it.want ? "hit" : g0 === null ? "miss" : "drift";
+      it.baseGot = g0;
+    }
+  }
+  last = { raw, base, slim };
+  render(); opts();
+}
+function render() {
+  const { raw, base, slim } = last;
+  const items = corpus(st.page);
+  const g = (v, a) => a.filter((i) => i.verdict === v).length;
+  const dup = items.filter((i) => i.dup), uniq = items.filter((i) => !i.dup);
+  const rate = (a) => a.length ? (100 * g("hit", a) / a.length).toFixed(1) + "%" : "—";
+  const baseDrift = items.filter((i) => i.baseVerdict === "drift").length;
+  const baseMiss = items.filter((i) => i.baseVerdict === "miss").length;
+  $("kpis").innerHTML = [
+    ["原始快照", num(raw.length), "字符"],
+    ["现状（生产规则）", num(base.chars), base.chars > st.budget ? "超预算 " + (base.chars / st.budget).toFixed(1) + "×" : "在预算内"],
+    ["本策略", num(slim.chars), (100 * slim.chars / raw.length).toFixed(1) + "% of 原始"],
+    ["预算", (slim.chars <= st.budget ? "达标" : "超 " + (slim.chars / st.budget).toFixed(1) + "×"), "目标 " + num(st.budget)],
+    ["可寻址引用", slim.refs + " / " + base.refs, "个 @eN 仍在文本里"],
+    ["ref 行数", slim.refLines + " / " + base.refLines, "省掉 " + (base.refLines - slim.refLines) + " 行"],
+    ["命中", g("hit", items) + " / " + items.length, rate(items)],
+    ["指错", `<span class="${g("drift", items) ? "drift" : "ok"}">${g("drift", items)}</span>`, "现状 " + baseDrift],
+    ["未命中", g("miss", items), "现状 " + baseMiss],
+  ].map(([l, v, s]) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="muted" style="font-size:11.5px">${s}</div></div>`).join("");
+  const over = slim.chars > st.budget;
+  $("budgetbar").innerHTML = `<div class="bar"><i class="${over ? "over" : ""}" style="width:${Math.min(100, 100 * slim.chars / st.budget).toFixed(1)}%"></i></div>
+    <div class="note">${over ? `<b style="color:var(--bad)">还差 ${num(slim.chars - st.budget)} 字符 —— 剩下的多是「名字互不相同」的引用，同名折叠救不了。</b>`
+      : `<b style="color:var(--accent)">进入预算</b>，用掉 ${st.budget ? (100 * slim.chars / st.budget).toFixed(0) : 0}%。`}
+      抓取那一跳按 <code>18 + 0.017×原始字符</code> 估 ≈ ${(18 + 0.017 * raw.length).toFixed(0)}ms —— 瘦身发生在抓取<b>之后</b>，省不掉这一跳，省的是交给模型的上下文。
+      裁剪/省略统计：截断 ${slim.truncated}、整行省略 ${slim.dropped}、降级 ${slim.degraded}、压块 ${slim.groupDropped}。</div>`;
+  const row = (l, a) => `<tr><td>${l}</td><td class="num">${a.length}</td><td class="num ok">${g("hit", a)}</td><td class="num drift">${g("drift", a)}</td><td class="num miss">${g("miss", a)}</td><td class="num">${rate(a)}</td></tr>`;
+  $("score").innerHTML = `<tr><th>定位符分组</th><th>总数</th><th>命中</th><th>指错</th><th>未命中</th><th>命中率</th></tr>`
+    + row("全部元素", items) + row("其中·同名重复", dup) + row("其中·全页唯一", uniq)
+    + `<tr><td class="muted">对照·现状（生产规则）</td><td class="num">${items.length}</td><td class="num">${items.filter(i=>i.baseVerdict==="hit").length}</td><td class="num">${baseDrift}</td><td class="num">${baseMiss}</td><td class="num">${(100*items.filter(i=>i.baseVerdict==="hit").length/items.length).toFixed(1)}%</td></tr>`;
+  const bad = items.filter((i) => i.verdict !== "hit").slice(0, 25);
+  $("detail").innerHTML = `<tr><th>元素</th><th>录制时</th><th>现在解析成</th><th>结论</th><th>定位符本身</th></tr>` + (bad.length ? bad.map((i) =>
+    `<tr><td>${i.loc.role} ${JSON.stringify(i.loc.name)}<div class="muted">位于 ${i.loc.path.at(-1) || "根"}</div></td>
+      <td class="num">${i.want}</td><td class="num">${i.got || "—"}</td>
+      <td class="${i.verdict}">${i.verdict === "miss" ? "未命中" : "指错"}</td>
+      <td class="muted">同名第 ${i.loc.nth + 1} 个 · 路径 ${i.loc.path.length} 层 · 折叠后同名池里还有 ${corpus(st.page).filter((x) => x.loc.role === i.loc.role && x.loc.name === i.loc.name).length} 个候选</td></tr>`).join("")
+    : `<tr><td class="ok" colspan="5">全部命中：这一档没有让任何定位符指错或失配。</td></tr>`);
+  const lines = slim.text.split("\n").slice(0, 90).map((l) => {
+    const esc = l.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    return /\[x\d+: /.test(esc) ? esc.replace(/(\[x\d+: [^\]]*\])/, "<mark>$1</mark>") : esc;
+  });
+  $("preview").innerHTML = lines.join("\n") + "\n<span class='muted'>… 其余行省略</span>";
+}
+function opts() {
+  $("pages").innerHTML = Object.keys(DB).map((p) => `<button class="${p === st.page ? "on" : ""}" data-v="${p}">${p}</button>`).join("");
+  $("pages").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; st.page = b.dataset.v; run(); };
+  $("stages").innerHTML = `<button class="${st.on.size === 0 ? "on" : ""}" data-v="__base">现状（不削减）</button>` +
+    S.STAGES.map((k) => `<label class="ck"><input type="checkbox" value="${k}" ${st.on.has(k) ? "checked" : ""}> ${S.STAGE_LABEL[k]}</label>`).join("");
+  $("stages").querySelector(`[data-v="__base"]`).onclick = () => { st.on = new Set(); run(); };
+  [...$("stages").querySelectorAll("input")].forEach((c) => c.onchange = () => {
+    c.checked ? st.on.add(c.value) : st.on.delete(c.value);
+    if (c.value === "path" && c.checked && !st.on.has("foldRegion") && !st.on.has("foldGlobal")) st.on.add("foldGlobal");
+    if ((c.value === "foldRegion" || c.value === "foldGlobal") && !c.checked) st.on.delete("path");
+    if (c.value === "foldGlobal" && c.checked) st.on.delete("foldRegion");
+    if (c.value === "foldRegion" && c.checked) st.on.delete("foldGlobal");
+    run();
+  });
+}
+$("budget").oninput = (e) => { st.budget = +e.target.value; $("budgetv").textContent = num(st.budget); run(); };
+
+const SC = [
+  { n: "A · 预算为什么必然击穿", d: "element-plus Table 文档页，684 个可交互元素。先看「现状」下 20k 预算被超多少，再逐档叠加削减，盯住「指错」这一列是否一直是 0。", s: [
+    ["现状（生产规则）", () => { st.page = P("heavy"); st.on = new Set(); st.budget = 20000; }],
+    ["＋① 同名折叠·同区块", () => st.on = new Set(["foldRegion"])],
+    ["换成 ② 跨区块折叠", () => st.on = new Set(["foldGlobal"])],
+    ["＋③ 剥 [ctx:] 标注", () => st.on = new Set(["foldGlobal", "ctx"])],
+    ["＋④ 成员带上最深祖先", () => st.on = new Set(["foldGlobal", "ctx", "path"])],
+    ["＋⑤ 折叠标记降级为计数", () => st.on = new Set(["foldGlobal", "ctx", "path", "degrade"])],
+    ["＋⑥ 整块压成计数行", () => st.on = new Set(["foldGlobal", "ctx", "path", "degrade", "dropGroups"])],
+    ["回到 40k（上下文中限）", () => st.budget = 40000],
+  ]},
+  { n: "B · 同名跨区块（ADR-0001 的坑）", d: "页面有多个一模一样的 link \"Edit on GitHub\"／heading 下的 Permalink，分属不同区块；折叠会把同名序号 nth 重排。对比 ③「折叠时保留最深祖先」花字符买消歧值不值。", s: [
+    ["② 跨区块 + 剥标注", () => { st.page = P("heavy"); st.on = new Set(["foldGlobal", "ctx"]); st.budget = 20000; }],
+    ["改成 ① 同区块（对照）", () => st.on = new Set(["foldRegion", "ctx"])],
+    ["②＋④ 补回路径", () => st.on = new Set(["foldGlobal", "ctx", "path"])],
+    ["②＋④＋⑤ 再降级", () => st.on = new Set(["foldGlobal", "ctx", "path", "degrade"])],
+  ]},
+  { n: "C · 表格行复选框：nth 还会不会指对", d: "「Select this row」每行一个。折叠后这些引用收进同一个标记里、路径几乎相同，全靠同名序号 —— 这一组最容易假通过。", s: [
+    ["现状", () => { st.page = P("heavy"); st.on = new Set(); st.budget = 20000; }],
+    ["② 跨区块折叠", () => st.on = new Set(["foldGlobal"])],
+    ["① 同区块折叠（对照）", () => st.on = new Set(["foldRegion"])],
+    ["②＋④ 补路径", () => st.on = new Set(["foldGlobal", "path"])],
+    ["明细看这些元素", () => {}],
+  ]},
+  { n: "D · 轻页面：会不会白折腾", d: "本地冒烟页只有十几个引用。看同样档位在小页面上省了多少字符、有没有引入任何指错 —— 决定要不要按页面大小分档生效。", s: [
+    ["轻页面 · 现状", () => { st.page = P("light"); st.on = new Set(); st.budget = 20000; }],
+    ["全部档位打开", () => st.on = new Set(ALL)],
+    ["预算压到 2k", () => st.budget = 2000],
+  ]},
+];
+const P = (kind) => Object.keys(DB).find((k) => (kind === "heavy" ? /Table/i.test(k) : /冒烟|本地|smoke/i.test(k))) || Object.keys(DB)[kind === "heavy" ? 0 : 1];
+let sc = 0, sp = 0;
+function renderScen() {
+  $("tabs").innerHTML = SC.map((x, i) => `<button class="${i === sc ? "on" : ""}" data-i="${i}">${x.n}</button>`).join("");
+  [...$("tabs").children].forEach((b) => b.onclick = () => { sc = +b.dataset.i; sp = 0; runScen(); });
+  const s = SC[sc];
+  $("scendesc").innerHTML = `<b>${s.n}</b><div class="muted">${s.d}</div>`;
+  $("scenbtns").innerHTML = s.s.map((x, i) => `<button class="${i < sp ? "done" : ""}" data-i="${i}">${i + 1}. ${x[0]}</button>`).join("") +
+    `<button data-r="1">↺ 重走</button>`;
+  [...$("scenbtns").children].forEach((b) => b.onclick = () => {
+    if (b.dataset.r) { sp = 0; runScen(); return; }
+    const i = +b.dataset.i; if (i !== sp) return;
+    s.s[i][1](); sp++; runScen();
+  });
+}
+function runScen() {
+  run(); renderScen();
+  $("scenlog").textContent = report();
+}
+function report() {
+  const { base, slim } = last, items = corpus(st.page);
+  const g = (v, a) => a.filter((i) => i.verdict === v).length;
+  const dup = items.filter((i) => i.dup), uniq = items.filter((i) => !i.dup);
+  const pc = (a) => a.length ? (100 * g("hit", a) / a.length).toFixed(1) : "—";
+  return [
+    `页面「${st.page}」· 档位 [${[...st.on].join(", ") || "无（现状）"}] · 预算 ${num(st.budget)}`,
+    `  字符      原始 ${num(base.refs && DB[st.page].raw.length)} → 现状 ${num(base.chars)} → 本策略 ${num(slim.chars)}   预算${slim.chars > st.budget ? "超 " + (slim.chars / st.budget).toFixed(1) + "×" : "达标"}`,
+    `  引用      现状 ${base.refs} 可寻址（${base.refLines} 行）→ 本策略 ${slim.refs}（${slim.refLines} 行）`,
+    `  定位符    ${items.length} 条：命中 ${g("hit", items)} · 指错 ${g("drift", items)} · 未命中 ${g("miss", items)}    （现状对照 命中 ${items.filter(i=>i.baseVerdict==="hit").length} · 指错 ${items.filter(i=>i.baseVerdict==="drift").length} · 未命中 ${items.filter(i=>i.baseVerdict==="miss").length}）`,
+    `            同名重复 ${dup.length} 条命中 ${pc(dup)}% | 唯一 ${uniq.length} 条命中 ${pc(uniq)}%`,
+    `  上下文    交给模型：现状 ${num(base.chars)} → 本策略 ${num(slim.chars)} 字符（省 ${(100 - 100 * slim.chars / base.chars).toFixed(0)}%）· 40k 中限可容快照 ${(40000 / slim.chars).toFixed(1)} 次`,
+    `  抓取耗时  ${(18 + 0.017 * last.raw.length).toFixed(0)}ms（由原始 ${num(last.raw.length)} 字符决定，瘦身在抓取之后 → 这一跳省不掉）`,
+  ].join("\n");
+}
+opts(); run(); renderScen();
+</script>
+</body>
+</html>

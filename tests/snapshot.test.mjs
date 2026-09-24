@@ -1,6 +1,10 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { parseSnapshotRefs } from "../dist/locator.js";
+import {
+  buildLocator,
+  parseSnapshotRefs,
+  resolveLocator,
+} from "../dist/locator.js";
 import { slimSnapshot } from "../dist/snapshot.js";
 
 // 纯单元测试：只依赖 dist/*，不需要 bsk / LLM。
@@ -47,6 +51,8 @@ describe("快照瘦身（slimSnapshot）", () => {
     assert.equal(r.text, SMALL_SNAPSHOT);
     assert.equal(r.truncatedLines, 0);
     assert.equal(r.droppedLines, 0);
+    assert.equal(r.foldedGroups, 0);
+    assert.equal(r.foldedRefs, 0);
   });
 
   test("瘦身后可交互节点与祖先链不变（定位不受影响）", () => {
@@ -129,5 +135,99 @@ describe("快照瘦身（slimSnapshot）", () => {
   test("末尾注明瘦身情况，让模型知道有些内容没看到", () => {
     const r = slimSnapshot(bigSnapshot());
     assert.match(r.text, /\[pageqa\] 快照已瘦身：\d+ → \d+ 字符/);
+  });
+});
+
+/**
+ * 同名折叠：瘦身后仍超预算时，把同角色同名的**叶子**元素折进首行行尾的
+ * `[xN: @eA @eB …]`，一行换成一格。
+ *
+ * 这里守的是折叠的唯一底线：引用号一个都不能丢，且每个元素的定位符
+ * 折前折后都指回自己（`@eN` 编号即文档序，同名序号因此不会错位）。
+ */
+
+/** 一张「每行一个同名复选框」的长表格：rows 行足够撑破 20k 预算。 */
+function tableSnapshot(rows) {
+  const lines = [
+    "@vom 1",
+    "@view 1406x834",
+    "L1 page",
+    '  RootWebArea "Data table"',
+  ];
+  for (let i = 1; i <= rows; i++) {
+    lines.push("    row", `      @e${i} checkbox "Select this row"`);
+  }
+  return lines.join("\n");
+}
+
+describe("同名折叠（超预算时的最后一档）", () => {
+  test("预算还够就不折：重复元素也一行一个原样留着", () => {
+    const raw = tableSnapshot(200); // 每行 ~46 字符：9k 原文，关键行远未破 20k
+    assert.ok(raw.length > 8_000, "用例本身要超过瘦身阈值");
+    const r = slimSnapshot(raw);
+    assert.equal(r.foldedGroups, 0);
+    assert.equal(r.foldedRefs, 0);
+    assert.deepEqual(parseSnapshotRefs(r.text), parseSnapshotRefs(raw));
+  });
+
+  test("超预算才折：同名叶子并进首行，行数与字符数显著下降", () => {
+    const raw = tableSnapshot(600); // 27k 全是不可再削的关键行，必然破 20k 预算
+    const r = slimSnapshot(raw);
+    assert.ok(r.foldedRefs > 0, "应触发折叠");
+    assert.equal(r.foldedGroups, 1, "全部同名，只应有一组");
+    assert.match(r.text, /\[x600: @e2 @e3 /);
+    assert.ok(r.after < 20_000, `折完应回到预算内：${r.after}`);
+    // 成员行消失，但引用号仍在（在 host 行尾）
+    assert.ok(!/^      @e7 checkbox/m.test(r.text));
+    assert.equal(parseSnapshotRefs(r.text).length, 600);
+  });
+
+  test("折叠不改定位：每个元素的定位符都指回自己（含同名序号）", () => {
+    const raw = tableSnapshot(600);
+    const slim = slimSnapshot(raw).text;
+    for (const ref of parseSnapshotRefs(raw)) {
+      const loc = buildLocator(ref.ref, raw);
+      assert.equal(
+        resolveLocator(loc, slim),
+        ref.ref,
+        `${ref.ref}（第 ${loc.nth + 1} 个同名）在折叠后的快照里指错了`,
+      );
+    }
+  });
+
+  test("挂着别的元素的容器行不折：删它会毁掉后代的祖先路径", () => {
+    const lines = ["@vom 1", "@view 1406x834", "L1 page", '  RootWebArea "x"'];
+    let n = 0;
+    for (let i = 0; i < 400; i++) {
+      // 每行：同名容器（button "展开"）+ 它自己的孩子（link "详情"）
+      lines.push(`    @e${++n} button "展开"`, `      @e${++n} link "详情" [→ a.com]`);
+      lines.push(`    textblock "${"填充文本".repeat(30)}"`);
+    }
+    const raw = lines.join("\n");
+    const r = slimSnapshot(raw);
+    // 两组都超预算，但「展开」每个都挂着后代，只能折叶子「详情」
+    assert.equal(r.foldedGroups, 1);
+    assert.match(r.text, /\[x400: @e\d+ @e\d+ /);
+    assert.ok(/^    @e1 button "展开"$/m.test(r.text), "容器行必须原样保留");
+    assert.ok(
+      !/^      @e4 link "详情"/m.test(r.text),
+      "叶子成员应折进 host 行，不再独占一行",
+    );
+    assert.equal(parseSnapshotRefs(r.text).length, 800);
+    for (const ref of parseSnapshotRefs(raw)) {
+      assert.equal(
+        resolveLocator(buildLocator(ref.ref, raw), r.text),
+        ref.ref,
+        `${ref.ref} 定位改变`,
+      );
+    }
+  });
+
+  test("末尾注明折叠了多少成员，模型才知道有元素被并走了", () => {
+    const r = slimSnapshot(tableSnapshot(600));
+    // 只取末行比对：整段快照太大，失败时刷屏
+    const notice = r.text.split("\n").at(-1);
+    assert.match(notice, /599 个同名元素折进所在组首行的 \[xN: @eA @eB …\] 标记/);
+    assert.match(notice, /引用号全部保留、均可按 @eN 寻址/);
   });
 });

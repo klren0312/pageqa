@@ -491,7 +491,9 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     if (slim.applied) {
       debugLog(
         `[bsk] snapshot 瘦身：${slim.before} -> ${slim.after} 字符` +
-          `（截断 ${slim.truncatedLines} 行、省略 ${slim.droppedLines} 行）`,
+          `（截断 ${slim.truncatedLines} 行、省略 ${slim.droppedLines} 行` +
+          (slim.foldedRefs ? `、同名折叠 ${slim.foldedRefs} 个元素` : "") +
+          `）`,
       );
     } else {
       // 快照体积直接决定上下文压力（长流程易因上下文超限被中断）

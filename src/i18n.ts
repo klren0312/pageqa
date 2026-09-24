@@ -417,7 +417,7 @@ const catalogs: Record<Locale, Catalog> = {
     "report.assertIncomplete":
       "用例中的断言全部执行（实际 {got}/{expected}）",
     "report.assertIncompleteEvidence1":
-      "解析到的断言少于用例中的断言数量，疑似步骤未执行完就结束",
+      "解析到的断言少于用例声明的数量：可能某条「断言」仅被 snapshot 肉眼确认、未真正调用 assert_text/download 工具，导致该断言未被工具记录（步骤本身可能已跑完）",
     "report.assertIncompleteEvidence2": "最后进展：{note}",
     "report.stepsIncomplete": "全部步骤执行完成（{done}/{total}）",
     "report.stepsIncompleteEvidence1": "agent 自报的步骤完成度不足",
@@ -1068,7 +1068,7 @@ const catalogs: Record<Locale, Catalog> = {
     "report.assertIncomplete":
       "all assertions in the case executed (actual {got}/{expected})",
     "report.assertIncompleteEvidence1":
-      "fewer assertions parsed than declared in the case; the run likely ended before finishing",
+      "fewer assertions recorded than declared in the case: some 'assert' step may have only been visually confirmed via snapshot without an actual assert_text/download tool call, so it was not recorded (the steps themselves may have finished)",
     "report.assertIncompleteEvidence2": "last progress: {note}",
     "report.stepsIncomplete": "all steps executed completely ({done}/{total})",
     "report.stepsIncompleteEvidence1":

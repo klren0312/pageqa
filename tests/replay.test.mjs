@@ -101,13 +101,14 @@ describe("locator 构造与重定位", () => {
     ].join("\n");
     const third = buildLocator("@e3", snapshot);
     assert.equal(third.nth, 2);
-    // 回放时行顺序不变、但引用编号变了
+    // 回放时行顺序不变、但引用编号整体换了一批
+    // （编号与文档序一致是 bsk 的约定，parseSnapshotRefs 正是靠它归序）
     const snapshot2 = [
-      '  @e9 button "操作"',
+      '  @e7 button "操作"',
       '  @e8 button "操作"',
-      '  @e5 button "操作"',
+      '  @e9 button "操作"',
     ].join("\n");
-    assert.equal(resolveLocator(third, snapshot2), "@e5");
+    assert.equal(resolveLocator(third, snapshot2), "@e9");
   });
 
   test("文案加后缀时按包含匹配，仍能命中", () => {
@@ -144,6 +145,56 @@ describe("locator 构造与重定位", () => {
     // 完全拿不到路径信息时，才退回「同名序号」
     const noPath = '  @e1 button "操作"\n  @e2 button "操作"';
     assert.equal(resolveLocator(loc, noPath), "@e2");
+  });
+
+  test("路径同分多个候选时，同名序号要按「全同名池」取", () => {
+    // 录制：@e3 是「B 区第 2 个」，但它的同名序号是整页文档序里的第 3 个
+    const recorded = [
+      '  tabpanel "A"',
+      '    @e1 button "操作"',
+      '  tabpanel "B"',
+      '    @e2 button "操作"',
+      '    @e3 button "操作"',
+    ].join("\n");
+    const loc = buildLocator("@e3", recorded);
+    assert.equal(loc.nth, 2);
+    assert.deepEqual(loc.path, ['tabpanel "B"']);
+
+    // 回放：页面没变、引用号换了一批；B 区两个「操作」路径同分，都算匹配
+    const replay = [
+      '  tabpanel "A"',
+      '    @e5 button "操作"',
+      '  tabpanel "B"',
+      '    @e6 button "操作"',
+      '    @e7 button "操作"',
+    ].join("\n");
+    // 把「全同名池的第 3 个」直接拿去索引「路径同分这个子集」（只有 2 个）会越界，
+    // 退回子集第 1 个就静默点成 @e6 —— 两个序号空间不是一回事。
+    assert.equal(resolveLocator(loc, replay), "@e7");
+  });
+
+  test("折叠标记 [xN: @eA @eB …] 里的成员照样可寻址，且不打乱同名序号", () => {
+    const slimmed = [
+      "  tabpanel \"A\"",
+      '    @e1 button "操作" [x4: @e2 @e3 @e9]',
+      "  tabpanel \"B\"",
+      '    @e7 button "操作"',
+    ].join("\n");
+    const refs = parseSnapshotRefs(slimmed);
+    // 按引用号归序 = bsk 的文档序，折叠只是把成员挪到行尾，序号空间不能跟着挪
+    assert.deepEqual(refs.map((r) => r.ref), ["@e1", "@e2", "@e3", "@e7", "@e9"]);
+    assert.deepEqual(
+      refs.map((r) => r.name),
+      ["操作", "操作", "操作", "操作", "操作"],
+    );
+    // 成员继承 host 行的路径（折叠的全部意义就是省掉重复的整行）
+    assert.deepEqual(refs[2].path, ['tabpanel "A"']);
+    assert.deepEqual(refs[3].path, ['tabpanel "B"']);
+    // 元素名里恰好写着 `[x1: @e9]` 也不算折叠标记：标记只认行尾
+    assert.equal(parseSnapshotRefs('  @e1 button "[x2: @e9]"').length, 1);
+    for (const ref of refs) {
+      assert.equal(resolveLocator(buildLocator(ref.ref, slimmed), slimmed), ref.ref);
+    }
   });
 
   test("祖先路径做过截断与层数限制（整页文本的祖先不该进脚本）", () => {

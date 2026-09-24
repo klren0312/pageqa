@@ -1,0 +1,1253 @@
+@vom 1
+@view 1404x797
+@layers 1 focus=L1
+L1 page
+  RootWebArea "Form | Element Plus"
+    @e1 link "Skip to content"
+    banner "2.14.6"
+      @e2 link "Element Plus Logo"
+      StaticText "2.14.6"
+      @e3 button "Search (Control+k)"
+      navigation "[ ]"
+        @e4 link "Guide"
+        @e5 link "Component" [ctx: v-if [ ] 2.14.6]
+        @e6 link "Resource"
+        @e7 link "Playground" [→ element-plus.run]
+      @e8 switch "toggle dark mode" [unchecked] ="on"
+      @e9 button "v-if"
+      @e10 button "Choose the language that you want"
+      @e11 link "GitHub" [ctx: v-if] [→ github.com]
+    complementary "Sponsored by Overview Basic Configuration Form Data Navigation Feedback Others"
+      paragraph "Sponsored by"
+        StaticText "Sponsored by"
+      @e12 link "JNPF" [→ www.jnpfsoft.com]
+      @e13 link "CRMEB" [→ github.crmeb.net]
+      paragraph "Overview"
+        StaticText "Overview"
+      @e14 link "Overview"
+      paragraph "Basic"
+        StaticText "Basic"
+      @e15 link "Button"
+      @e16 link "Border"
+      @e17 link "Color"
+      @e18 link "Layout Container"
+      @e19 link "Icon"
+      @e20 link "Text 2.3.0"
+      @e21 link "Scrollbar"
+      @e22 link "Space"
+      @e23 link "Splitter 2.10.0"
+      @e24 link "Typography"
+      paragraph "Configuration"
+        StaticText "Configuration"
+      @e25 link "Config Provider"
+      paragraph "Form"
+        StaticText "Form"
+      @e26 link "Autocomplete"
+      @e27 link "Cascader"
+      @e28 link "Checkbox"
+      @e29 link "Color Picker Panel 2.11.0"
+      @e30 link "Color Picker"
+      @e31 link "Date Picker Panel 2.11.0"
+      @e32 link "Date Picker"
+      @e33 link "DateTime Picker" [ctx: Sponsored by [ ] [ ]]
+      @e34 link "Form"
+      @e35 link "Input" [ctx: Sponsored by [ ] [ ]]
+      @e36 link "Input Number"
+      @e37 link "Input Tag 2.9.0"
+      @e38 link "Input OTP 2.14.0"
+      @e39 link "Mention 2.8.0"
+      @e40 link "Radio"
+      @e41 link "Rate"
+      @e42 link "Select"
+      @e43 link "Virtualized Select"
+      @e44 link "Slider"
+      @e45 link "Switch"
+      @e46 link "Time Picker"
+      @e47 link "Time Select"
+      @e48 link "Transfer"
+      @e49 link "TreeSelect 2.1.8"
+      @e50 link "Upload"
+      paragraph "Data"
+        StaticText "Data"
+      @e51 link "Avatar"
+      @e52 link "Badge"
+      @e53 link "Calendar"
+      @e54 link "Card"
+      @e55 link "Carousel"
+      @e56 link "Collapse"
+      @e57 link "Descriptions"
+      @e58 link "Empty" [ctx: Sponsored by [ ] [ ]]
+      @e59 link "Image"
+      @e60 link "Infinite Scroll"
+      @e61 link "Pagination"
+      @e62 link "Progress"
+      @e63 link "Result"
+      @e64 link "Skeleton"
+      @e65 link "Table"
+      @e66 link "Virtualized Table 2.2.0"
+      @e67 link "Tag"
+      @e68 link "Timeline"
+      @e69 link "Tour 2.5.0"
+      @e70 link "Tree"
+      @e71 link "Virtualized Tree"
+      @e72 link "Statistic 2.2.30"
+      @e73 link "Segmented 2.7.0"
+      paragraph "Navigation"
+        StaticText "Navigation"
+      @e74 link "Affix"
+      @e75 link "Anchor 2.6.0"
+      @e76 link "Backtop"
+      @e77 link "Breadcrumb"
+      @e78 link "Dropdown"
+      @e79 link "Menu"
+      @e80 link "Page Header"
+      @e81 link "Steps"
+      @e82 link "Tabs"
+      paragraph "Feedback"
+        StaticText "Feedback"
+      @e83 link "Alert"
+      @e84 link "Dialog"
+      @e85 link "Drawer"
+      @e86 link "Loading"
+      @e87 link "Message"
+      @e88 link "Message Box"
+      @e89 link "Notification"
+      @e90 link "Popconfirm"
+      @e91 link "Popover"
+      @e92 link "Tooltip"
+      paragraph "Others"
+        StaticText "Others"
+      @e93 link "Divider"
+      @e94 link "Watermark 2.4.0"
+    main "Form Form consists of input , radio , select , checkbox and so on. With form, you can collect, verify and submit data. TIP The component has been upgraded with a flex layout to replace the old float layout. Basic Form It includes all kinds"
+      heading "Form Permalink to \"Form\""
+        @e95 link "Permalink to \"Form\""
+        StaticText "Form"
+      @e96 button "Changelog" [ctx: 2.14.6]
+      @e97 button "Open issues 36"
+      paragraph "Form consists of input , radio , select , checkbox and so on. With form, you can collect, verify and submit data."
+        code "input"
+          StaticText "input"
+        code "radio"
+          StaticText "radio"
+        code "select"
+          StaticText "select"
+        code "checkbox"
+          StaticText "checkbox"
+        StaticText "Form consists of"
+        StaticText ","
+        StaticText ","
+        StaticText ","
+        StaticText "and so on. With form, you can collect, verify and submit data."
+      paragraph "TIP"
+        StaticText "TIP"
+      paragraph "The component has been upgraded with a flex layout to replace the old float layout."
+        StaticText "The component has been upgraded with a flex layout to replace the old float layout."
+      heading "Basic Form Permalink to \"Basic Form\""
+        @e98 link "Permalink to \"Basic Form\""
+        StaticText "Basic Form"
+      paragraph "It includes all kinds of input items, such as input , select , radio and checkbox ."
+        code "input"
+          StaticText "input"
+        code "select"
+          StaticText "select"
+        code "radio"
+          StaticText "radio"
+        code "checkbox"
+          StaticText "checkbox"
+        StaticText "It includes all kinds of input items, such as"
+        StaticText ","
+        StaticText ","
+        StaticText "and"
+        StaticText "."
+      paragraph "In each form component, you need a form-item field to be the container of your input item."
+        code "form"
+          StaticText "form"
+        code "form-item"
+          StaticText "form-item"
+        StaticText "In each"
+        StaticText "component, you need a"
+        StaticText "field to be the container of your input item."
+      form "Activity name Activity zone please select your zone Activity time - Activity type Online activities Promotion activities Offline activities Simple brand exposure Resources Sponsor Venue Activity form"
+        LabelText "Activity name"
+          StaticText "Activity name"
+        @e99 textbox "Activity name" [ctx: [ ] Activity name] [empty]
+        LabelText "Activity zone"
+          StaticText "Activity zone"
+        @e100 button "please select your zone" [ctx: v-if]
+        @e101 button "v-if v-if [ ]" [ctx: please select your zone]
+        group "Activity time"
+          StaticText "Activity time"
+          @e102 combobox "Pick a date [has-submenu]" [ctx: [ ] v-if [ ]] placeholder="Pick a date"
+          StaticText "-"
+          @e103 combobox "Pick a time [has-submenu]" [ctx: [ [ teleport start teleport end ] ] input [ prepend slot v-if append slot v-if ] prefix slot suffix slot [ ] v-if [ ] v-if [ [ ] v-if ] v-if v-if v-if] placeholder="Pick a time"
+        @e104 switch "Instant delivery" [ctx: [ ] Activity name [ ] [ ] input [ prepend slot v-if append slot v-if ] prefix slot v-if suffix slot v-if] [unchecked] ="on"
+        @e105 button "v-if [ v-if ]" [ctx: [ ] Activity name [ ] [ ] input [ prepend slot v-if append slot v-if ] prefix slot v-if suffix slot v-if]
+        LabelText "Activity type"
+          StaticText "Activity type"
+        group "Activity type"
+          LabelText "Online activities"
+            @e106 checkbox "Online activities" [ctx: Activity type] [unchecked] ="Online activities"
+            @e107 button "[ Online activities ] v-if" [ctx: Activity type]
+            @e108 button "[ Online activities ] v-if" [ctx: Activity type]
+          LabelText "Promotion activities"
+            @e109 checkbox "Promotion activities" [ctx: Online activities] [unchecked] ="Promotion activities"
+            @e110 button "[ Promotion activities ] v-if" [ctx: Online activities]
+            @e111 button "[ Promotion activities ] v-if" [ctx: Online activities]
+          LabelText "Offline activities"
+            @e112 checkbox "Offline activities" [ctx: Online activities] [unchecked] ="Offline activities"
+            @e113 button "[ Offline activities ] v-if" [ctx: Online activities]
+            @e114 button "[ Offline activities ] v-if" [ctx: Online activities]
+          LabelText "Simple brand exposure"
+            @e115 checkbox "Simple brand exposure" [ctx: Online activities] [unchecked] ="Simple brand exposure"
+            @e116 button "[ Simple brand exposure ] v-if" [ctx: Online activities]
+            @e117 button "[ Simple brand exposure ] v-if" [ctx: Online activities]
+        LabelText "Resources"
+          StaticText "Resources"
+        radiogroup "Resources"
+          LabelText "Sponsor"
+            @e118 radio "Sponsor" [ctx: Activity time] [unchecked] ="Sponsor"
+            @e119 button "[ Sponsor ]" [ctx: Activity time]
+            @e120 button "[ Sponsor ]" [ctx: Activity time]
+          LabelText "Venue"
+            @e121 radio "Venue" [ctx: Activity time] [unchecked] ="Venue"
+            @e122 button "[ Venue ]" [ctx: Activity time]
+            @e123 button "[ Venue ]" [ctx: Activity time]
+        LabelText "Activity form"
+          StaticText "Activity form"
+        @e124 textbox "Activity form" [ctx: [ ] Instant delivery [ ] [ ] v-if v-if v-if [ v-if ]] [empty]
+        @e125 button "Create" [ctx: [ ] Activity type [ ] [ ] [ ] [ Online activities ] v-if [ Promotion activities ] v-if [ Offline activities ] v-if [ Simple brand exposure ] v-if]
+        @e126 button "Cancel" [ctx: [ ] Activity type [ ] [ ] [ ] [ Online activities ] v-if [ Promotion activities ] v-if [ Offline activities ] v-if [ Simple brand exposure ] v-if]
+      separator "v-if"
+      radiogroup "segmented"
+        LabelText "TS"
+          @e127 radio "TS" [ctx: 2.14.6] [checked] ="on"
+          @e128 button "[ TS ]" [ctx: 2.14.6]
+        LabelText "JS"
+          @e129 radio "JS" [ctx: 2.14.6] [unchecked] ="on"
+          @e130 button "[ JS ]" [ctx: 2.14.6]
+      @e131 link "Edit in Playground" [ctx: 2.14.6] [→ element-plus.run]
+      @e132 link "Edit on GitHub" [ctx: 2.14.6] [→ github.com]
+      @e133 button "Copy code" [ctx: 2.14.6]
+      @e134 button "View source" [ctx: 2.14.6]
+      paragraph "TIP"
+        StaticText "TIP"
+      paragraph "regulates that"
+        @e135 link "W3C" [→ www.w3.org]
+        StaticText "regulates that"
+      blockquote "When there is only one single-line text input field in a form, the user agent should accept Enter in that field as a request to submit the form."
+        paragraph "When there is only one single-line text input field in a form, the user agent should accept Enter in that field as a request to submit the form."
+          StaticText "When there is only one single-line text input field in a form, the user agent should accept Enter in that field as a request to submit the form."
+      paragraph "To prevent this behavior, you can add @submit.prevent on <el-form> ."
+        code "@submit.prevent"
+          StaticText "@submit.prevent"
+        code "<el-form>"
+          StaticText "<el-form>"
+        StaticText "To prevent this behavior, you can add"
+        StaticText "on"
+        StaticText "."
+      heading "Inline Form Permalink to \"Inline Form\""
+        @e136 link "Permalink to \"Inline Form\""
+        StaticText "Inline Form"
+      paragraph "When the vertical space is limited and the form is relatively simple, you can put it in one line."
+        StaticText "When the vertical space is limited and the form is relatively simple, you can put it in one line."
+      paragraph "Set the inline attribute to true and the form will be inline."
+        code "inline"
+          StaticText "inline"
+        code "true"
+          StaticText "true"
+        StaticText "Set the"
+        StaticText "attribute to"
+        StaticText "and the form will be inline."
+      form "Approved by Activity zone Activity zone Activity time"
+        LabelText "Approved by"
+          StaticText "Approved by"
+        @e137 textbox "Approved by" [empty] placeholder="Approved by"
+        LabelText "Activity zone"
+          StaticText "Activity zone"
+        @e138 combobox "Activity zone [has-submenu]" [ctx: Activity zone]
+        @e139 button "Activity zone" [ctx: v-if]
+        @e140 button "v-if v-if [ ]" [ctx: Activity zone]
+        LabelText "Activity time"
+          StaticText "Activity time"
+        @e141 combobox "Activity time [has-submenu]" placeholder="Pick a date"
+        @e142 button "Query"
+      separator "v-if"
+      radiogroup "segmented"
+        LabelText "TS"
+          @e143 radio "TS" [ctx: 2.14.6] [checked] ="on"
+          @e144 button "[ TS ]" [ctx: 2.14.6]
+        LabelText "JS"
+          @e145 radio "JS" [ctx: 2.14.6] [unchecked] ="on"
+          @e146 button "[ JS ]" [ctx: 2.14.6]
+      @e147 link "Edit in Playground" [ctx: 2.14.6] [→ element-plus.run]
+      @e148 link "Edit on GitHub" [ctx: 2.14.6] [→ github.com]
+      @e149 button "Copy code" [ctx: 2.14.6]
+      @e150 button "View source" [ctx: 2.14.6]
+      heading "Alignment Permalink to \"Alignment\""
+        @e151 link "Permalink to \"Alignment\""
+        StaticText "Alignment"
+      paragraph "Depending on your design, there are several different ways to align your label element."
+        StaticText "Depending on your design, there are several different ways to align your label element."
+      paragraph "You can set label-position of el-form-item separately 2.7.7 . If the value is empty, the label-position of el-form is used."
+        code "label-position"
+          StaticText "label-position"
+        code "el-form-item"
+          StaticText "el-form-item"
+        StaticText "2.7.7"
+        code "label-position"
+          StaticText "label-position"
+        code "el-form"
+          StaticText "el-form"
+        StaticText "You can set"
+        StaticText "of"
+        StaticText "separately"
+        StaticText ". If the value is empty, the"
+        StaticText "of"
+        StaticText "is used."
+      paragraph "The label-position attribute decides how labels align, it can be top or left . When set to top , labels will be placed at the top of the form field."
+        code "label-position"
+          StaticText "label-position"
+        code "top"
+          StaticText "top"
+        code "left"
+          StaticText "left"
+        code "top"
+          StaticText "top"
+        StaticText "The"
+        StaticText "attribute decides how labels align, it can be"
+        StaticText "or"
+        StaticText ". When set to"
+        StaticText ", labels will be placed at the top of the form field."
+      form "Form Align Left Right Top Form Item Align Empty Left Right Top Name Activity zone Activity form"
+        LabelText "Form Align"
+          StaticText "Form Align"
+        radiogroup "label position"
+          LabelText "Left"
+            @e152 radio "Left" [ctx: [ ] Form Align] [unchecked] ="left"
+            @e153 button "[ Left ]" [ctx: [ ] Form Align]
+          LabelText "Right"
+            @e154 radio "Right" [ctx: Left] [checked] ="right"
+            @e155 button "[ Right ]" [ctx: Left]
+          LabelText "Top"
+            @e156 radio "Top" [ctx: Left] [unchecked] ="top"
+            @e157 button "[ Top ]" [ctx: Left]
+        LabelText "Form Item Align"
+          StaticText "Form Item Align"
+        radiogroup "item label position"
+          LabelText "Empty"
+            @e158 radio "Empty" [ctx: [ ] Form Item Align] [checked]
+            @e159 button "[ Empty ]"
+          LabelText "Left"
+            @e160 radio "Left" [ctx: Empty] [unchecked] ="left"
+            @e161 button "[ Left ]" [ctx: Empty]
+          LabelText "Right"
+            @e162 radio "Right" [ctx: Left] [unchecked] ="right"
+            @e163 button "[ Right ]" [ctx: Left]
+          LabelText "Top"
+            @e164 radio "Top" [ctx: Right] [unchecked] ="top"
+            @e165 button "[ Top ]" [ctx: Right]
+        LabelText "Name"
+          StaticText "Name"
+        @e166 textbox "Name" [empty]
+        LabelText "Activity zone"
+          StaticText "Activity zone"
+        @e167 textbox "Activity zone" [ctx: [ ] Form Align [ ] [ ] [ ] [ Left ] [ Right ] [ Top ]] [empty]
+        LabelText "Activity form"
+          StaticText "Activity form"
+        @e168 textbox "Activity form" [ctx: [ ] Form Item Align [ ] [ ] [ ] [ Empty ] [ Left ] [ Right ] [ Top ]] [empty]
+      separator "v-if"
+      radiogroup "segmented"
+        LabelText "TS"
+          @e169 radio "TS" [ctx: 2.14.6] [checked] ="on"
+          @e170 button "[ TS ]" [ctx: 2.14.6]
+        LabelText "JS"
+          @e171 radio "JS" [ctx: 2.14.6] [unchecked] ="on"
+          @e172 button "[ JS ]" [ctx: 2.14.6]
+      @e173 link "Edit in Playground" [ctx: 2.14.6] [→ element-plus.run]
+      @e174 link "Edit on GitHub" [ctx: 2.14.6] [→ github.com]
+      @e175 button "Copy code" [ctx: 2.14.6]
+      @e176 button "View source" [ctx: 2.14.6]
+      heading "Validation Permalink to \"Validation\""
+        @e177 link "Permalink to \"Validation\""
+        StaticText "Validation"
+      paragraph "Form component allows you to verify your data, helping you find and correct errors."
+        StaticText "Form component allows you to verify your data, helping you find and correct errors."
+      paragraph "Just add the rules attribute for Form component, pass validation rules, and set prop attribute for FormItem as a specific key that needs to be validated. See more information at ."
+        code "rules"
+          StaticText "rules"
+        code "Form"
+          StaticText "Form"
+        code "prop"
+          StaticText "prop"
+        code "FormItem"
+          StaticText "FormItem"
+        @e178 link "async-validator" [ctx: 2.14.6] [→ github.com]
+        StaticText "Just add the"
+        StaticText "attribute for"
+        StaticText "component, pass validation rules, and set"
+        StaticText "attribute for"
+        StaticText "as a specific key that needs to be validated. See more information at"
+        StaticText "."
+      form "* Activity name * Activity zone Activity zone * Activity count Activity count * Activity time - * Activity location Home Company School * Activity type Online activities Promotion activities Offline activities Simple brand exposure * Resour"
+        LabelText "* Activity name"
+          StaticText "*"
+          StaticText "Activity name"
+        @e179 textbox "* Activity name" [filled] ="Hello"
+        LabelText "* Activity zone"
+          StaticText "*"
+          StaticText "Activity zone"
+        @e180 combobox "* Activity zone [has-submenu]"
+        @e181 button "Activity zone" [ctx: v-if]
+        @e182 button "v-if v-if [ ]" [ctx: Activity zone]
+        LabelText "* Activity count"
+          StaticText "*"
+          StaticText "Activity count"
+        @e183 combobox "* Activity count [has-submenu]"
+        @e184 button "Activity count" [ctx: [ ] Activity count]
+        @e185 button "v-if v-if [ ]" [ctx: [ ] Activity count]
+        group "* Activity time"
+          StaticText "*"
+          StaticText "Activity time"
+          @e186 combobox "Pick a date [has-submenu]" [ctx: [ ] v-if [ ]] placeholder="Pick a date"
+          StaticText "-"
+          @e187 combobox "Pick a time [has-submenu]" [ctx: [ ] [ v-if ] [ [ teleport start teleport end ] ] [ ] input [ prepend slot v-if append slot v-if ] prefix slot suffix slot [ ] v-if [ ] v-if [ [ ] v-if ] v-if v-if v-if] placeholder="Pick a time"
+        @e188 switch "Instant delivery" [ctx: [ ] Activity zone [ ] [ ] [ teleport start teleport end ] v-if v-if v-if Activity zone v-if v-if [ ]] [unchecked] ="on"
+        @e189 button "v-if [ v-if ]" [ctx: [ ] Activity zone [ ] [ ] [ teleport start teleport end ] v-if v-if v-if Activity zone v-if v-if [ ]]
+        LabelText "* Activity location"
+          StaticText "*"
+          StaticText "Activity location"
+        radiogroup "* Activity location"
+          LabelText "Home"
+            @e190 radio "Home" [unchecked] ="on"
+            @e191 button "[ Home ]"
+          LabelText "Company"
+            @e192 radio "Company" [unchecked] ="on"
+            @e193 button "[ Company ]"
+          LabelText "School"
+            @e194 radio "School" [unchecked] ="on"
+            @e195 button "[ School ]"
+        LabelText "* Activity type"
+          StaticText "*"
+          StaticText "Activity type"
+        group "* Activity type"
+          LabelText "Online activities"
+            @e196 checkbox "Online activities" [ctx: * Activity type] [unchecked] ="Online activities"
+            @e197 button "[ Online activities ] v-if" [ctx: * Activity type]
+            @e198 button "[ Online activities ] v-if" [ctx: * Activity type]
+          LabelText "Promotion activities"
+            @e199 checkbox "Promotion activities" [ctx: Online activities] [unchecked] ="Promotion activities"
+            @e200 button "[ Promotion activities ] v-if" [ctx: Online activities]
+            @e201 button "[ Promotion activities ] v-if" [ctx: Online activities]
+          LabelText "Offline activities"
+            @e202 checkbox "Offline activities" [ctx: Online activities] [unchecked] ="Offline activities"
+            @e203 button "[ Offline activities ] v-if" [ctx: Online activities]
+            @e204 button "[ Offline activities ] v-if" [ctx: Online activities]
+          LabelText "Simple brand exposure"
+            @e205 checkbox "Simple brand exposure" [ctx: Online activities] [unchecked] ="Simple brand exposure"
+            @e206 button "[ Simple brand exposure ] v-if" [ctx: Online activities]
+            @e207 button "[ Simple brand exposure ] v-if" [ctx: Online activities]
+        LabelText "* Resources"
+          StaticText "*"
+          StaticText "Resources"
+        radiogroup "* Resources"
+          LabelText "Sponsorship"
+            @e208 radio "Sponsorship" [unchecked] ="Sponsorship"
+            @e209 button "[ Sponsorship ]" [ctx: [ ] Instant delivery [ ] [ ] v-if v-if v-if [ v-if ]]
+            @e210 button "[ Sponsorship ]" [ctx: [ ] Instant delivery [ ] [ ] v-if v-if v-if [ v-if ]]
+          LabelText "Venue"
+            @e211 radio "Venue" [ctx: [ ] Instant delivery [ ] [ ] v-if v-if v-if [ v-if ]] [unchecked] ="Venue"
+            @e212 button "[ Venue ]" [ctx: [ ] Instant delivery [ ] [ ] v-if v-if v-if [ v-if ]]
+            @e213 button "[ Venue ]" [ctx: [ ] Instant delivery [ ] [ ] v-if v-if v-if [ v-if ]]
+        LabelText "* Activity form"
+          StaticText "*"
+          StaticText "Activity form"
+        @e214 textbox "* Activity form" [empty]
+        @e215 button "Create" [ctx: [ ] Activity type [ ] [ ] [ ] [ Online activities ] v-if [ Promotion activities ] v-if [ Offline activities ] v-if [ Simple brand exposure ] v-if]
+        @e216 button "Reset" [ctx: [ ] Activity type [ ] [ ] [ ] [ Online activities ] v-if [ Promotion activities ] v-if [ Offline activities ] v-if [ Simple brand exposure ] v-if]
+      separator "v-if"
+      radiogroup "segmented"
+        LabelText "TS"
+          @e217 radio "TS" [ctx: 2.14.6] [checked] ="on"
+          @e218 button "[ TS ]" [ctx: 2.14.6]
+        LabelText "JS"
+          @e219 radio "JS" [ctx: 2.14.6] [unchecked] ="on"
+          @e220 button "[ JS ]" [ctx: 2.14.6]
+      @e221 link "Edit in Playground" [ctx: 2.14.6] [→ element-plus.run]
+      @e222 link "Edit on GitHub" [ctx: 2.14.6] [→ github.com]
+      @e223 button "Copy code" [ctx: 2.14.6]
+      @e224 button "View source" [ctx: 2.14.6]
+      heading "Custom Validation Rules Permalink to \"Custom Validation Rules\""
+        @e225 link "Permalink to \"Custom Validation Rules\""
+        StaticText "Custom Validation Rules"
+      paragraph "This example shows how to customize your own validation rules to finish a two-factor password verification."
+        StaticText "This example shows how to customize your own validation rules to finish a two-factor password verification."
+      paragraph "Here we use status-icon to reflect validation result as an icon."
+        code "status-icon"
+          StaticText "status-icon"
+        StaticText "Here we use"
+        StaticText "to reflect validation result as an icon."
+      form "Password Confirm Age"
+        LabelText "Password"
+          StaticText "Password"
+        @e226 textbox "Password" [empty]
+        LabelText "Confirm"
+          StaticText "Confirm"
+        @e227 textbox "Confirm" [empty]
+        LabelText "Age"
+          StaticText "Age"
+        @e228 textbox "Age" [empty]
+        @e229 button "Submit" [ctx: [ ] Password [ ] [ ] input [ prepend slot v-if append slot v-if ] prefix slot v-if suffix slot v-if]
+        @e230 button "Reset" [ctx: [ ] Password [ ] [ ] input [ prepend slot v-if append slot v-if ] prefix slot v-if suffix slot v-if]
+      separator "v-if"
+      radiogroup "segmented"
+        LabelText "TS"
+          @e231 radio "TS" [ctx: 2.14.6] [checked] ="on"
+          @e232 button "[ TS ]" [ctx: 2.14.6]
+        LabelText "JS"
+          @e233 radio "JS" [ctx: 2.14.6] [unchecked] ="on"
+          @e234 button "[ JS ]" [ctx: 2.14.6]
+      @e235 link "Edit in Playground" [ctx: 2.14.6] [→ element-plus.run]
+      @e236 link "Edit on GitHub" [ctx: 2.14.6] [→ github.com]
+      @e237 button "Copy code" [ctx: 2.14.6]
+      @e238 button "View source" [ctx: 2.14.6]
+      paragraph "TIP"
+        StaticText "TIP"
+      paragraph "Custom validate callback function must be called. See more advanced usage at ."
+        @e239 link "async-validator" [ctx: 2.14.6] [→ github.com]
+        StaticText "Custom validate callback function must be called. See more advanced usage at"
+        StaticText "."
+      heading "Add/Delete Form Item Permalink to \"Add/Delete Form Item\""
+        @e240 link "Permalink to \"Add/Delete Form Item\""
+        StaticText "Add/Delete Form Item"
+      paragraph "In addition to passing all validation rules at once on the form component, you can also pass the validation rules or delete rules on a single form field dynamically."
+        StaticText "In addition to passing all validation rules at once on the form component, you can also pass the validation rules or delete rules on a single form field dynamically."
+      form "* Email * Domain0"
+        LabelText "* Email"
+          StaticText "*"
+          StaticText "Email"
+        @e241 textbox "* Email" [empty]
+        LabelText "* Domain0"
+          StaticText "*"
+          StaticText "Domain0"
+        @e242 textbox "* Domain0" [empty]
+        @e243 button "Delete"
+        @e244 button "Submit" [ctx: [ ] Email [ ] [ ] input [ prepend slot v-if append slot v-if ] prefix slot v-if suffix slot v-if]
+        @e245 button "New domain"
+        @e246 button "Reset" [ctx: [ ] Email [ ] [ ] input [ prepend slot v-if append slot v-if ] prefix slot v-if suffix slot v-if]
+      separator "v-if"
+      radiogroup "segmented"
+        LabelText "TS"
+          @e247 radio "TS" [ctx: 2.14.6] [checked] ="on"
+          @e248 button "[ TS ]" [ctx: 2.14.6]
+        LabelText "JS"
+          @e249 radio "JS" [ctx: 2.14.6] [unchecked] ="on"
+          @e250 button "[ JS ]" [ctx: 2.14.6]
+      @e251 link "Edit in Playground" [ctx: 2.14.6] [→ element-plus.run]
+      @e252 link "Edit on GitHub" [ctx: 2.14.6] [→ github.com]
+      @e253 button "Copy code" [ctx: 2.14.6]
+      @e254 button "View source" [ctx: 2.14.6]
+      heading "Number Validate Permalink to \"Number Validate\""
+        @e255 link "Permalink to \"Number Validate\""
+        StaticText "Number Validate"
+      paragraph "Number Validate need a .number modifier added on the input v-model binding，it's used to transform the string value to the number which is provided by Vue."
+        code ".number"
+          StaticText ".number"
+        code "v-model"
+          StaticText "v-model"
+        StaticText "Number Validate need a"
+        StaticText "modifier added on the input"
+        StaticText "binding，it's used to transform the string value to the number which is provided by Vue."
+      form "* age"
+        LabelText "* age"
+          StaticText "*"
+          StaticText "age"
+        @e256 textbox "* age" [empty]
+        @e257 button "Submit" [ctx: [ ] age [ ] [ ] input [ prepend slot v-if append slot v-if ] prefix slot v-if suffix slot v-if]
+        @e258 button "Reset" [ctx: [ ] age [ ] [ ] input [ prepend slot v-if append slot v-if ] prefix slot v-if suffix slot v-if]
+      separator "v-if"
+      radiogroup "segmented"
+        LabelText "TS"
+          @e259 radio "TS" [ctx: 2.14.6] [checked] ="on"
+          @e260 button "[ TS ]" [ctx: 2.14.6]
+        LabelText "JS"
+          @e261 radio "JS" [ctx: 2.14.6] [unchecked] ="on"
+          @e262 button "[ JS ]" [ctx: 2.14.6]
+      @e263 link "Edit in Playground" [ctx: 2.14.6] [→ element-plus.run]
+      @e264 link "Edit on GitHub" [ctx: 2.14.6] [→ github.com]
+      @e265 button "Copy code" [ctx: 2.14.6]
+      @e266 button "View source" [ctx: 2.14.6]
+      paragraph "TIP"
+        StaticText "TIP"
+      paragraph "When an el-form-item is nested in another el-form-item , its label width will be 0 . You can set label-width on that el-form-item if needed."
+        code "el-form-item"
+          StaticText "el-form-item"
+        code "el-form-item"
+          StaticText "el-form-item"
+        code "0"
+          StaticText "0"
+        code "label-width"
+          StaticText "label-width"
+        code "el-form-item"
+          StaticText "el-form-item"
+        StaticText "When an"
+        StaticText "is nested in another"
+        StaticText ", its label width will be"
+        StaticText ". You can set"
+        StaticText "on that"
+        StaticText "if needed."
+      heading "Size Control Permalink to \"Size Control\""
+        @e267 link "Permalink to \"Size Control\""
+        StaticText "Size Control"
+      paragraph "All components in a Form inherit their size attribute from that Form. Similarly, FormItem also has a size attribute."
+        code "size"
+          StaticText "size"
+        code "size"
+          StaticText "size"
+        StaticText "All components in a Form inherit their"
+        StaticText "attribute from that Form. Similarly, FormItem also has a"
+        StaticText "attribute."
+      paragraph "Still you can fine tune each component's size if you don't want that component to inherit its size from From or FormItem."
+        code "size"
+          StaticText "size"
+        StaticText "Still you can fine tune each component's"
+        StaticText "if you don't want that component to inherit its size from From or FormItem."
+      radiogroup "size control"
+        LabelText "large"
+          @e268 radio "large" [unchecked] ="large"
+          @e269 button "[ large ]"
+        LabelText "default"
+          @e270 radio "default" [checked] ="default"
+          @e271 button "[ default ]"
+        LabelText "small"
+          @e272 radio "small" [unchecked] ="small"
+          @e273 button "[ small ]"
+      radiogroup "position control"
+        LabelText "Left"
+          @e274 radio "Left" [ctx: 2.14.6] [unchecked] ="left"
+          @e275 button "[ Left ]" [ctx: 2.14.6]
+        LabelText "Right"
+          @e276 radio "Right" [ctx: 2.14.6] [checked] ="right"
+          @e277 button "[ Right ]" [ctx: 2.14.6]
+        LabelText "Top"
+          @e278 radio "Top" [ctx: 2.14.6] [unchecked] ="top"
+          @e279 button "[ Top ]" [ctx: 2.14.6]
+      form "Activity name Activity zone please select your zone Activity time - Activity type Online activities Promotion activities Resources Sponsor Venue"
+        LabelText "Activity name"
+          StaticText "Activity name"
+        @e280 textbox "Activity name" [ctx: [ ] Activity name] [empty]
+        LabelText "Activity zone"
+          StaticText "Activity zone"
+        @e281 combobox "Activity zone [has-submenu]" [ctx: [ ] Activity zone]
+        @e282 button "please select your zone" [ctx: v-if]
+        @e283 button "v-if v-if [ ]" [ctx: please select your zone]
+        group "Activity time"
+          StaticText "Activity time"
+          @e284 combobox "Pick a date [has-submenu]" [ctx: [ ] v-if [ ]] placeholder="Pick a date"
+          StaticText "-"
+          @e285 combobox "Pick a time [has-submenu]" [ctx: [ [ teleport start teleport end ] ] input [ prepend slot v-if append slot v-if ] prefix slot suffix slot [ ] v-if [ ] v-if [ [ ] v-if ] v-if v-if v-if] placeholder="Pick a time"
+        LabelText "Activity type"
+          StaticText "Activity type"
+        group "Activity type"
+          LabelText "Online activities"
+            @e286 checkbox "Online activities" [ctx: Activity type] [unchecked] ="Online activities"
+            @e287 button "[ Online activities ]"
+          LabelText "Promotion activities"
+            @e288 checkbox "Promotion activities" [ctx: Online activities] [unchecked] ="Promotion activities"
+            @e289 button "[ Promotion activities ]"
+        LabelText "Resources"
+          StaticText "Resources"
+        radiogroup "Resources"
+          LabelText "Sponsor"
+            @e290 radio "Sponsor" [ctx: [ ] Activity zone [ ] [ ] [ teleport start teleport end ] v-if v-if v-if please select your zone v-if v-if [ ]] [unchecked] ="Sponsor"
+            @e291 button "[ Sponsor ]" [ctx: [ ] Activity zone [ ] [ ] [ teleport start teleport end ] v-if v-if v-if please select your zone v-if v-if [ ]]
+            @e292 button "[ Sponsor ]" [ctx: [ ] Activity zone [ ] [ ] [ teleport start teleport end ] v-if v-if v-if please select your zone v-if v-if [ ]]
+          LabelText "Venue"
+            @e293 radio "Venue" [ctx: [ ] Activity zone [ ] [ ] [ teleport start teleport end ] v-if v-if v-if please select your zone v-if v-if [ ]] [unchecked] ="Venue"
+            @e294 button "[ Venue ]" [ctx: [ ] Activity zone [ ] [ ] [ teleport start teleport end ] v-if v-if v-if please select your zone v-if v-if [ ]]
+            @e295 button "[ Venue ]" [ctx: [ ] Activity zone [ ] [ ] [ teleport start teleport end ] v-if v-if v-if please select your zone v-if v-if [ ]]
+        @e296 button "Create" [ctx: Activity time]
+        @e297 button "Cancel" [ctx: Activity time]
+      separator "v-if"
+      radiogroup "segmented"
+        LabelText "TS"
+          @e298 radio "TS" [ctx: 2.14.6] [checked] ="on"
+          @e299 button "[ TS ]" [ctx: 2.14.6]
+        LabelText "JS"
+          @e300 radio "JS" [ctx: 2.14.6] [unchecked] ="on"
+          @e301 button "[ JS ]" [ctx: 2.14.6]
+      @e302 link "Edit in Playground" [ctx: 2.14.6] [→ element-plus.run]
+      @e303 link "Edit on GitHub" [ctx: 2.14.6] [→ github.com]
+      @e304 button "Copy code" [ctx: 2.14.6]
+      @e305 button "View source" [ctx: 2.14.6]
+      heading "Accessibility Permalink to \"Accessibility\""
+        @e306 link "Permalink to \"Accessibility\""
+        StaticText "Accessibility"
+      paragraph "When only a single input (or related control such as select or checkbox) is inside of a el-form-item , the form item's label will automatically be attached to that input. However, if multiple inputs are inside of the el-form-item , the form"
+        code "el-form-item"
+          StaticText "el-form-item"
+        code "el-form-item"
+          StaticText "el-form-item"
+        @e307 link "WAI-ARIA" [→ www.w3.org]
+        @e308 link "group" [→ www.w3.org]
+        StaticText "When only a single input (or related control such as select or checkbox) is inside of a"
+        StaticText ", the form item's label will automatically be attached to that input. However, if multiple inputs are inside of the"
+        StaticText ", the form item will be assigned the"
+        StaticText "role of"
+        StaticText "instead. In this case, it is your responsibility to assign assistive labels to the individual inputs."
+      form "\"Full Name\" label is automatically attached to the input: Full Name \"Your Information\" serves as a label for the group of inputs. You must specify labels on the individal inputs. Placeholders are not replacements for using the \"label\" attri"
+        alert "\"Full Name\" label is automatically attached to the input:"
+          paragraph "\"Full Name\" label is automatically attached to the input:"
+            StaticText "\"Full Name\" label is automatically attached to the input:"
+        LabelText "Full Name"
+          StaticText "Full Name"
+        @e309 textbox "Full Name" [empty]
+        alert "\"Your Information\" serves as a label for the group of inputs. You must specify labels on the individal inputs. Placeholders are not replacements for using the \"label\" attribute."
+          paragraph "\"Your Information\" serves as a label for the group of inputs. You must specify labels on the individal inputs. Placeholders are not replacements for using the \"label\" attribute."
+            StaticText "\"Your Information\" serves as a label for the group of inputs."
+            StaticText "You must specify labels on the individal inputs. Placeholders are not replacements for using the \"label\" attribute."
+        group "Your Information"
+          StaticText "Your Information"
+          @e310 textbox "First Name" [empty] placeholder="First Name"
+          @e311 textbox "Last Name" [empty] placeholder="Last Name"
+      separator "v-if"
+      radiogroup "segmented"
+        LabelText "TS"
+          @e312 radio "TS" [ctx: 2.14.6] [checked] ="on"
+          @e313 button "[ TS ]" [ctx: 2.14.6]
+        LabelText "JS"
+          @e314 radio "JS" [ctx: 2.14.6] [unchecked] ="on"
+          @e315 button "[ JS ]" [ctx: 2.14.6]
+      @e316 link "Edit in Playground" [ctx: 2.14.6] [→ element-plus.run]
+      @e317 link "Edit on GitHub" [ctx: 2.14.6] [→ github.com]
+      @e318 button "Copy code" [ctx: 2.14.6]
+      @e319 button "View source" [ctx: 2.14.6]
+      heading "Form API Permalink to \"Form API\""
+        @e320 link "Permalink to \"Form API\""
+        StaticText "Form API"
+      heading "Form Attributes Permalink to \"Form Attributes\""
+        @e321 link "Permalink to \"Form Attributes\""
+        StaticText "Form Attributes"
+      table "Name Description Type Default model Data of form component. object — rules Validation rules of form. object — inline Whether the form is inline. boolean false label-position Position of label. If set to 'left' or 'right' , label-width prop"
+        rowgroup "Name Description Type Default"
+          row "Name Description Type Default"
+            columnheader "Name"
+            columnheader "Description"
+            columnheader "Type"
+            columnheader "Default"
+        row "model Data of form component. object —"
+          cell "model"
+          cell "Data of form component."
+          cell "object Type details"
+            code "object"
+              StaticText "object"
+            @e322 button "Type details" [ctx: object]
+          cell "—"
+        row "rules Validation rules of form. object —"
+          cell "rules"
+          cell "Validation rules of form."
+          cell "object Type details"
+            code "object"
+              StaticText "object"
+            @e323 button "Type details" [ctx: object]
+          cell "—"
+        row "inline Whether the form is inline. boolean false"
+          cell "inline"
+          cell "Whether the form is inline."
+          cell "boolean"
+          cell "false"
+        row "label-position Position of label. If set to 'left' or 'right' , label-width prop is also required. enum right"
+          cell "label-position"
+          cell "Position of label. If set to 'left' or 'right', label-width prop is also required."
+          cell "enum Type details"
+            code "enum"
+              StaticText "enum"
+            @e324 button "Type details" [ctx: enum]
+          cell "right"
+        row "label-width Width of label, e.g. '50px' . All its direct child form items will inherit this value. auto is supported. string / number ''"
+          cell "label-width"
+          cell "Width of label, e.g. '50px'. All its direct child form items will inherit this value. auto is supported."
+          cell "string / number"
+          cell "''"
+        row "label-suffix Suffix of the label. string ''"
+          cell "label-suffix"
+          cell "Suffix of the label."
+          cell "string"
+          cell "''"
+        row "hide-required-asterisk Whether to hide required fields should have a red asterisk (star) beside their labels. boolean false"
+          cell "hide-required-asterisk"
+          cell "Whether to hide required fields should have a red asterisk (star) beside their labels."
+          cell "boolean"
+          cell "false"
+        row "require-asterisk-position Position of asterisk. enum left"
+          cell "require-asterisk-position"
+          cell "Position of asterisk."
+          cell "enum Type details"
+            code "enum"
+              StaticText "enum"
+            @e325 button "Type details" [ctx: enum]
+          cell "left"
+        row "show-message Whether to show the error message. boolean true"
+          cell "show-message"
+          cell "Whether to show the error message."
+          cell "boolean"
+          cell "true"
+        row "inline-message Whether to display the error message inline with the form item. boolean false"
+          cell "inline-message"
+          cell "Whether to display the error message inline with the form item."
+          cell "boolean"
+          cell "false"
+        row "status-icon Whether to display an icon indicating the validation result. boolean false"
+          cell "status-icon"
+          cell "Whether to display an icon indicating the validation result."
+          cell "boolean"
+          cell "false"
+        row "validate-on-rule-change Whether to trigger validation when the rules prop is changed. boolean true"
+          cell "validate-on-rule-change"
+          cell "Whether to trigger validation when the rules prop is changed."
+          cell "boolean"
+          cell "true"
+        row "size Control the size of components in this form. enum —"
+          cell "size"
+          cell "Control the size of components in this form."
+          cell "enum Type details"
+            code "enum"
+              StaticText "enum"
+            @e326 button "Type details" [ctx: enum]
+          cell "—"
+        row "disabled Whether to disable all components in this form. Before 2.12.0 , if set to true , it will override the disabled prop of the inner component. After 2.12.0 , the configuration of the internal components takes precedence. boolean false"
+          cell "disabled"
+          cell "Whether to disable all components in this form. Before 2.12.0 , if set to true, it will override the disabled prop of the inner component. After 2.12.0 , the configuration of the internal components takes precedence."
+          cell "boolean"
+          cell "false"
+        row "scroll-to-error When validation fails, scroll to the first error form entry. boolean false"
+          cell "scroll-to-error"
+          cell "When validation fails, scroll to the first error form entry."
+          cell "boolean"
+          cell "false"
+        row "scroll-into-view-options 2.3.2 When validation fails, it scrolls to the first error item based on the scrollIntoView option. . object / boolean true"
+          cell "scroll-into-view-options 2.3.2"
+          cell "When validation fails, it scrolls to the first error item based on the scrollIntoView option. scrollIntoView ."
+            @e327 link "scrollIntoView" [→ developer.mozilla.org]
+            StaticText "When validation fails, it scrolls to the first error item based on the scrollIntoView option."
+            StaticText "."
+          cell "object Type details / boolean"
+            code "object"
+              StaticText "object"
+            @e328 button "Type details" [ctx: object]
+            code "boolean"
+              StaticText "boolean"
+            StaticText "/"
+          cell "true"
+      heading "Form Events Permalink to \"Form Events\""
+        @e329 link "Permalink to \"Form Events\""
+        StaticText "Form Events"
+      table "Name Description Type validate triggers after a form item is validated Function"
+        rowgroup "Name Description Type"
+          row "Name Description Type"
+            columnheader "Name"
+            columnheader "Description"
+            columnheader "Type"
+        row "validate triggers after a form item is validated Function"
+          cell "validate"
+          cell "triggers after a form item is validated"
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e330 button "Type details" [ctx: Function]
+      heading "Form Slots Permalink to \"Form Slots\""
+        @e331 link "Permalink to \"Form Slots\""
+        StaticText "Form Slots"
+      table "Name Description Subtags default customize default content FormItem"
+        rowgroup "Name Description Subtags"
+          row "Name Description Subtags"
+            columnheader "Name"
+            columnheader "Description"
+            columnheader "Subtags"
+        row "default customize default content FormItem"
+          cell "default"
+          cell "customize default content"
+          cell "FormItem"
+      heading "Form Exposes Permalink to \"Form Exposes\""
+        @e332 link "Permalink to \"Form Exposes\""
+        StaticText "Form Exposes"
+      table "Name Description Type validate Validate the whole form. Receives a callback or returns Promise . Function validateField Validate specified fields. Function resetFields Reset specified fields and remove validation result. Function scrollToFi"
+        rowgroup "Name Description Type"
+          row "Name Description Type"
+            columnheader "Name"
+            columnheader "Description"
+            columnheader "Type"
+        row "validate Validate the whole form. Receives a callback or returns Promise . Function"
+          cell "validate"
+          cell "Validate the whole form. Receives a callback or returns Promise."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e333 button "Type details" [ctx: Function]
+        row "validateField Validate specified fields. Function"
+          cell "validateField"
+          cell "Validate specified fields."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e334 button "Type details" [ctx: Function]
+        row "resetFields Reset specified fields and remove validation result. Function"
+          cell "resetFields"
+          cell "Reset specified fields and remove validation result."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e335 button "Type details" [ctx: Function]
+        row "scrollToField Scroll to the specified fields. Function"
+          cell "scrollToField"
+          cell "Scroll to the specified fields."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e336 button "Type details" [ctx: Function]
+        row "clearValidate Clear validation messages for all or specified fields. Function"
+          cell "clearValidate"
+          cell "Clear validation messages for all or specified fields."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e337 button "Type details" [ctx: Function]
+        row "fields 2.7.3 Get all fields context. array"
+          cell "fields 2.7.3"
+          cell "Get all fields context."
+          cell "array Type details"
+            code "array"
+              StaticText "array"
+            @e338 button "Type details" [ctx: array]
+        row "getField 2.10.2 Get a field context. Function"
+          cell "getField 2.10.2"
+          cell "Get a field context."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e339 button "Type details" [ctx: Function]
+        row "setInitialValues 2.13.1 Set initial values for form fields. When resetFields is called, fields will reset to these values. Function"
+          cell "setInitialValues 2.13.1"
+          cell "Set initial values for form fields. When resetFields is called, fields will reset to these values."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e340 button "Type details" [ctx: Function]
+      heading "FormItem API Permalink to \"FormItem API\""
+        @e341 link "Permalink to \"FormItem API\""
+        StaticText "FormItem API"
+      heading "FormItem Attributes Permalink to \"FormItem Attributes\""
+        @e342 link "Permalink to \"FormItem Attributes\""
+        StaticText "FormItem Attributes"
+      table "Name Description Type Default prop A key of model . It could be a path of the property (e.g a.b.0 or ['a', 'b', '0'] ). In the use of validate and resetFields method, the attribute is required. string / string[] — label Label text. string —"
+        rowgroup "Name Description Type Default"
+          row "Name Description Type Default"
+            columnheader "Name"
+            columnheader "Description"
+            columnheader "Type"
+            columnheader "Default"
+        row "prop A key of model . It could be a path of the property (e.g a.b.0 or ['a', 'b', '0'] ). In the use of validate and resetFields method, the attribute is required. string / string[] —"
+          cell "prop"
+          cell "A key of model. It could be a path of the property (e.g a.b.0 or ['a', 'b', '0']). In the use of validate and resetFields method, the attribute is required."
+          cell "string / string[]"
+          cell "—"
+        row "label Label text. string —"
+          cell "label"
+          cell "Label text."
+          cell "string"
+          cell "—"
+        row "label-position 2.7.7 Position of item label. If set to 'left' or 'right' , label-width prop is also required. Default extend label-position of form . enum ''"
+          cell "label-position 2.7.7"
+          cell "Position of item label. If set to 'left' or 'right', label-width prop is also required. Default extend label-position of form."
+          cell "enum Type details"
+            code "enum"
+              StaticText "enum"
+            @e343 button "Type details" [ctx: enum]
+          cell "''"
+        row "label-width Width of label, e.g. '50px' . 'auto' is supported. string / number —"
+          cell "label-width"
+          cell "Width of label, e.g. '50px'. 'auto' is supported."
+          cell "string / number"
+          cell "—"
+        row "required Whether the field is required or not, will be determined by validation rules if omitted. boolean —"
+          cell "required"
+          cell "Whether the field is required or not, will be determined by validation rules if omitted."
+          cell "boolean"
+          cell "—"
+        row "rules Validation rules of form, see the , more advanced usage at . object —"
+          cell "rules"
+          cell "Validation rules of form, see the following table , more advanced usage at async-validator ."
+            @e344 link "following table"
+            @e345 link "async-validator" [ctx: rules] [→ github.com]
+            StaticText "Validation rules of form, see the"
+            StaticText ", more advanced usage at"
+            StaticText "."
+          cell "object Type details"
+            code "object"
+              StaticText "object"
+            @e346 button "Type details" [ctx: object]
+          cell "—"
+        row "error Field error message, set its value and the field will validate error and show this message immediately. string —"
+          cell "error"
+          cell "Field error message, set its value and the field will validate error and show this message immediately."
+          cell "string"
+          cell "—"
+        row "show-message Whether to show the error message. boolean true"
+          cell "show-message"
+          cell "Whether to show the error message."
+          cell "boolean"
+          cell "true"
+        row "inline-message Inline style validate message. boolean false"
+          cell "inline-message"
+          cell "Inline style validate message."
+          cell "boolean"
+          cell "false"
+        row "size Control the size of components in this form-item. enum —"
+          cell "size"
+          cell "Control the size of components in this form-item."
+          cell "enum Type details"
+            code "enum"
+              StaticText "enum"
+            @e347 button "Type details" [ctx: enum]
+          cell "—"
+        row "for Same as for in native label. string —"
+          cell "for"
+          cell "Same as for in native label."
+          cell "string"
+          cell "—"
+        row "validate-status Validation state of formItem. enum —"
+          cell "validate-status"
+          cell "Validation state of formItem."
+          cell "enum Type details"
+            code "enum"
+              StaticText "enum"
+            @e348 button "Type details" [ctx: enum]
+          cell "—"
+      heading "FormItemRule Permalink to \"FormItemRule\""
+        @e349 link "Permalink to \"FormItemRule\""
+        StaticText "FormItemRule"
+      table "Name Description Type Default trigger How the validator is triggered. enum —"
+        rowgroup "Name Description Type Default"
+          row "Name Description Type Default"
+            columnheader "Name"
+            columnheader "Description"
+            columnheader "Type"
+            columnheader "Default"
+        row "trigger How the validator is triggered. enum —"
+          cell "trigger"
+          cell "How the validator is triggered."
+          cell "enum Type details"
+            code "enum"
+              StaticText "enum"
+            @e350 button "Type details" [ctx: enum]
+          cell "—"
+      paragraph "TIP"
+        StaticText "TIP"
+      paragraph "If you don't want to trigger the validator based on input events, set the validate-event attribute as false on the corresponding input type components ( <el-input> , <el-radio> , <el-select> , ...)."
+        code "validate-event"
+          StaticText "validate-event"
+        code "false"
+          StaticText "false"
+        code "<el-input>"
+          StaticText "<el-input>"
+        code "<el-radio>"
+          StaticText "<el-radio>"
+        code "<el-select>"
+          StaticText "<el-select>"
+        StaticText "If you don't want to trigger the validator based on input events, set the"
+        StaticText "attribute as"
+        StaticText "on the corresponding input type components ("
+        StaticText ","
+        StaticText ","
+        StaticText ", ...)."
+      heading "FormItem Slots Permalink to \"FormItem Slots\""
+        @e351 link "Permalink to \"FormItem Slots\""
+        StaticText "FormItem Slots"
+      table "Name Description Type default Content of Form Item. — label Custom content to display on label. object error Custom content to display validation message. object"
+        rowgroup "Name Description Type"
+          row "Name Description Type"
+            columnheader "Name"
+            columnheader "Description"
+            columnheader "Type"
+        row "default Content of Form Item. —"
+          cell "default"
+          cell "Content of Form Item."
+          cell "—"
+        row "label Custom content to display on label. object"
+          cell "label"
+          cell "Custom content to display on label."
+          cell "object Type details"
+            code "object"
+              StaticText "object"
+            @e352 button "Type details" [ctx: object]
+        row "error Custom content to display validation message. object"
+          cell "error"
+          cell "Custom content to display validation message."
+          cell "object Type details"
+            code "object"
+              StaticText "object"
+            @e353 button "Type details" [ctx: object]
+      heading "FormItem Exposes Permalink to \"FormItem Exposes\""
+        @e354 link "Permalink to \"FormItem Exposes\""
+        StaticText "FormItem Exposes"
+      table "Name Description Type size Form item size. object validateMessage Validation message. object validateState Validation state. object validate Validate form item. Function resetField Reset current field and remove validation result. Function"
+        rowgroup "Name Description Type"
+          row "Name Description Type"
+            columnheader "Name"
+            columnheader "Description"
+            columnheader "Type"
+        row "size Form item size. object"
+          cell "size"
+          cell "Form item size."
+          cell "object Type details"
+            code "object"
+              StaticText "object"
+            @e355 button "Type details" [ctx: object]
+        row "validateMessage Validation message. object"
+          cell "validateMessage"
+          cell "Validation message."
+          cell "object Type details"
+            code "object"
+              StaticText "object"
+            @e356 button "Type details" [ctx: object]
+        row "validateState Validation state. object"
+          cell "validateState"
+          cell "Validation state."
+          cell "object Type details"
+            code "object"
+              StaticText "object"
+            @e357 button "Type details" [ctx: object]
+        row "validate Validate form item. Function"
+          cell "validate"
+          cell "Validate form item."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e358 button "Type details" [ctx: Function]
+        row "resetField Reset current field and remove validation result. Function"
+          cell "resetField"
+          cell "Reset current field and remove validation result."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e359 button "Type details" [ctx: Function]
+        row "clearValidate Remove validation status of the field. Function"
+          cell "clearValidate"
+          cell "Remove validation status of the field."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e360 button "Type details" [ctx: Function]
+        row "setInitialValue 2.13.1 Set initial value for this field. When resetField is called, the field will reset to this value. Function"
+          cell "setInitialValue 2.13.1"
+          cell "Set initial value for this field. When resetField is called, the field will reset to this value."
+          cell "Function Type details"
+            code "Function"
+              StaticText "Function"
+            @e361 button "Type details" [ctx: Function]
+      heading "Type Declarations Permalink to \"Type Declarations\""
+        @e362 link "Permalink to \"Type Declarations\""
+        StaticText "Type Declarations"
+      group "Show declarations"
+        DisclosureTriangle "Show declarations"
+          StaticText "Show declarations"
+      heading "Source Permalink to \"Source\""
+        @e363 link "Permalink to \"Source\""
+        StaticText "Source"
+      paragraph "• •"
+        @e364 link "Component" [ctx: 2.14.6] [→ github.com]
+        @e365 link "Style" [→ github.com]
+        @e366 link "Docs" [→ github.com]
+        StaticText "•"
+        StaticText "•"
+      heading "Contributors Permalink to \"Contributors\""
+        @e367 link "Permalink to \"Contributors\""
+        StaticText "Contributors"
+      @e368 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e369 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e370 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e371 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e372 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e373 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e374 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e375 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e376 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e377 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e378 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e379 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e380 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e381 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e382 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e383 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e384 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e385 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e386 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e387 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e388 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e389 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e390 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e391 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e392 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e393 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e394 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e395 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e396 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e397 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e398 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e399 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e400 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e401 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e402 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e403 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e404 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e405 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e406 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e407 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e408 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e409 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e410 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e411 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e412 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e413 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e414 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e415 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e416 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e417 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e418 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e419 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e420 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e421 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e422 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e423 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e424 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e425 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e426 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e427 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e428 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e429 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e430 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e431 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e432 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e433 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e434 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e435 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e436 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e437 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e438 link "[ ]" [ctx: 2.14.6] [→ github.com]
+      @e439 link "Edit this page on GitHub" [→ github.com]
+      @e440 link "DateTime Picker" [ctx: 2.14.6]
+      @e441 link "Input" [ctx: 2.14.6]
+      sectionfooter "Links Community"
+        heading "Links"
+          StaticText "Links"
+        @e442 link "China Mirror 🇨🇳" [→ cn.element-plus.org]
+        @e443 link "Changelog" [ctx: 2.14.6] [→ github.com]
+        @e444 link "Element UI for Vue 2" [→ element.eleme.io]
+        @e445 link "Site Map"
+        heading "Community"
+          StaticText "Community"
+        @e446 link "GitHub" [ctx: 2.14.6] [→ github.com]
+        @e447 link "Discord" [→ discord.com]
+        @e448 link "Feedback" [→ github.com]
+        @e449 link "Contribution" [→ github.com]
+        @e450 link "SegmentFault" [→ segmentfault.com]
