@@ -142,6 +142,7 @@ const DEFAULT_SYSTEM_PROMPT = [
   "硬性约束（违反即视为测试失败）：",
   "- 严禁在 navigate 之前调用 assert_text：页面尚未打开时断言必然不成立，且会误报通过。",
   "- 严禁在尚未 snapshot 确认页面内容的情况下就断言；若 snapshot 返回内容为空或明显不是目标页面，应报告「不成立」并说明原因，而不是编造结论。",
+  "- 用例中每一处「断言」都必须对应一次工具调用：一条「断言 …」= 一次 assert_text（校验下载用 download）。即使断言与操作写在同一行（如「打开页面并断言标题包含 X」），也要在操作完成后单独调用一次 assert_text；仅凭 snapshot 肉眼确认、在文字里写「成立」不算执行断言，报告会按「断言数不足」判 FAIL。",
   "- 严禁在步骤未执行完的情况下给出「测试通过」结论；宁可报告某步骤失败，也不要静默省略步骤。",
   "- 不要编造未观察到的内容；若元素不存在、导航失败或页面未打开，明确说明。",
   "- 涉及文件上传时必须用 upload 工具：原生系统文件选择框无法被自动化点击，直接 click 上传按钮会卡住流程。",
@@ -165,12 +166,49 @@ const TRIMMED_MARK = "（较早的快照已省略";
 // 直到跑满、确实没有进展或达到次数上限为止。
 const MAX_CONTINUATIONS = 5;
 
+/** agent 自报的进度（`步骤完成：k/n`）；没输出进度声明时为 null。 */
+export type ContinuationProgress = { done: number; total: number } | null;
+
+/**
+ * 是否该续跑：两条证据彼此独立，任一条成立就要再 prompt 一次。
+ * - 步骤：agent 自报「步骤完成：k/n」且 k < n；
+ * - 断言：用例声明了 expected 条断言，工具只记录了 parsed 条。
+ *   断言必须由 assert_text / download 落成结构化结果，仅凭 snapshot 肉眼确认不算。
+ *
+ * 早期实现写成 `progress ? 步骤校验 : 断言校验`：agent 自报「步骤完成：5/5」就短路掉断言检查，
+ * 于是「步骤跑满、断言却只记录了 2/3」的场景一路跑到报告才判 FAIL，agent 连补一次断言的机会都没有
+ * （smoke-test.md 场景 1 的失败形态）。口径与 docs/comet/specs/pageqa/spec.md 第 54 条的
+ * 「或」保持一致。
+ */
+export function needsContinuation(
+  progress: ContinuationProgress,
+  parsed: number,
+  expected: number,
+): boolean {
+  if (progress && progress.done < progress.total) return true;
+  return expected > 0 && parsed < expected;
+}
+
 /** 构造续跑提示：只要求接着做，不重复已完成步骤，并再次强调进度声明格式。 */
-function continuePrompt(
-  progress: { done: number; total: number } | null,
+export function continuePrompt(
+  progress: ContinuationProgress,
+  parsed = 0,
+  expected = 0,
 ): string {
   const tail =
     "不要重复已完成的步骤；每完成一步记「第 k 步完成：<结果>」，全部步骤执行完后必须单独输出一行「步骤完成：<已完成数>/<总数>」。";
+  const assertsShort = expected > 0 && parsed < expected;
+  // 步骤已自报跑满、缺的只是断言时绝不能说「从第 k+1 步继续」：那会逼模型去编一个不存在的步骤。
+  // 真正该做的是补跑漏掉的断言工具调用。
+  if (assertsShort && (!progress || progress.done >= progress.total)) {
+    return (
+      `断言检查：用例声明的 ${expected} 条断言只记录了 ${parsed} 条。` +
+      "每条「断言 …」（包括与操作写在同一行里的「…并断言…」）都必须单独调用一次 assert_text 拿到「成立/不成立」结果，校验下载用 download；" +
+      "仅凭 snapshot 肉眼确认后在文字里说「成立」不算执行断言，报告会按断言数不足判 FAIL。" +
+      "请针对尚未校验的那条断言补一次工具调用（断言内容必须是用例要求的那条，不要为凑数乱断言），然后" +
+      tail
+    );
+  }
   if (progress) {
     return (
       `进度检查：你自报的进度是 ${progress.done}/${progress.total}，仍有步骤未执行。` +
@@ -673,9 +711,7 @@ async function executeWithContinuations(
       session.assertions.length > 0
         ? session.assertions.length
         : parseAssertions(transcriptSoFar).length;
-    const incomplete = progress
-      ? progress.done < progress.total
-      : expectedAssertions > 0 && parsed < expectedAssertions;
+    const incomplete = needsContinuation(progress, parsed, expectedAssertions);
     if (!incomplete) break;
 
     const signature =
@@ -707,7 +743,7 @@ async function executeWithContinuations(
         b: expectedAssertions,
       }),
     );
-    await agent.prompt(continuePrompt(progress));
+    await agent.prompt(continuePrompt(progress, parsed, expectedAssertions));
     await agent.waitForIdle();
   }
 

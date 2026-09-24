@@ -1,6 +1,11 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { toolResultText, turnUsage } from "../dist/agent.js";
+import {
+  continuePrompt,
+  needsContinuation,
+  toolResultText,
+  turnUsage,
+} from "../dist/agent.js";
 import { extractTrace } from "../dist/report.js";
 
 // 纯单元测试：不依赖浏览器与 LLM。
@@ -89,5 +94,45 @@ describe("运行中实时上报 token 用量", () => {
       null,
     );
     assert.equal(turnUsage({ type: "turn_start" }), null);
+  });
+});
+
+// 钉死的契约：**步骤**与**断言**是两条独立的完整性证据，任一不足都要续跑。
+// 回归用例来自 examples/smoke-test.md 场景 1：agent 自报「步骤完成：5/5」（步骤确实做完了），
+// 但只调了 2 次 assert_text —— 第 1 步那行「打开 … 并断言页面标题包含 冒烟测试页面」也是
+// 用例声明的断言（共 3 条）。旧实现写成 `progress ? 步骤校验 : 断言校验`，被「5/5」短路，
+// 缺口一路带到报告才判 FAIL，agent 连补一次断言的机会都没有。
+describe("续跑判定：步骤与断言都要检查", () => {
+  test("自报步骤已跑满、断言只记录了 2/3 → 仍要续跑", () => {
+    assert.equal(needsContinuation({ done: 5, total: 5 }, 2, 3), true);
+  });
+
+  test("步骤未跑满 → 续跑（原本行为不变）", () => {
+    assert.equal(needsContinuation({ done: 2, total: 5 }, 3, 3), true);
+  });
+
+  test("没有进度声明时按断言数判定（原本行为不变）", () => {
+    assert.equal(needsContinuation(null, 1, 3), true);
+    assert.equal(needsContinuation(null, 3, 3), false);
+  });
+
+  test("步骤跑满且断言齐了 → 收尾，不续跑", () => {
+    assert.equal(needsContinuation({ done: 5, total: 5 }, 3, 3), false);
+  });
+
+  test("用例没声明断言时，断言维度不产生续跑", () => {
+    assert.equal(needsContinuation({ done: 5, total: 5 }, 0, 0), false);
+  });
+
+  test("步骤跑满只缺断言时，续跑提示要求补断言调用而不是「从第 6 步继续」", () => {
+    const p = continuePrompt({ done: 5, total: 5 }, 2, 3);
+    assert.match(p, /断言/);
+    assert.match(p, /assert_text/);
+    assert.ok(!/第 6 步/.test(p), "步骤已跑满，不能再让模型从第 6 步继续");
+  });
+
+  test("步骤确实没跑满时，续跑提示仍从下一步开始", () => {
+    const p = continuePrompt({ done: 3, total: 5 }, 1, 3);
+    assert.match(p, /第 4 步/);
   });
 });
