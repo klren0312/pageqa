@@ -195,6 +195,12 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.connected": "[pageqa] bsk 已连接浏览器 {count} 个",
     "bsk.err.sessionFailed": "无法创建 bsk session，请确认 bsk daemon 已连接浏览器。",
     "bsk.err.uploadMissing": "待上传文件不存在：{file}",
+    // 引用闸门（src/bsk/tools.ts 的 checkRef / src/locator.ts 的 inspectRefTarget）
+    "bsk.err.refStale":
+      "`{target}` 这个 @eN 引用已失效：最近一次快照之后页面被改动过（navigate/click/fill/hover/scroll/wait 任一动作都会让引用重新编号），它现在可能指向另一个元素——沿用会静默点到同编号的那个。请先调用 snapshot 读取当前页面，再用新编号重试这次 {action}。",
+    "bsk.err.refUnknown":
+      "最近一次快照里没有 {target} 这个引用：{action} 用的 @eN 必须来自最近一次 snapshot。请先 snapshot 取当前编号，不要沿用更早快照的编号或凭记忆写编号。",
+    "bsk.ref.landed": "（落点：{who}）",
     // 下载断言（src/bsk/tools.ts 的 download 工具 + src/downloads.ts）
     "bsk.download.expectation": "导出的文件已下载到本地",
     "bsk.download.expectationNamed": "下载的文件名匹配 {pattern}",
@@ -832,6 +838,12 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.err.sessionFailed":
       "could not create a bsk session; make sure the bsk daemon has a connected browser.",
     "bsk.err.uploadMissing": "file to upload does not exist: {file}",
+    // ref gate (checkRef in src/bsk/tools.ts + inspectRefTarget in src/locator.ts)
+    "bsk.err.refStale":
+      "the @eN ref `{target}` is stale: the page changed after the latest snapshot (any navigate/click/fill/hover/scroll/wait renumbers refs), so it may now point at a different element — reusing it silently clicks whatever holds that number now. Call snapshot to read the current page, then retry this {action} with a fresh ref.",
+    "bsk.err.refUnknown":
+      "the latest snapshot has no ref {target}: {action} must use a ref from the most recent snapshot. Call snapshot for current refs instead of reusing numbers from an earlier snapshot or writing them from memory.",
+    "bsk.ref.landed": "(landed on: {who})",
     // download assertion (the `download` tool in src/bsk/tools.ts + src/downloads.ts)
     "bsk.download.expectation": "the exported file has been downloaded locally",
     "bsk.download.expectationNamed":

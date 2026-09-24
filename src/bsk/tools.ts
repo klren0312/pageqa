@@ -17,6 +17,11 @@ import {
 } from "../downloads.js";
 import { t } from "../i18n.js";
 import { JevClient } from "../jev.js";
+import {
+  inspectRefTarget,
+  parseSnapshotRefs,
+  type SnapshotRef,
+} from "../locator.js";
 import { debugLog, info, timer } from "../log.js";
 import { slimSnapshot } from "../snapshot.js";
 import {
@@ -478,10 +483,50 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
   /** 最近一次快照的时刻与新鲜度（见 ensureSnapshot）。 */
   let snapshotAt = 0;
   let snapshotFresh = false;
+  /** 最近一次快照解析出的引用表（惰性解析一次，快照一换即作废）。 */
+  let snapshotRefs: SnapshotRef[] | null = null;
 
   /** 页面被本工具改动过（或刚刚等待过），之前的快照不再可信。 */
   const markStale = (): void => {
     snapshotFresh = false;
+  };
+
+  /** 最近一次快照里的引用表（解析成本随快照长度线性增长，因此按快照缓存）。 */
+  const refsOf = (): SnapshotRef[] => {
+    if (snapshotRefs === null) snapshotRefs = parseSnapshotRefs(snapshotText);
+    return snapshotRefs;
+  };
+
+  /**
+   * 引用闸门：动作前确认 `@eN` 此刻指向的仍是同一批元素，并把落点交回给调用方回显。
+   *
+   * 必须在 `markStale()` **之前**调用——它判定的正是「动作之前页面有没有被改过」，
+   * 放到 markStale 之后会把每一次带引用的动作都判成失效。
+   *
+   * 三种结论（判定逻辑在 locator.ts 的 inspectRefTarget，此处只负责措辞与回显）：
+   * - CSS 选择器：放行，无可回显的落点；
+   * - 快照之后页面已被改动 → 抛错，让模型重新 snapshot 再取编号；
+   * - 编号不在最近一次快照里 → 抛错（沿用更早快照或凭记忆写编号）；
+   * - 通过 → 返回「（落点：角色「名字」）」这段可读文本，供操作结果里回显。
+   *
+   * 为什么值得每次动作都解析一遍快照：它把「静默点到另一个元素」变成**模型自己看得见的一行**
+   * （用例里的菜单点错就是这么发生的：侧边栏展开后旧编号落到了另一个菜单项上，没人发现）。
+   */
+  const checkRef = (action: string, target: string): string => {
+    const info = inspectRefTarget(target, snapshotFresh, refsOf());
+    if (info.kind === "css") return "";
+    if (info.kind === "stale") {
+      throw new Error(t("bsk.err.refStale", { action, target }));
+    }
+    if (info.kind === "unknown") {
+      throw new Error(t("bsk.err.refUnknown", { action, target }));
+    }
+    // 引用行也可能没有可访问名（`@e42 button`）：拿不到名字时不编，直接不提落点。
+    const who =
+      info.role && info.name
+        ? `${info.role}「${info.name}」`
+        : info.role || info.name;
+    return who ? t("bsk.ref.landed", { who }) : "";
   };
 
   /** 真正抓一次快照：瘦身后交给模型，并按需记录瘦身统计。 */
@@ -501,6 +546,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     }
     snapshotRawText = raw;
     snapshotText = slim.text;
+    snapshotRefs = null;
     snapshotAt = Date.now();
     snapshotFresh = true;
     return snapshotText;
@@ -579,9 +625,10 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     },
 
     async click(target: string, signal?: AbortSignal): Promise<string> {
+      const landed = checkRef("click", target);
       markStale();
       const out = await bsk(["click", target, ...quiet], signal);
-      return `已点击 ${target}\n${out}`;
+      return `已点击 ${target}${landed}\n${out}`;
     },
 
     async fill(
@@ -589,9 +636,10 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       value: string,
       signal?: AbortSignal,
     ): Promise<string> {
+      const landed = checkRef("fill", target);
       markStale();
       const out = await bsk(["fill", target, "--value", value, ...quiet], signal);
-      return `已在 ${target} 填入文本\n${out}`;
+      return `已在 ${target} 填入文本${landed}\n${out}`;
     },
 
     async upload(
@@ -602,12 +650,13 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       if (!existsSync(file)) {
         throw new Error(t("bsk.err.uploadMissing", { file }));
       }
+      const landed = target ? checkRef("upload", target) : "";
       markStale();
       const args = ["upload"];
       if (target) args.push(target);
       args.push("--file", file, ...quiet);
       const out = await bsk(args, signal);
-      return `已上传文件 ${file}\n${out}`;
+      return `已上传文件 ${file}${landed}\n${out}`;
     },
 
     async download(
@@ -617,6 +666,11 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       timeoutMs: number,
       signal?: AbortSignal,
     ): Promise<string> {
+      // 引用闸门只在入口判一次：重试沿用同一个引用，是「同一次操作的第二次尝试」
+      // （见 DOWNLOAD_ATTEMPTS），不是「页面已变还接着用旧编号」——重试前再判必然失败，
+      // 会把这条兜底时序抖动的重试彻底废掉。
+      const landing = checkRef("download", target);
+      if (landing) debugLog("[bsk] download 落点：" + landing);
       markStale();
       const now = new Date();
       const explicit = out?.trim() ? out.trim() : undefined;
@@ -788,17 +842,19 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     },
 
     async hover(target: string, signal?: AbortSignal): Promise<string> {
+      const landed = checkRef("hover", target);
       markStale();
       const out = await bsk(["hover", target, ...quiet], signal);
-      return `已悬停 ${target}\n${out}`;
+      return `已悬停 ${target}${landed}\n${out}`;
     },
 
     async scroll(target: string, signal?: AbortSignal): Promise<string> {
       // scroll-to 同时支持 @eN 引用与 CSS 选择器。
       // （早期实现用 evaluate + querySelector，遇到 @eN 会静默返回 element-not-found。）
+      const landed = checkRef("scroll", target);
       markStale();
       const out = await bsk(["scroll-to", target, ...quiet], signal);
-      return `已滚动到 ${target}\n${out}`;
+      return `已滚动到 ${target}${landed}\n${out}`;
     },
 
     async wait(ms: number, signal?: AbortSignal): Promise<string> {

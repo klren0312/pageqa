@@ -15,6 +15,13 @@
  * - `path`：录制时该节点的**祖先路径**（只保留有名字的祖先）。
  * 回放时优先用祖先路径消歧——「同名第几个」在页面里同类元素数量变化后会指错，
  * 而「在哪个区域下」是更强、更抗漂移的信号。
+ *
+ * 本模块还有第二个、**运行期**的用途：`inspectRefTarget` 在每次动作前判断模型给的 target
+ * 此刻还能不能用。`@eN` 只对产生它的那次快照成立，而页面一旦变化（展开侧边栏、悬停展开菜单、
+ * 切换路由、提交表单）编号就会整体位移；沿用旧编号**不会报错**，而是静默点到编号相同的另一个
+ * 元素——实测就发生在侧边栏展开后：旧编号把「供应商管理」落到了「渠道发货地址配置」上，
+ * 一路跑偏。所以工具层在动作前拿最近一次快照核对引用，并对得上的引用回显落点（角色 + 名字），
+ * 让「点错」在模型这一侧就能被看见。
  */
 
 /** bsk 快照中带有 `@eN` 引用的一行。 */
@@ -265,6 +272,45 @@ export function resolveLocator(
 
   const idx = locator.nth >= 0 && locator.nth < pool.length ? locator.nth : 0;
   return pool[idx].ref;
+}
+
+/** 引用目标的自检结论（见 `inspectRefTarget`）。 */
+export type RefTargetInspection =
+  /** 不是引用（CSS 选择器）：与快照编号无关，不受页面改动影响。 */
+  | { kind: "css" }
+  /** 是引用，但最近一次快照之后页面已被改动：编号可能已指向别的元素。 */
+  | { kind: "stale" }
+  /** 是引用，但最近一次快照里没有这个编号：多半沿用了更早快照或凭记忆写的。 */
+  | { kind: "unknown" }
+  /** 可用，并带回它在那次快照里的语义信息（供回显落点）。 */
+  | { kind: "ok"; ref: string; role: string; name: string };
+
+/**
+ * 判断一次动作要用的 target 此刻是否可用。
+ *
+ * 为什么必须是**硬闸门**而不是提示词里的叮嘱：`@eN` 是「最近一次快照的文档序编号」，页面一变
+ * 就整体位移，而 bsk 拿到旧编号只会按新编号解析并照样点下去——不报错、不返回它点到了谁。
+ * 于是「展开侧边栏后沿用旧编号」这类序列会静默点到同编号的另一个菜单项（实测形态见文件头）。
+ * 三道判定分别对应三种处置：
+ * - `css`：放行（选择器与页面结构解耦）；
+ * - `stale`：拒绝并让模型重新 snapshot——它表达的正是「这次引用已无法确定指谁」；
+ * - `unknown`：拒绝——最近一次快照里根本没有这个编号，继续点只可能点到别处；
+ * - `ok`：放行，并把 role/name 交回给调用方回显（模型据此核对是不是它想点的那个）。
+ *
+ * `fresh` 由调用方给出：只有「最近一次快照之后没有任何改页面的动作」才为真。
+ */
+export function inspectRefTarget(
+  target: string,
+  fresh: boolean,
+  refs: readonly SnapshotRef[],
+): RefTargetInspection {
+  const original = target.trim();
+  if (!isRef(original)) return { kind: "css" };
+  if (!fresh) return { kind: "stale" };
+  const ref = normalizeRef(original);
+  const hit = refs.find((r) => r.ref === ref);
+  if (!hit) return { kind: "unknown" };
+  return { kind: "ok", ref, role: hit.role, name: hit.name };
 }
 
 /** 定位失败时给出的线索类型。 */
