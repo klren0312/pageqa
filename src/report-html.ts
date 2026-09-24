@@ -176,9 +176,12 @@ h3 { font-size: 0.95rem; margin: 16px 0 8px; }
 .stats { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; font-size: 0.9rem; }
 .stats b { font-size: 1.2rem; display: block; }
 .muted { color: #59636e; font-weight: 400; font-size: 0.85rem; }
-table { border-collapse: collapse; width: 100%; font-size: 0.9rem; margin: 8px 0; }
-th, td { border: 1px solid #d0d7de; padding: 6px 8px; text-align: left; vertical-align: top; }
+table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 0.9rem; margin: 8px 0; }
+th, td { border: 1px solid #d0d7de; padding: 6px 8px; text-align: left; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
 th { background: #f6f8fa; }
+/* 固定列宽：期望列留出可读宽度，结论列不再换行，证据列吃掉剩余宽度并在长串（如上游 JSON）内断行 */
+th:nth-child(1), td:nth-child(1) { width: 30%; }
+th:nth-child(2), td:nth-child(2) { width: 72px; white-space: nowrap; }
 ol.steps, ul.skipped { font-size: 0.9rem; padding-left: 1.4em; }
 ol.steps li, ul.skipped li { margin: 4px 0; }
 details.trace { margin-top: 12px; }
