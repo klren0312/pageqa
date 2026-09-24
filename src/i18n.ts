@@ -64,7 +64,7 @@ const catalogs: Record<Locale, Catalog> = {
       "[pageqa] 该场景在开始执行前已被取消，跳过",
     "log.caseSubmitted": "[pageqa] 已提交用例，等待模型与浏览器执行…",
     "log.continuation":
-      "[pageqa] 步骤未跑完，发起第 {n} 次续跑（进度 {progress}，断言 {a}/{b}）",
+      "[pageqa] 执行完整性不足（步骤或断言未跑满），发起第 {n} 次续跑（进度 {progress}，断言 {a}/{b}）",
     "log.caseEnd":
       "[pageqa] 用例结束：{status}，断言 {n} 条，耗时 {dur}s",
     "log.suiteStart": "[pageqa] 套件共 {n} 个场景：{names}",
@@ -693,7 +693,7 @@ const catalogs: Record<Locale, Catalog> = {
     "log.caseSubmitted":
       "[pageqa] case submitted, waiting for model and browser to execute…",
     "log.continuation":
-      "[pageqa] steps not finished, initiating retry #{n} (progress {progress}, assertions {a}/{b})",
+      "[pageqa] incomplete execution (steps or assertions not finished), initiating retry #{n} (progress {progress}, assertions {a}/{b})",
     "log.caseEnd":
       "[pageqa] case ended: {status}, {n} assertions, elapsed {dur}s",
     "log.suiteStart": "[pageqa] suite has {n} scenario(s): {names}",
