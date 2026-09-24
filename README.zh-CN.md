@@ -242,6 +242,18 @@ Token 消耗: 输入 301 / 输出 117 / 缓存读 9536 / 缓存写 0 / 合计 99
 - 不能与 `--json`（要独占 stdout）、`--replay`（秒级零模型，无需等待）、`--session`（与「场景各有独立 session」冲突）同时使用。
 - 批处理模式（管道、重定向、`--json`、CI）行为完全不变：`tests/smoke.test.mjs` 走管道 stdio，会自动降级。
 
+### 用例写法：断言行要与工具产出的断言数对齐
+
+报告的完整性检查会拿「用例里有几行断言」与「实际拿到几条断言结果」相比，因此**用例里带「断言」字样的行数，应当等于实际会产出断言的工具调用数**：
+
+- 每个 `assert_text` 产出一条断言 → 一行「断言页面包含 …」对应一条，一一对应。
+- `download`（见「导出与下载」）**本身就是一条断言** → 那一行就把这层意思写出来（如「…捕获导出的文件并断言磁盘上已经拿到该文件」），**不要**另起一行再写一句「断言文件已下载」：用例算 2 条、工具只给 1 条，收尾会报「用例中的断言全部执行（实际 1/2）」这种**假失败**。
+- 只是顺带确认、并不打算判定通过与否的检查（如「确认页面没有出现导出失败提示」）**不要写成「断言…」**：没有工具结果与之对应。
+- 同一行里出现两次「断言」会被算作两行；`断言失败/不成立/结果/的/写法/…` 这类把「断言」当被讨论对象的用法会被排除，其余一律计数（规则见 `src/report.ts` 的 `countAssertions`）。
+- **注释行不算**：`#` 标题行与 `>` 说明行既不计步骤、也不计断言（与 `numberSteps` 同一口径），所以用例里写解释文字不会把期望数顶高——只有真正的步骤行才算。
+
+这条也影响模型的续跑判定：期望值高于实际拿到的条数时，pageqa 会补一次「继续执行剩余步骤」的提示，白跑一轮不说，最终仍会以「断言未全部执行」收尾。`examples/sms-log.md` 的 S2 就是按这条写的。
+
 ### 失败定位（步骤编号 + 执行轨迹）
 
 长流程失败时，只看到「步骤完成：23/42」是没法改用例的——不知道卡在用例的哪一句。为此：
@@ -312,7 +324,12 @@ pageqa-report/report-20260923-153001.html
 [pageqa]   测试报告: pageqa-report/report-20260923-153001.html
 [pageqa]   回放脚本: examples/smoke.replay.json
 [pageqa]   回放方式: pageqa --replay examples/smoke.replay.json
+[pageqa]   下载产物: C:\Users\me\.pageqa\downloads\20260923-153012-导出报表.xls（断言成立后已清理）
 ```
+
+用例里用 `download` 捕获到的文件也会在清单里逐条列出（见「导出与下载」）。它**没有「生不生成」的开关**：这不是「本次生不生成」的问题——关掉开关并不会让文件不存在，只会让人找不到它。只有真的收了文件才列这一行；断言成立后已被清理的会标注出来（`（断言成立后已清理）`），路径不会撒谎。
+
+清单里的「下载产物」是**用例真的下载了什么**的记录，落点默认是 `~/.pageqa/downloads`（可用配置项 `downloadDir` 改）；断言成立后是否把文件清掉由 `downloadCleanup` 决定（**缺失视为开**，即默认清理）。
 
 在交互模式里用 `/setting` 关掉任意一项（面板三项：`测试报告（HTML）` / `回放脚本` / `语言`；`↑↓` 选择、`Enter` 切换、`Esc` 关闭）。开关写进 `~/.pageqa/config.json` 的 `htmlReport` / `replayScript`——**没改过的键不会被写进配置**，缺失即视为开。
 
@@ -338,7 +355,7 @@ pageqa-report/report-20260923-153001.html
 
 因此**模型看到的文本与定位解析用的文本是同一份**，role/name/祖先路径都不变；`--debug` 会打印每次瘦身的字符数变化。
 
-**2）复用**：所有会改动页面的动作（`navigate`/`click`/`fill`/`upload`/`hover`/`scroll`/`wait`）都会让上一份快照失效，因此复用只发生在**纯读取之后**：
+**2）复用**：所有会改动页面的动作（`navigate`/`click`/`fill`/`upload`/`download`/`hover`/`scroll`/`wait`）都会让上一份快照失效，因此复用只发生在**纯读取之后**：
 
 - 模型「刚 `snapshot` 完就 `assert_text`」→ 断言直接复用那份快照，省掉一次 bsk 往返（断言窗口 5s，`snapshot` 自身去重窗口 1s）；注意断言的字面匹配用**瘦身前**的完整快照——瘦身只影响喂给模型的上下文，不影响断言所依据的页面全文；
 - 回放中「上一步是断言、下一步要定位元素」同理；而重试前会 `wait`，等待必然置为失效，所以「每次重试重新取快照」的既有行为保持不变。
@@ -505,6 +522,39 @@ pageqa examples/element-plus-upload.md
 - 像 `el-upload` 这类「点击按钮 → 页面 JS 触发隐藏 input」的组件，首次尝试可能返回 `did not activate a file input`（时序问题，不是权限问题）；此时重试一次即可成功。
 - 上传动作成功不等于用例通过：**真伪仍由页面断言决定**。若站点把文件提交到外部接口而接口不可用（例如 element-plus 文档示例提交到 `run.mocky.io`，本机证书校验失败），组件会在上传失败后移除该文件，此时「断言文件出现在列表中」会如实报 FAIL——这是被测页面的真实行为，不是工具问题。
 
+### 导出与下载
+
+脚本里写「点击导出，在确认弹框点确定，校验文件已下载」，agent 会调用 `download` 工具完成（可运行 `examples/smoke-test.md` 的「文件下载测试」两个场景体验，先 `pnpm serve:smoke` 起本地页）：
+
+```md
+## E1 导出文件
+
+打开 http://localhost:18888/smoke-test-page.html
+点击「文件下载」链接，再点击「导出数据」按钮
+用 download 工具把确认弹框中的「确定」按钮作为下载触发元素，捕获导出的文件（文件名以 .txt 结尾，把 `*.txt` 作为 expectName 传给 download）
+```
+
+```bash
+pageqa examples/smoke-test.md
+```
+
+要点：
+
+- **必须用 `download`，且不要先把触发元素 `click` 掉**：点击引发的下载只能由该工具自己接住（与 `upload` 一样，它自己点击 `target`）。先 `click` 再等待，那次下载已经流走，结果必然是「没捕获到下载」。bsk 的 `download` 同样要求给 target（省略会直接报 `missing target`）。
+- `target` 就是**触发下载的那个元素**：通常是导出按钮本身，或「导出 → 确认」流程里弹框的「确定」按钮。
+- **文件名期望写通配**（支持 `*`/`?`，大小写不敏感，不传就只判「下载下来了文件」这件事）：
+  - 只要求「名字里含某段文字」→ `*报表*`；
+  - 只卡后缀 → `*.xls`；
+  - 全等 → `导出报表.xls`（不带通配符即全等）。
+  落盘名会带时间戳前缀（`20260924-101530-导出报表.xls`），所以**卡「包含」或「后缀」比写死完整名稳**（`expectName` 同时比对落盘名与服务器建议名，后者是服务器给的原名）。
+- **落盘位置**：默认写到 `~/.pageqa/downloads/<时间戳>-<服务器建议的文件名>`（配置项 `downloadDir` 可改；文件名带时间戳是为了多次运行互不覆盖）；用例显式给了 `out` 就写到那里，并允许覆盖。运行结束的产物清单里会列出实际路径。
+- **断言成立的文件在「场景收尾」时清理**（`downloadCleanup`，缺失视为开）：通过的用例没人会去看那些文件，回归跑一百次就堆一百个。清理发生在**场景跑完之后**，不是捕获后立刻删——同一场景里后面的步骤/断言仍然能看到这个文件。**三种情况一律保留**：用例显式给了 `out`（那是你要的文件）、断言不成立（失败时的文件正是排查对象）、把 `downloadCleanup` 设为 `false`（要留档）。真删掉的条目在收尾清单里标注「已清理」（删失败就不标，说明它还在原处）。
+- **等待上限默认 60 秒**：导出常是服务端现生成文件，用例写了更长的等待就传 `timeoutMs`（「最多等 2 分钟」→ `120000`）。
+- **文件名期望要对齐 bsk 报的名字**：`<a download="…">` 属性里的名字**不会被采用**——bsk 报的服务器建议名取的是 **URL 里的文件名**；真实系统里则来自服务端的 `Content-Disposition`。先跑一次，看报告证据里写的实际文件名，再决定 `expectName` 怎么写。
+- **「没等到下载」会在工具内自己重试一次**：实测 bsk 的下载捕获有**冷启动**特性——daemon/浏览器刚重启（或刚升级）后的第一次捕获必然失败，同一元素紧接着第二次就成功。而「没捕获到」是一条**洗不掉的断言结论**（模型后面再点成功，报告里那条 FAIL 还在），所以这类抖动必须在工具内消化：同一元素、同样的等待上限，最多点 2 次，重试成功时证据里会注明。代价是「真的没下载」的用例最坏等 2×`timeoutMs`。两次都没成、且 bsk 报的是 `download_capture_failed` 时，证据会直接说明「捕获未就绪」——那多半要重连一下 bsk 浏览器扩展，而不是去查被测页面。
+- **失败分三种**：触发元素点不到 = 这一步没走成（抛工具错误，模型会重新 snapshot 后重试）；点了但等待期内（含那次重试）没产生下载 = 断言不成立；文件落盘了但文件名不符期望 = 断言不成立（证据里带实际文件名）。回放时触发元素找不到同样记 FAIL，**不按「元素未找到」跳过**——跳过等于把「该下载却没下载」洗成通过。
+- 判定口径、路径策略与取舍见 `docs/adr/0012`。
+
 ## 架构
 
 下图是**分层与模块视角**：哪一层拥有什么、产物在模块之间怎么流动；运行时的先后顺序见下一节「工作原理」。
@@ -528,7 +578,7 @@ flowchart TD
   end
 
   subgraph BSK["bsk 工具层 · src/bsk"]
-    TOOLS["tools.ts 9 个工具<br/>navigate·snapshot·click·fill·upload·hover·scroll·wait·assert_text<br/>异步 · 可中止 · 全局串行"]
+    TOOLS["tools.ts 10 个工具<br/>navigate·snapshot·click·fill·upload·download·hover·scroll·wait·assert_text<br/>异步 · 可中止 · 全局串行"]
     DIAG["navigate-diagnosis.ts 导航失败翻译成人话"]
     SNAP["snapshot.ts 快照瘦身"]
   end
@@ -605,7 +655,7 @@ flowchart TD
 ```
 自然语言意图
    └─> pi-agent-core Agent（LLM: pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
-          └─> bsk 工具：navigate / snapshot / click / fill / upload / hover / scroll / wait / assert_text
+          └─> bsk 工具：navigate / snapshot / click / fill / upload / download / hover / scroll / wait / assert_text
                  └─> 真实浏览器（bsk 连接）
           └─> 结论与证据 -> 报告（文本/JSON）+ 退出码
           └─> 默认录制成功操作 -> 回放脚本（*.replay.json；可在 /setting 关掉）
@@ -624,6 +674,7 @@ flowchart TD
 - `snapshot()` 读取页面 aria 树与可见文本（标题、段落、链接、按钮等）；返回前会做瘦身（见「快照瘦身与复用」），短期内无页面改动时直接复用上一份
 - `click(target)` / `fill(target, value)` / `hover(target)` 元素交互（target 用 `@eN` 引用或 CSS 选择器）
 - `upload(target, file)` 上传本地文件（target 为触发文件选择器的元素，省略则由 bsk 自动查找文件输入框）
+- `download(target, expectName?, out?, timeoutMs?)` 捕获一次下载并落盘（target 为**触发下载的元素**，由工具自己点击）；它同时是一条断言：捕获到且文件名符合期望即「成立」，超时/落盘失败/文件名不符即「不成立」
 - `scroll(target)` / `wait(ms)` 滚动与等待
 - `assert_text(expectation)` 断言页面是否包含指定文本，返回「成立/不成立」与证据
 
@@ -669,7 +720,8 @@ src/
   agent.ts       编排器（pi-agent-core Agent + bsk 工具 + 报告）
   llm.ts         LLM 后端（pi-ai 自定义 provider -> 可配置 OpenAI 兼容端点）
   log.ts         进度日志（默认写 stderr；落点可通过 setSink 注入，交互模式接进界面视口）
-  bsk/tools.ts   browserskill 操作层与工具层（异步、可中止、全局串行；含 upload 与录制上报）
+  bsk/tools.ts   browserskill 操作层与工具层（异步、可中止、全局串行；含 upload/download 与录制上报）
+  downloads.ts   下载产物路径（文件名清洗、时间戳命名、改名）+ 本次运行捕获清单
   bsk/navigate-diagnosis.ts  把导航失败翻译成人话（只翻译不猜测，认不出的原样透传）
   tui/app.ts     交互模式界面（pi-tui TuiAltScreen：滚动日志视口 + 固定输入框，延迟加载）
   tui/queue.ts   运行队列（场景串行执行、追加、取消、中止）
@@ -687,7 +739,8 @@ examples/
   smoke.md                  示例套件（A1–A3）
   github-star.md            GitHub Star 用例
   element-plus-upload.md    文件上传用例（点击 Click to upload 上传本地图片）
+  sms-log.md                一个完整业务用例（筛选 + 导出并校验下载）
 tests/smoke.test.mjs 端到端验证
-tests/report.test.mjs / tests/replay.test.mjs / tests/snapshot.test.mjs / tests/tui.test.mjs
-  单元测试（无浏览器/LLM/TTY 依赖）：报告解析、定位符与回放、快照瘦身、追加场景写回、运行队列、「已取消」判定、日志落点、运行时用例文件查找（/run）、按来源拆分回放脚本、报告标注场景来源
+tests/report.test.mjs / tests/replay.test.mjs / tests/downloads.test.mjs / tests/snapshot.test.mjs / tests/tui.test.mjs
+  单元测试（无浏览器/LLM/TTY 依赖）：报告解析、定位符与回放、下载产物的命名与四类结局、快照瘦身、追加场景写回、运行队列、「已取消」判定、日志落点、运行时用例文件查找（/run）、按来源拆分回放脚本、报告标注场景来源
 ```

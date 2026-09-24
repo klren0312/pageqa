@@ -1,6 +1,20 @@
 import { execFile, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, renameSync } from "node:fs";
+import { basename } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { readDownloadCleanup } from "../config.js";
+import {
+  DEFAULT_DOWNLOAD_TIMEOUT_MS,
+  downloadDestination,
+  downloadExpectation,
+  downloadRetention,
+  downloadStagingPath,
+  ensureDownloadDirFor,
+  fileSizeOrNull,
+  matchFileName,
+  recordDownloaded,
+  uniquePath,
+} from "../downloads.js";
 import { t } from "../i18n.js";
 import { JevClient } from "../jev.js";
 import { debugLog, info, timer } from "../log.js";
@@ -28,6 +42,15 @@ import {
  * `wait-ms` 这类命令的耗时由调用方指定，不能套这个默认值——见 `bsk()` 的 timeoutMs 参数。
  */
 const BSK_TIMEOUT_MS = 60_000;
+
+/**
+ * 捕获一次下载最多点几次触发元素。
+ *
+ * 2 = 首轮 + 一次重试：实测「页面刚加载完就点」这类时序问题会让第一次点击白点（紧接着
+ * 重试就成功），而「没等到下载」按设计是一条不成立的断言——不重试就会留下一条洗不掉的
+ * FAIL。代价是「真的没下载」的用例最坏等 2 倍 timeoutMs（用例可用 timeoutMs 收窄）。
+ */
+const DOWNLOAD_ATTEMPTS = 2;
 
 /** 操作被调用方主动中止（交互模式下按 Esc）。 */
 export class BskAbortError extends Error {
@@ -87,7 +110,7 @@ function runBsk(
       "bsk",
       args,
       { encoding: "utf-8", timeout: timeoutMs, windowsHide: true },
-      (err, stdout) => {
+      (err, stdout, stderr) => {
         signal?.removeEventListener("abort", onAbort);
         // 必须先判中止：被 kill 出来的错误同样是 SIGTERM，后判会被误报成「命令超时」。
         if (aborted) {
@@ -116,7 +139,17 @@ function runBsk(
           );
           return;
         }
-        reject(err);
+        // execFile 回调里的 error 上**不带** stdout/stderr（实测 Node 22 上 `err.stdout`
+        // 就是 undefined，内容只在回调参数里），而 bsk 恰恰把结构化失败原因打在 stdout
+        // （`{"code":…,"message":…,"exit_code":…}`）。原样 reject 的话，上层能拿到的只有
+        // `Command failed: bsk …` 这行包装噪声——下载失败证据与 navigate 诊断都靠它，
+        // 丢掉等于让每次失败都说不清原因。
+        reject(
+          Object.assign(err as { stdout?: string; stderr?: string }, {
+            stdout: String(stdout ?? ""),
+            stderr: String(stderr ?? ""),
+          }),
+        );
       },
     );
     const onAbort = () => {
@@ -254,6 +287,56 @@ export function ensureBskReady(): Promise<void> {
   return readyPromise;
 }
 
+/**
+ * 从 bsk 输出里抠出 JSON。
+ *
+ * 不用 `JSON.parse(out)` 一把梭：bsk 在 JSON 前后可能带进度行（ensureSession 里为同样的
+ * 原因做了兜底），直接抛会把一条已经捕获成功的下载判成解析失败。
+ */
+function parseBskJson<T>(out: string): T | null {
+  const start = out.indexOf("{");
+  const end = out.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    return JSON.parse(out.slice(start, end + 1)) as T;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把 bsk 命令失败的原因压成一行可读文本（下载失败时作为证据）。
+ *
+ * Node 的 `execFile` 会在 message 前面挂一行 `Command failed: bsk …`——那是包装噪声，
+ * 真正有用的 `error:/hint:/details:` 在它后面（与 navigate-diagnosis 的取舍一致）。
+ */
+function bskErrorDetail(err: unknown): string {
+  const envelope = bskErrorEnvelope(err);
+  if (envelope?.message?.trim()) return envelope.message.trim().slice(0, 400);
+  // 没有信封（daemon 未起、参数错、被中止等）时退回原始文本：readErrorText 认 stderr 与
+  // 包装后的 message，再剥掉 `Command failed: …` 那一行包装噪声。
+  const raw = readErrorText(err).trim();
+  const lines = raw
+    .split(/\r?\n/)
+    .filter((line) => !/^Command failed:/.test(line));
+  return (lines.join(" ").trim() || raw).replace(/\s+/g, " ").slice(0, 400);
+}
+
+/**
+ * bsk 的结构化失败信封（打在 **stdout**，runBsk 已把它贴到错误对象上）。
+ *
+ * 有它才能区分「元素根本没找到」与「元素点了但没产生下载」——这两种失败的处置完全相反
+ * （前者该抛错让模型重试，后者该记一条不成立的断言），而光看 `Command failed:` 分不出来。
+ */
+function bskErrorEnvelope(err: unknown): BskErrorJson | null {
+  const e = err as { stderr?: unknown; stdout?: unknown } | null | undefined;
+  const text = [e?.stderr, e?.stdout]
+    .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+    .join("\n");
+  const json = parseBskJson<BskErrorJson>(text);
+  return json && typeof json.code === "string" ? json : null;
+}
+
 /** 构造 AgentTool 标准的成功返回（含必填 details 字段）。 */
 function ok(text: string) {
   return { content: [{ type: "text", text } as const], details: {} };
@@ -298,6 +381,23 @@ export interface BskOps {
     file: string,
     signal?: AbortSignal,
   ): Promise<string>;
+  /**
+   * 捕获一次下载：由本方法**自己点击** `target`（触发下载的元素），把捕获到的文件落到本地。
+   *
+   * 方法名与 bsk 子命令同名，语义也一致：`target` 必填——实测 bsk 省略它直接报
+   * `missing target`（exit_code 2），并不存在「等一次正在进行的下载」这种用法。
+   * 因此调用方**不能先 click 再调本方法**：那样下载已经流走，没人接。
+   *
+   * 失败不抛错，而是把结论写成一条**不成立的断言**（见 AssertOutcome）：
+   * 「该下载却没下载」正是这条用例要判的事，抛成工具错误只会让模型当成环境抖动去重试。
+   */
+  download(
+    target: string,
+    out: string | undefined,
+    expectName: string | undefined,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<string>;
   hover(target: string, signal?: AbortSignal): Promise<string>;
   scroll(target: string, signal?: AbortSignal): Promise<string>;
   wait(ms: number, signal?: AbortSignal): Promise<string>;
@@ -317,14 +417,40 @@ export interface BskOps {
   lastAssert(): AssertOutcome | null;
 }
 
-/** 一次 assert_text 的结构化结果。 */
+/** 一次 assert_text / download 的结构化结果。 */
 export interface AssertOutcome {
-  /** 断言期望（模型传给 assert_text 的 expectation）。 */
+  /** 断言期望（assert_text 的 expectation，或 download 的「文件已下载」期望）。 */
   expectation: string;
   /** 是否成立。 */
   pass: boolean;
-  /** 证据（页面里看到/没看到什么，或 Jev 语义匹配度）。 */
+  /** 证据（页面里看到/没看到什么，或捕获到/没捕获到什么文件）。 */
   evidence: string;
+}
+
+/** bsk 失败时打在 stdout 的结构化信封（用到哪几个就声明哪几个，其余忽略）。 */
+interface BskErrorJson {
+  /** 机器可读的错误类别，如 `not_found`（元素/资源不存在）、超时等。 */
+  code?: string;
+  /** 人可读的原因（证据里用的就是它）。 */
+  message?: string;
+  /** 通用劝退提示（如「是不是 daemon 没起」），对定位没帮助，不往证据里放。 */
+  hint?: string;
+  /** 细分原因，如 `selector_not_found`。 */
+  data?: { reason?: string };
+}
+
+/** `bsk download --json` 回传的字段（用到哪几个就声明哪几个，其余忽略）。 */
+interface BskDownloadJson {
+  /** 落盘路径（bsk 写的就是我们给的 --out，这里用于交叉核对）。 */
+  path?: string;
+  /** 服务器建议的文件名（`Content-Disposition`），未给时为 null。 */
+  suggested_filename?: string | null;
+  /** 落盘字节数。 */
+  byte_size?: number;
+  /** 内容类型。 */
+  mime?: string | null;
+  /** bsk 对下载内容的危险分级（如 `safe`）。 */
+  danger?: string | null;
 }
 
 /**
@@ -482,6 +608,183 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       return `已上传文件 ${file}\n${out}`;
     },
 
+    async download(
+      target: string,
+      out: string | undefined,
+      expectName: string | undefined,
+      timeoutMs: number,
+      signal?: AbortSignal,
+    ): Promise<string> {
+      markStale();
+      const now = new Date();
+      const explicit = out?.trim() ? out.trim() : undefined;
+      // 没给路径就先落到临时名：服务器建议的文件名要等捕获完成才知道（见 downloads.ts）。
+      const staging = explicit ? null : downloadStagingPath(now);
+      const dest = staging ?? downloadDestination({ explicit, now });
+      ensureDownloadDirFor(dest);
+      const expectation = downloadExpectation(expectName);
+      /** 把结论写成一条**不成立的断言**（而不是抛错），并返回与报告同一句话给模型。 */
+      const fail = (evidence: string): string => {
+        assertOutcome = { expectation, pass: false, evidence };
+        return `断言「${expectation}」：不成立。${evidence}`;
+      };
+
+      // 点一次 + 等一次下载，抽成可重试的一步。
+      const captureOnce = (): Promise<string> =>
+        bsk(
+          [
+            "download",
+            target,
+            "--out",
+            dest,
+            "--json",
+            ...quiet,
+            "--timeout",
+            `${timeoutMs}ms`,
+            // 显式路径允许覆盖：用例点名了「就写到这个文件」，第二次运行因文件已存在而失败
+            // 会被读成「下载坏了」；默认路径带时间戳，本就不会撞名。
+            ...(explicit ? ["--overwrite"] : []),
+          ],
+          signal,
+          // 给 bsk 自己留出报超时的余量：让我们的 execFile 先超时的话，拿到的是一条通用的
+          //「命令执行超时」，而不是 bsk 对「没等到下载」的结构化说明。
+          timeoutMs + 5_000,
+        );
+
+      let raw: string | null = null;
+      let attempts = 0;
+      let lastFailure: unknown = null;
+      for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
+        attempts = attempt;
+        try {
+          raw = await captureOnce();
+          break;
+        } catch (err) {
+          if (err instanceof BskAbortError) throw err;
+          if (bskErrorEnvelope(err)?.code === "not_found") {
+            // 元素/资源层面的问题（选择器写错、`@eN` 失效、session 掉了）：这一步**根本没走成**，
+            // 不等于「下载没发生」。抛成工具错误让模型重新 snapshot 后重试——记一条不成立的断言
+            // 会把模型的一次笔误变成假的用例失败（普通动作遇到同样问题也是抛错重试）。
+            // 回放路径里元素找不到在 resolveStepTarget 那层就被拦住并显式判 FAIL（见 replay.ts）。
+            throw new Error(
+              t("bsk.download.triggerError", { detail: bskErrorDetail(err) }),
+            );
+          }
+          lastFailure = err;
+          // 「没等到下载」在工具内自己重试一次：实测「页面刚加载完就点」这类时序问题会让
+          // 第一次点击白点（紧接着重试就成功），而按设计「没捕获到」是一条**不成立的断言**
+          // ——不重试的话，这类抖动会留下一条 FAIL，模型后面再试成功也洗不掉（假失败）。
+          if (attempt < DOWNLOAD_ATTEMPTS) {
+            info(
+              t("bsk.download.retrying", {
+                seconds: Math.round(timeoutMs / 1000),
+                detail: bskErrorDetail(err),
+              }),
+            );
+          }
+        }
+      }
+      if (raw === null) {
+        const detail = bskErrorDetail(lastFailure);
+        debugLog("[bsk] download 未捕获到下载：" + detail);
+        // bsk 认得出来的那一类要翻译成人话（与 navigate-diagnosis 同一条原则：只翻译不猜测）。
+        // `download_capture_failed` 实测是「daemon/浏览器刚重启或刚升级，下载捕获还没就绪」：
+        // 只报「点了没产生下载」会让人去查页面，而真正该做的是重连扩展/稍后再试。
+        const notReady =
+          bskErrorEnvelope(lastFailure)?.data?.reason === "download_capture_failed"
+            ? t("bsk.download.captureNotReady")
+            : "";
+        return fail(
+          t("bsk.download.notCaptured", {
+            seconds: Math.round(timeoutMs / 1000) * attempts,
+            detail,
+          }) + notReady,
+        );
+      }
+
+      const meta = parseBskJson<BskDownloadJson>(raw);
+      const suggested = meta?.suggested_filename?.trim() || null;
+      let landed =
+        explicit ??
+        uniquePath(downloadDestination({ suggestedName: suggested ?? undefined, now }));
+      if (staging) {
+        try {
+          renameSync(staging, landed);
+        } catch (err) {
+          // 改名失败（被占用/杀软扫描）：留着临时名也比丢掉这次捕获强，证据里会带真实路径。
+          debugLog(
+            "[bsk] download 改名失败，保留临时名：" +
+              (err instanceof Error ? err.message : String(err)),
+          );
+          landed = staging;
+        }
+      }
+
+      const bytes = fileSizeOrNull(landed);
+      if (bytes === null) {
+        return fail(t("bsk.download.notWritten", { path: landed }));
+      }
+      if (bytes <= 0) {
+        // 0 字节的文件确实躺在那儿，照样算一条「下载产物」，摘要里报出来（否则它就是个
+        // 无人交代的残留文件）。
+        recordDownloaded(landed);
+        return fail(t("bsk.download.empty", { path: landed }));
+      }
+
+      // 文件名期望同时比对「落盘名」与「服务器建议名」：用例写包含式通配（如 `*报表*`）
+      // 两者都匹配，而写死完整名（如 `导出报表.xls`）时落盘名多了时间戳前缀，只有建议名能对上。
+      const candidates = [basename(landed), suggested].filter(
+        (n): n is string => Boolean(n),
+      );
+      if (expectName && !candidates.some((n) => matchFileName(expectName, n))) {
+        // 名字不符 → 文件**留下**：失败时它正是排查对象（是不是导出了别的报表？）。
+        recordDownloaded(landed);
+        return fail(
+          t("bsk.download.nameMismatch", {
+            pattern: expectName,
+            name: suggested ?? basename(landed),
+            path: landed,
+          }),
+        );
+      }
+
+      const mime = meta?.mime?.trim() || null;
+      const danger = meta?.danger?.trim() || null;
+      const extras = [
+        mime ? t("bsk.download.evidenceMime", { mime }) : null,
+        // `safe` 是绝大多数情况，逐条报出来只是噪声；非 safe 才值得占用证据的位置。
+        danger && danger.toLowerCase() !== "safe"
+          ? t("bsk.download.evidenceDanger", { level: danger })
+          : null,
+      ]
+        .filter((x): x is string => Boolean(x))
+        .join("，");
+
+      // 断言成立 → 按规则决定留不留：显式 out / 关掉开关 = 留，默认路径 = 登记待清理。
+      // 待清理的文件由**场景收尾**统一删（见 downloads.ts 的 flushDownloadCleanup）：
+      // 捕获后立刻删会让同一场景里后面任何一步都拿不到这个文件。证据只说明"会清理"，
+      // 真正"已清理"由收尾清单如实标注（删失败了就不标）。
+      const scheduled =
+        downloadRetention({
+          explicit: Boolean(explicit),
+          cleanupEnabled: readDownloadCleanup(),
+        }) === "clean";
+      recordDownloaded(landed, { cleanupPending: scheduled });
+
+      const notes = [
+        attempts > 1 ? t("bsk.download.retried") : "",
+        scheduled ? t("bsk.download.cleanupScheduled") : "",
+      ].join("");
+      const evidence =
+        t("bsk.download.captured", {
+          path: landed,
+          bytes,
+          extra: extras ? `，${extras}` : "",
+        }) + notes;
+      assertOutcome = { expectation, pass: true, evidence };
+      return `断言「${expectation}」：成立。${evidence}`;
+    },
+
     async hover(target: string, signal?: AbortSignal): Promise<string> {
       markStale();
       const out = await bsk(["hover", target, ...quiet], signal);
@@ -621,7 +924,9 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     const before = ops.lastSnapshot();
     try {
       const text = await fn(signal);
-      const assertion = name === "assert_text" ? ops.lastAssert() : null;
+      // download 也是断言型工具：它的结论（捕获到没有、文件名对不对）落在同一条结构化结果上。
+      const assertion =
+        name === "assert_text" || name === "download" ? ops.lastAssert() : null;
       opts.onExec?.({
         name,
         params,
@@ -744,6 +1049,61 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     },
   };
 
+  const download: AgentTool = {
+    name: "download",
+    label: "Download",
+    description:
+      "捕获一次浏览器下载并把它落到本地，用于校验「点击导出/下载按钮后文件确实下载下来了」。" +
+      "target 传**触发下载的那个元素**（如导出按钮，或确认弹框里的「确定」按钮），@eN 引用或 CSS 选择器。" +
+      "注意：点击触发的下载只能由本工具自己捕获，不要先 click 再调用本工具——那次下载会流走、没人接。" +
+      "expectName 可选，传文件名通配（如 *.xlsx），不符合则断言不成立；" +
+      "out 可选，传落盘路径（省略则写到配置的下载目录，文件名带时间戳）；" +
+      "timeoutMs 可选，等待上限（默认 " + DEFAULT_DOWNLOAD_TIMEOUT_MS + " 毫秒）。" +
+      "本工具直接产生一条断言：捕获到并落盘为「成立」，超时/落盘失败/文件名不符为「不成立」。",
+    parameters: paramsOf(
+      {
+        target: {
+          type: "string",
+          description: "触发下载的元素（@eN 引用或 CSS 选择器）",
+        },
+        out: {
+          type: "string",
+          description:
+            "可选的落盘路径；省略则写到下载目录（~/.pageqa/downloads，文件名带时间戳）",
+        },
+        expectName: {
+          type: "string",
+          description: "可选的文件名通配期望，如 *.xlsx（大小写不敏感）",
+        },
+        timeoutMs: {
+          type: "number",
+          description: `可选的等待上限（毫秒，默认 ${DEFAULT_DOWNLOAD_TIMEOUT_MS}）`,
+        },
+      },
+      ["target"],
+    ),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = params as DownloadParams;
+      // 只把「用例真的写了」的等待上限传给操作层：省略时才能回落默认值，
+      // 也让录制层不必为一个从没被指定过的数字背锅。
+      const timeoutMs =
+        typeof p.timeoutMs === "number" && p.timeoutMs > 0
+          ? Math.round(p.timeoutMs)
+          : DEFAULT_DOWNLOAD_TIMEOUT_MS;
+      return exec(
+        "download",
+        {
+          target: p.target,
+          ...(p.out ? { out: p.out } : {}),
+          ...(p.expectName ? { expectName: p.expectName } : {}),
+          ...(p.timeoutMs ? { timeoutMs } : {}),
+        },
+        (s) => ops.download(p.target, p.out, p.expectName, timeoutMs, s),
+        signal,
+      );
+    },
+  };
+
   const hover: AgentTool = {
     name: "hover",
     label: "Hover",
@@ -822,6 +1182,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     click,
     fill,
     upload,
+    download,
     hover,
     scroll,
     wait,
@@ -842,6 +1203,12 @@ interface FillParams {
 interface UploadParams {
   target?: string;
   file: string;
+}
+interface DownloadParams {
+  target: string;
+  out?: string;
+  expectName?: string;
+  timeoutMs?: number;
 }
 interface WaitParams {
   ms?: number;

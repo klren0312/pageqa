@@ -23,6 +23,11 @@ import {
   type BskOps,
 } from "./bsk/tools.js";
 import { loadConfig } from "./config.js";
+import {
+  DEFAULT_DOWNLOAD_TIMEOUT_MS,
+  downloadExpectation,
+  flushDownloadCleanup,
+} from "./downloads.js";
 import { t } from "./i18n.js";
 import { JevClient } from "./jev.js";
 import {
@@ -54,6 +59,7 @@ export type ReplayStepKind =
   | "click"
   | "fill"
   | "upload"
+  | "download"
   | "hover"
   | "scroll"
   | "wait"
@@ -89,6 +95,26 @@ export interface ReplayUploadStep {
   locator: Locator | null;
 }
 
+/**
+ * 下载步骤：点击触发元素 → 捕获一次下载 → 落盘 → 产出一条断言。
+ *
+ * 与 upload 同构（都由工具自己点触发元素），差别在于它**同时是断言**：
+ * 捕获不到就是 FAIL，不像普通动作那样可以跳过。
+ */
+export interface ReplayDownloadStep {
+  kind: "download";
+  step: number | null;
+  /** 触发下载的元素（录制时模型给出的 target）。 */
+  target: string;
+  locator: Locator | null;
+  /** 显式落盘路径（已还原成占位符写法）；未给则用下载目录 + 时间戳 + 服务器建议名。 */
+  out?: string;
+  /** 文件名通配期望（如 `*.xlsx`）。 */
+  expectName?: string;
+  /** 等待上限（毫秒）；未给用默认值——写死默认值会让「改默认」失效。 */
+  timeoutMs?: number;
+}
+
 export interface ReplayNavigateStep {
   kind: "navigate";
   step: number | null;
@@ -116,6 +142,7 @@ export type ReplayStep =
   | ReplayTargetStep
   | ReplayFillStep
   | ReplayUploadStep
+  | ReplayDownloadStep
   | ReplayNavigateStep
   | ReplayWaitStep
   | ReplayAssertStep;
@@ -276,6 +303,7 @@ const REPLAY_STEP_KINDS: ReadonlySet<string> = new Set<ReplayStepKind>([
   "click",
   "fill",
   "upload",
+  "download",
   "hover",
   "scroll",
   "wait",
@@ -393,6 +421,7 @@ export function normalizePlaceholderLiterals(script: ReplayScript): string[] {
         case "hover":
         case "scroll":
         case "upload":
+        case "download":
           applyLocator(st);
           break;
         default:
@@ -566,6 +595,43 @@ async function runStep(
         ? await resolveStepTarget(ops, step.target, step.locator, expand)
         : undefined;
       return { text: await ops.upload(target, expand(step.file)) };
+    }
+    case "download": {
+      const expectation = downloadExpectation(step.expectName);
+      let target: string;
+      try {
+        target = await resolveStepTarget(ops, step.target, step.locator, expand);
+      } catch (err) {
+        // 触发元素找不到**不按 skip 处理**：这一步承载断言，跳过等于把「该下载却没下载」
+        // 洗成通过（普通动作的 skip 规则见 LocatorMissError，这里刻意不适用）。
+        if (!(err instanceof LocatorMissError)) throw err;
+        const reason = err instanceof Error ? err.message : String(err);
+        const evidence = t("replay.download.triggerMissing", { reason });
+        return { text: evidence, assertion: { expectation, verdict: "fail", evidence } };
+      }
+      const out = await ops.download(
+        target,
+        step.out ? expand(step.out) : undefined,
+        step.expectName,
+        step.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS,
+      );
+      // 与 assert_text 同一条规则：结论以工具的结构化结果为准（成立/不成立 + 证据），
+      // 再对返回文本做一次解析等于把报告准源绑死在文案措辞上。
+      const outcome = ops.lastAssert();
+      return {
+        text: out,
+        assertion: outcome
+          ? {
+              expectation: outcome.expectation,
+              verdict: outcome.pass ? "pass" : "fail",
+              evidence: outcome.evidence,
+            }
+          : {
+              expectation,
+              verdict: "fail",
+              evidence: t("replay.assert.unparsed", { out }),
+            },
+      };
     }
     case "wait":
       return { text: await ops.wait(step.ms) };
@@ -829,6 +895,8 @@ async function replayScenario(
       failFast: opts.failFast ?? false,
     });
   } finally {
+    // 回放同样在场景收尾统一清理下载产物（与带模型跑同一条规则，见 downloads.ts）。
+    flushDownloadCleanup();
     if (session) await closeSession(session);
   }
 

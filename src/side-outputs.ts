@@ -1,5 +1,5 @@
 /**
- * 旁路产物清单：一次运行结束后落盘的东西（测试报告 + 回放脚本）该怎么向用户交代。
+ * 旁路产物清单：一次运行结束后落盘的东西（测试报告 + 回放脚本 + 下载产物）该怎么向用户交代。
  *
  * 三条出口（批处理 / 回放 / 交互）在收尾各调用一次 `emitSideOutputs`，逐行交给 `info()`
  * —— 清单只走 stderr（交互模式下进视口），**绝不进 stdout**：旁路产物的存在不该改变
@@ -7,8 +7,13 @@
  *
  * 被 `/setting` 关掉的项要显式说明原因，而不是静默省略：默认是「开」，看不到产物却
  * 不给理由，用户只会以为坏了（见 ADR-0011 决策五）。
+ *
+ * 下载产物是个例外：它**没有「生不生成」的开关**（「用例有没有下载文件」不是偏好能决定的），
+ * 且只在该运行真的收了文件时才列一行——每次运行都打一行「下载产物: 无」是纯噪声。
+ * 通过后是否把文件清掉由 `downloadCleanup` 决定（见 downloads.ts），清理过的条目会标注出来。
  */
 import { readSideOutputPrefs, type SideOutputPrefs } from "./config.js";
+import type { DownloadArtifact } from "./downloads.js";
 import { t } from "./i18n.js";
 import { info } from "./log.js";
 import { writeHtmlReport } from "./report-html.js";
@@ -43,10 +48,16 @@ export type ScriptOutcome =
   /** 本次运行不使用脚本产物：回放模式用的就是既有脚本，清单不列这一行。 */
   | { kind: "na" };
 
-/** 渲染清单的整行（含 i18n 文案里的 `[pageqa]` 前缀），供 info() 逐行输出。 */
+/**
+ * 渲染清单的整行（含 i18n 文案里的 `[pageqa]` 前缀），供 info() 逐行输出。
+ *
+ * `downloads` 是本次运行捕获到的下载产物绝对路径（见 downloads.ts）：报告里的路径是
+ * 「事后可查」，而用户最想知道「文件在哪」的时刻就是运行刚结束的那一刻。
+ */
 export function renderSideOutputLines(
   report: ReportOutcome,
   script: ScriptOutcome,
+  downloads: readonly DownloadArtifact[] = [],
 ): string[] {
   const lines = [t("log.sideOutputsTitle")];
 
@@ -96,6 +107,15 @@ export function renderSideOutputLines(
       break;
   }
 
+  for (const artifact of downloads) {
+    // 已清理的照旧列出来并标注：不列的话，用户会以为「这条用例根本没下载文件」。
+    lines.push(
+      artifact.cleaned
+        ? t("log.sideOutputDownloadCleaned", { path: artifact.path })
+        : t("log.sideOutputDownload", { path: artifact.path }),
+    );
+  }
+
   return lines;
 }
 
@@ -103,9 +123,10 @@ export function renderSideOutputLines(
 export function emitSideOutputs(
   report: ReportOutcome,
   script: ScriptOutcome,
+  downloads: readonly DownloadArtifact[] = [],
 ): void {
   try {
-    for (const line of renderSideOutputLines(report, script)) info(line);
+    for (const line of renderSideOutputLines(report, script, downloads)) info(line);
   } catch (err) {
     info(
       t("log.sideOutputReportFailed", {

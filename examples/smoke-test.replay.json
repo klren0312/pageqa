@@ -1,10 +1,10 @@
 {
   "format": "pageqa-replay",
   "version": 1,
-  "recordedAt": "2026-09-21T07:09:53.436Z",
+  "recordedAt": "2026-09-24T01:41:30.337Z",
   "source": {
     "path": "examples/smoke-test.md",
-    "hash": "70fcc09fbb6d42fa"
+    "hash": "53689cd4507a1e9a"
   },
   "scenarios": [
     {
@@ -24,7 +24,7 @@
         },
         {
           "kind": "assert_text",
-          "step": 1,
+          "step": 2,
           "expectation": "冒烟测试页面"
         },
         {
@@ -42,14 +42,9 @@
           }
         },
         {
-          "kind": "wait",
-          "step": 2,
-          "ms": 1000
-        },
-        {
           "kind": "assert_text",
           "step": 3,
-          "expectation": "姓名"
+          "expectation": "请选择城市"
         },
         {
           "kind": "click",
@@ -64,11 +59,6 @@
               "RootWebArea \"冒烟测试页面\""
             ]
           }
-        },
-        {
-          "kind": "wait",
-          "step": 4,
-          "ms": 1000
         },
         {
           "kind": "assert_text",
@@ -113,27 +103,11 @@
         {
           "kind": "fill",
           "step": 3,
-          "target": "@e5",
+          "target": "@e6",
           "value": "张三",
           "locator": {
             "role": "textbox",
             "name": "姓名 *",
-            "nth": 0,
-            "target": "@e5",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 1 姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\"",
-              "form \"姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\""
-            ]
-          }
-        },
-        {
-          "kind": "click",
-          "step": 4,
-          "target": "@e6",
-          "locator": {
-            "role": "button",
-            "name": "请选择城市",
             "nth": 0,
             "target": "@e6",
             "path": [
@@ -149,9 +123,25 @@
           "target": "@e7",
           "locator": {
             "role": "button",
-            "name": "北京",
+            "name": "请选择城市",
             "nth": 0,
             "target": "@e7",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 1 姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\"",
+              "form \"姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e8",
+          "locator": {
+            "role": "button",
+            "name": "北京",
+            "nth": 0,
+            "target": "@e8",
             "path": [
               "RootWebArea \"冒烟测试页面\"",
               "main \"表单页面 1 姓名 * 城市 * 请选择城市 北京 上海 广州 深圳 兴趣爱好 性别 * 出生日期 *\"",
@@ -162,12 +152,12 @@
         {
           "kind": "click",
           "step": 5,
-          "target": "@e11",
+          "target": "@e12",
           "locator": {
             "role": "radio",
             "name": "男",
             "nth": 0,
-            "target": "@e11",
+            "target": "@e12",
             "path": [
               "RootWebArea \"冒烟测试页面\"",
               "main \"表单页面 1 姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\"",
@@ -178,13 +168,13 @@
         {
           "kind": "fill",
           "step": 6,
-          "target": "@e13",
+          "target": "@e14",
           "value": "1990-01-01",
           "locator": {
             "role": "textbox",
             "name": "出生日期 *",
             "nth": 0,
-            "target": "@e13",
+            "target": "@e14",
             "path": [
               "RootWebArea \"冒烟测试页面\"",
               "main \"表单页面 1 姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\"",
@@ -195,12 +185,12 @@
         {
           "kind": "click",
           "step": 7,
-          "target": "@e14",
+          "target": "@e15",
           "locator": {
             "role": "button",
             "name": "提交表单",
             "nth": 0,
-            "target": "@e14",
+            "target": "@e15",
             "path": [
               "RootWebArea \"冒烟测试页面\"",
               "main \"表单页面 1 姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\"",
@@ -239,7 +229,7 @@
         },
         {
           "kind": "click",
-          "step": 2,
+          "step": 1,
           "target": "@e3",
           "locator": {
             "role": "link",
@@ -253,28 +243,12 @@
         },
         {
           "kind": "fill",
-          "step": 3,
-          "target": "@e5",
+          "step": 1,
+          "target": "@e6",
           "value": "test@example.com",
           "locator": {
             "role": "textbox",
             "name": "邮箱 *",
-            "nth": 0,
-            "target": "@e5",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 2 邮箱 * 职业 * 请选择职业\"",
-              "form \"邮箱 * 职业 * 请选择职业\""
-            ]
-          }
-        },
-        {
-          "kind": "click",
-          "step": 4,
-          "target": "@e6",
-          "locator": {
-            "role": "button",
-            "name": "请选择职业",
             "nth": 0,
             "target": "@e6",
             "path": [
@@ -286,13 +260,29 @@
         },
         {
           "kind": "click",
-          "step": 4,
-          "target": "@e8",
+          "step": 1,
+          "target": "@e7",
+          "locator": {
+            "role": "button",
+            "name": "请选择职业",
+            "nth": 0,
+            "target": "@e7",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 2 邮箱 * 职业 * 请选择职业\"",
+              "form \"邮箱 * 职业 * 请选择职业\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 1,
+          "target": "@e9",
           "locator": {
             "role": "button",
             "name": "工程师",
             "nth": 0,
-            "target": "@e8",
+            "target": "@e9",
             "path": [
               "RootWebArea \"冒烟测试页面\"",
               "main \"表单页面 2 邮箱 * 职业 * 请选择职业 学生 工程师 设计师 产品经理\"",
@@ -302,13 +292,13 @@
         },
         {
           "kind": "click",
-          "step": 5,
-          "target": "@e7",
+          "step": 1,
+          "target": "@e8",
           "locator": {
             "role": "button",
             "name": "提交表单",
             "nth": 0,
-            "target": "@e7",
+            "target": "@e8",
             "path": [
               "RootWebArea \"冒烟测试页面\"",
               "main \"表单页面 2 邮箱 * 职业 * 工程师\"",
@@ -318,12 +308,12 @@
         },
         {
           "kind": "wait",
-          "step": 6,
+          "step": 1,
           "ms": 1000
         },
         {
           "kind": "assert_text",
-          "step": 7,
+          "step": 1,
           "expectation": "表单提交成功！"
         }
       ]
@@ -361,12 +351,12 @@
           "kind": "upload",
           "step": 3,
           "file": "D:\\1project\\page-test-agent\\examples\\smoke-test.md",
-          "target": "@e5",
+          "target": "@e6",
           "locator": {
             "role": "button",
             "name": "选择文件",
             "nth": 0,
-            "target": "@e5",
+            "target": "@e6",
             "path": [
               "RootWebArea \"冒烟测试页面\"",
               "main \"文件上传 选择文件 尚未选择文件\""
@@ -382,6 +372,138 @@
           "kind": "assert_text",
           "step": 5,
           "expectation": "smoke-test.md"
+        }
+      ]
+    },
+    {
+      "name": "文件下载测试（直接下载）",
+      "caseSteps": [
+        "打开 `http://localhost:18888/smoke-test-page.html`",
+        "点击「文件下载」链接，等待页面路由切换",
+        "断言页面中已出现文件下载相关内容",
+        "等待 2 秒，让页面彻底就绪（与真实业务用例一致：先看清楚页面再动手）",
+        "用 download 工具把「下载示例文件」链接作为下载触发元素，捕获下载的示例文件并断言磁盘上已经拿到该文件；文件名以 .txt 结尾，把 `*.txt` 作为 expectName 传给 download（这是一个链接，也不要先 click 它——点击引发的下载只能由 download 工具自己接住）"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "http://localhost:18888/smoke-test-page.html"
+        },
+        {
+          "kind": "click",
+          "step": 2,
+          "target": "@e5",
+          "locator": {
+            "role": "link",
+            "name": "文件下载",
+            "nth": 0,
+            "target": "@e5",
+            "path": [
+              "RootWebArea \"冒烟测试页面\""
+            ]
+          }
+        },
+        {
+          "kind": "assert_text",
+          "step": 3,
+          "expectation": "文件下载"
+        },
+        {
+          "kind": "wait",
+          "step": 4,
+          "ms": 2000
+        },
+        {
+          "kind": "download",
+          "step": 5,
+          "target": "@e6",
+          "locator": {
+            "role": "link",
+            "name": "下载示例文件",
+            "nth": 0,
+            "target": "@e6",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"文件下载 直接下载 导出（需要在确认弹框里点「确定」才会开始下载）\""
+            ]
+          },
+          "expectName": "*.txt"
+        }
+      ]
+    },
+    {
+      "name": "文件下载测试（确认弹框后下载）",
+      "caseSteps": [
+        "打开 `http://localhost:18888/smoke-test-page.html`",
+        "点击「文件下载」链接，等待页面路由切换",
+        "等待 2 秒，让页面彻底就绪（理由同上）",
+        "点击「导出数据」按钮，只点它，等待确认弹框出现（不要接着点弹框里的按钮）",
+        "用 download 工具把确认弹框中的「确定」按钮作为下载触发元素，捕获导出的文件并断言磁盘上已经拿到该文件；文件名以 .txt 结尾，把 `*.txt` 作为 expectName 传给 download",
+        "等待 1 秒，确认页面出现了「导出成功」提示"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "http://localhost:18888/smoke-test-page.html"
+        },
+        {
+          "kind": "click",
+          "step": 2,
+          "target": "@e5",
+          "locator": {
+            "role": "link",
+            "name": "文件下载",
+            "nth": 0,
+            "target": "@e5",
+            "path": [
+              "RootWebArea \"冒烟测试页面\""
+            ]
+          }
+        },
+        {
+          "kind": "wait",
+          "step": 3,
+          "ms": 2000
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e7",
+          "locator": {
+            "role": "button",
+            "name": "导出数据",
+            "nth": 0,
+            "target": "@e7",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"文件下载 直接下载 导出（需要在确认弹框里点「确定」才会开始下载）\""
+            ]
+          }
+        },
+        {
+          "kind": "download",
+          "step": 5,
+          "target": "@e2",
+          "locator": {
+            "role": "button",
+            "name": "确定",
+            "nth": 0,
+            "target": "@e2",
+            "path": []
+          },
+          "expectName": "*.txt"
+        },
+        {
+          "kind": "wait",
+          "step": 6,
+          "ms": 1000
+        },
+        {
+          "kind": "assert_text",
+          "step": 7,
+          "expectation": "导出成功"
         }
       ]
     }

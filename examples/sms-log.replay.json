@@ -1,0 +1,344 @@
+{
+  "format": "pageqa-replay",
+  "version": 1,
+  "recordedAt": "2026-09-24T01:22:46.558Z",
+  "source": {
+    "path": "./examples\\sms-log.md",
+    "hash": null
+  },
+  "scenarios": [
+    {
+      "name": "S1 短信日志筛选：手机号 + 短信渠道 + 发送日期，搜索结果有数据",
+      "caseSteps": [
+        "打开 https://test.cloud.hfdll.com/#/system/messages/sms/sms-log",
+        "读取页面内容，确认已进入「短信日志」页面：页面包含筛选表单区域和下方日志表格（若被重定向到登录页，或页面仍在加载骨架态，则本场景 FAIL）",
+        "在筛选区域定位「手机号」输入框（placeholder 可能为「请输入手机号」），填入 15755022403",
+        "点击「短信渠道」下拉框，等选项面板展开后，在选项中点击选中「阿里云」（不要盲输文字，需先在面板里确认「阿里云」选项存在）",
+        "点击「发送日期」日期范围选择器（该字段也可能叫「发送时间」，以页面上实际标签为准），在面板中选中起始日期 2026-09-22",
+        "在同一个日期范围面板中选中结束日期 2026-09-24，然后点击面板上的「确定」按钮结束日期选择（若面板无「确定」按钮则跳过这一句）",
+        "点击「搜索」按钮",
+        "等待 3 秒，让查询请求返回、表格完成渲染",
+        "断言表格已完成加载：表格中出现了数据行，而不是「暂无数据」之类的空态提示",
+        "断言表格中存在手机号为 15755022403 的记录",
+        "断言该条记录的「短信渠道」列显示为「阿里云」"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "https://test.cloud.hfdll.com/#/system/messages/sms/sms-log"
+        },
+        {
+          "kind": "fill",
+          "step": 3,
+          "target": "@e17",
+          "value": "15755022403",
+          "locator": {
+            "role": "textbox",
+            "name": "手机号",
+            "nth": 0,
+            "target": "@e17",
+            "path": [
+              "form \"手机号 短信渠道 请选择短信渠道 模板编号 发送状态 请选择发送状态 发送时间 - 接收状态 请选择接收状态 接收...\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e18",
+          "locator": {
+            "role": "combobox",
+            "name": "短信渠道 [has-submenu]",
+            "nth": 0,
+            "target": "@e18",
+            "path": [
+              "form \"手机号 短信渠道 请选择短信渠道 模板编号 发送状态 请选择发送状态 发送时间 - 接收状态 请选择接收状态 接收...\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e55",
+          "locator": {
+            "role": "button",
+            "name": "合肥电啦啦新能源科技【 阿里云】",
+            "nth": 0,
+            "target": "@e55",
+            "path": [
+              "tooltip \"v-if v-if v-if v-if v-if\"",
+              "listbox \"v-if\"",
+              "option \"合肥电啦啦新能源科技【 阿里云】\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 5,
+          "target": "@e25",
+          "locator": {
+            "role": "combobox",
+            "name": "发送时间 [has-submenu]",
+            "nth": 0,
+            "target": "@e25",
+            "path": [
+              "form \"手机号 短信渠道 请选择短信渠道 模板编号 发送状态 请选择发送状态 发送时间 - 接收状态 请选择接收状态 接收...\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 5,
+          "target": "@e78",
+          "locator": {
+            "role": "button",
+            "name": "22",
+            "nth": 0,
+            "target": "@e78",
+            "path": [
+              "grid \"使用方向键与 Enter 键可选择日期\"",
+              "row \"20 21 22 23 24 25 26\"",
+              "gridcell \"22\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 6,
+          "target": "@e80",
+          "locator": {
+            "role": "button",
+            "name": "24",
+            "nth": 0,
+            "target": "@e80",
+            "path": [
+              "grid \"使用方向键与 Enter 键可选择日期\"",
+              "row \"20 21 22 23 24 25 26\"",
+              "gridcell \"24\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 7,
+          "target": "@e33",
+          "locator": {
+            "role": "button",
+            "name": "搜索",
+            "nth": 0,
+            "target": "@e33",
+            "path": [
+              "form \"手机号 短信渠道 合肥电啦啦新能源科技【 阿里云】 模板编号 发送状态 请选择发送状态 发送时间 - 接收状态 请...\""
+            ]
+          }
+        },
+        {
+          "kind": "wait",
+          "step": 8,
+          "ms": 3000
+        },
+        {
+          "kind": "assert_text",
+          "step": 9,
+          "expectation": "15755022403"
+        },
+        {
+          "kind": "assert_text",
+          "step": 10,
+          "expectation": "15755022403"
+        },
+        {
+          "kind": "assert_text",
+          "step": 11,
+          "expectation": "阿里云"
+        }
+      ]
+    },
+    {
+      "name": "S2 短信日志导出：按同样的筛选条件导出并确认文件已下载",
+      "caseSteps": [
+        "打开 https://test.cloud.hfdll.com/#/system/messages/sms/sms-log",
+        "读取页面内容，确认已进入「短信日志」页面",
+        "在筛选区域定位「手机号」输入框，填入 15755022403",
+        "点击「短信渠道」下拉框，等选项面板展开后，在选项中点击选中「阿里云」",
+        "点击「发送日期」日期范围选择器，先选中起始日期 2026-09-22，再选中结束日期 2026-09-24，必要时点击面板上的「确定」按钮",
+        "点击「搜索」按钮",
+        "等待 3 秒，让表格完成渲染",
+        "断言表格中至少有一条数据行（空结果集不算通过这一句）",
+        "点击「导出」按钮，只点它，然后等确认弹框出现（**不要**接着去点弹框里的按钮）",
+        "用 download 工具把确认弹框中的「确定」按钮作为下载触发元素，捕获导出的文件并断言磁盘上已经拿到该文件；文件名只要求包含「短信日志」（服务器给的名字是 `短信日志.xls`，不校验扩展名），把 `*短信日志*` 作为 expectName 传给 download",
+        "等待 2 秒，确认页面没有出现导出失败提示（如「导出失败」「系统异常」「导出数据过多」这类文案）"
+      ],
+      "steps": [
+        {
+          "kind": "navigate",
+          "step": 1,
+          "url": "https://test.cloud.hfdll.com/#/system/messages/sms/sms-log"
+        },
+        {
+          "kind": "fill",
+          "step": 3,
+          "target": "@e17",
+          "value": "15755022403",
+          "locator": {
+            "role": "textbox",
+            "name": "手机号",
+            "nth": 0,
+            "target": "@e17",
+            "path": [
+              "form \"手机号 短信渠道 请选择短信渠道 模板编号 发送状态 请选择发送状态 发送时间 - 接收状态 请选择接收状态 接收...\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e18",
+          "locator": {
+            "role": "combobox",
+            "name": "短信渠道 [has-submenu]",
+            "nth": 0,
+            "target": "@e18",
+            "path": [
+              "form \"手机号 短信渠道 请选择短信渠道 模板编号 发送状态 请选择发送状态 发送时间 - 接收状态 请选择接收状态 接收...\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 4,
+          "target": "@e55",
+          "locator": {
+            "role": "button",
+            "name": "合肥电啦啦新能源科技【 阿里云】",
+            "nth": 0,
+            "target": "@e55",
+            "path": [
+              "tooltip \"v-if v-if v-if v-if v-if\"",
+              "listbox \"v-if\"",
+              "option \"合肥电啦啦新能源科技【 阿里云】\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 5,
+          "target": "@e25",
+          "locator": {
+            "role": "combobox",
+            "name": "发送时间 [has-submenu]",
+            "nth": 0,
+            "target": "@e25",
+            "path": [
+              "form \"手机号 短信渠道 请选择短信渠道 模板编号 发送状态 请选择发送状态 发送时间 - 接收状态 请选择接收状态 接收...\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 5,
+          "target": "@e78",
+          "locator": {
+            "role": "button",
+            "name": "22",
+            "nth": 0,
+            "target": "@e78",
+            "path": [
+              "grid \"使用方向键与 Enter 键可选择日期\"",
+              "row \"20 21 22 23 24 25 26\"",
+              "gridcell \"22\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 5,
+          "target": "@e80",
+          "locator": {
+            "role": "button",
+            "name": "24",
+            "nth": 0,
+            "target": "@e80",
+            "path": [
+              "grid \"使用方向键与 Enter 键可选择日期\"",
+              "row \"20 21 22 23 24 25 26\"",
+              "gridcell \"24\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 6,
+          "target": "@e33",
+          "locator": {
+            "role": "button",
+            "name": "搜索",
+            "nth": 0,
+            "target": "@e33",
+            "path": [
+              "form \"手机号 短信渠道 合肥电啦啦新能源科技【 阿里云】 模板编号 发送状态 请选择发送状态 发送时间 - 接收状态 请...\""
+            ]
+          }
+        },
+        {
+          "kind": "wait",
+          "step": 7,
+          "ms": 3000
+        },
+        {
+          "kind": "assert_text",
+          "step": 8,
+          "expectation": "共 1 条"
+        },
+        {
+          "kind": "click",
+          "step": 9,
+          "target": "@e34",
+          "locator": {
+            "role": "button",
+            "name": "导出",
+            "nth": 0,
+            "target": "@e34",
+            "path": []
+          }
+        },
+        {
+          "kind": "download",
+          "step": 10,
+          "target": "@e3",
+          "locator": {
+            "role": "button",
+            "name": "确定",
+            "nth": 0,
+            "target": "@e3",
+            "path": [
+              "dialog \"系统提示\""
+            ]
+          },
+          "expectName": "*短信日志*"
+        },
+        {
+          "kind": "wait",
+          "step": 11,
+          "ms": 2000
+        },
+        {
+          "kind": "assert_text",
+          "step": 11,
+          "expectation": "导出失败"
+        },
+        {
+          "kind": "assert_text",
+          "step": 11,
+          "expectation": "系统异常"
+        },
+        {
+          "kind": "assert_text",
+          "step": 11,
+          "expectation": "导出数据过多"
+        }
+      ]
+    }
+  ]
+}

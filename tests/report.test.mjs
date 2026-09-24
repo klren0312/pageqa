@@ -170,6 +170,26 @@ describe("执行完整性校验", () => {
     }
   });
 
+  test("标题行与说明行不计入断言数（注释不是用例内容）", () => {
+    const s = [
+      "# 用例标题",
+      "> 说明：下载的判定口径是「捕获到且文件名符合期望即断言成立」。",
+      "打开页面",
+      "断言表格有数据",
+      "> 另一个说明：断言不成立时保留文件；这里出现两次断言也不算数",
+    ].join("\n");
+    assert.equal(countAssertions(s), 1);
+  });
+
+  // 回归：说明行里的触发词曾把期望断言数顶高一条，收尾报「断言未全部执行」假失败
+  test("说明行里的触发词不再造成「断言未全部执行」假失败", () => {
+    const s = ["# 用例", "> 捕获到即断言成立", "打开页面", "断言标题包含 Example"].join("\n");
+    assert.equal(countAssertions(s), 1);
+    const r = buildReport(s, "断言「标题包含 Example」：成立。证据：标题是 Example");
+    assert.equal(r.status, "pass");
+    assert.ok(!r.assertions.some((a) => a.expectation.includes("全部执行")));
+  });
+
   test("带引号/冒号的断言行仍被计入", () => {
     assert.equal(countAssertions("断言「用户名」：成立"), 1);
     assert.equal(countAssertions("断言页面包含 A：成立"), 1);
