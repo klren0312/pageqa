@@ -40,6 +40,7 @@ pageqa/
   - `navigate(url)`：打开 URL（`--wait-until domcontentloaded`）。
   - `snapshot()`：读取页面 aria 语义树与可见文本（标题、段落、链接、按钮等），用于读取内容与定位元素。返回前经 `snapshot.ts` 瘦身（超 8000 字符才启用：保留全部 `@eN` 行与其祖先链、截断超长文本行、超预算时省略最长的非关键行），并在期间无页面改动且间隔很短时复用上一份快照，省掉一次 bsk 往返。
   - `click(target)` / `fill(target, value)` / `hover(target)`：元素交互；`target` 用 `@eN` 引用或 CSS 选择器。
+  - **引用闸门**：`@eN` 只对产生它的那次快照成立，而编号会随页面变化（展开侧边栏/折叠菜单、悬停弹出菜单、切换路由、提交表单）整体位移——沿用旧编号不会报错，而是静默点到同编号的另一个元素。因此 click/fill/hover/scroll/upload/download 在动作前都用最近一次快照核对引用：快照之后有过任何改页面动作（navigate/click/fill/hover/scroll/wait）→ 拒绝并提示重新 snapshot；编号不在最近一次快照里 → 拒绝；通过时把解析出的 role/name 作为「（落点：…）」回显在操作结果里，供模型与日志核对。CSS 选择器不经过该判定（与快照编号无关）。判定逻辑在 `src/locator.ts` 的 `inspectRefTarget`（纯函数，有单测）。
   - `upload(target, file)`：经 `bsk upload <target> --file <path>` 上传本地文件；`target` 为触发文件选择器的元素（或省略，由 bsk 自动查找文件输入框）。
   - `scroll(target)`：经 `evaluate` 滚动到元素。
   - `wait(ms)`：经 `wait-ms` 等待。
