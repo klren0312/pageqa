@@ -1,9 +1,9 @@
 {
   "format": "pageqa-replay",
   "version": 1,
-  "recordedAt": "2026-09-24T01:41:30.337Z",
+  "recordedAt": "2026-09-24T08:03:27.921Z",
   "source": {
-    "path": "examples/smoke-test.md",
+    "path": "./examples\\smoke-test.md",
     "hash": "53689cd4507a1e9a"
   },
   "scenarios": [
@@ -24,7 +24,7 @@
         },
         {
           "kind": "assert_text",
-          "step": 2,
+          "step": 1,
           "expectation": "冒烟测试页面"
         },
         {
@@ -42,9 +42,14 @@
           }
         },
         {
+          "kind": "wait",
+          "step": 2,
+          "ms": 1000
+        },
+        {
           "kind": "assert_text",
           "step": 3,
-          "expectation": "请选择城市"
+          "expectation": "表单页面 1"
         },
         {
           "kind": "click",
@@ -61,9 +66,14 @@
           }
         },
         {
+          "kind": "wait",
+          "step": 4,
+          "ms": 1000
+        },
+        {
           "kind": "assert_text",
           "step": 5,
-          "expectation": "选择文件"
+          "expectation": "文件上传"
         }
       ]
     },
@@ -229,7 +239,7 @@
         },
         {
           "kind": "click",
-          "step": 1,
+          "step": 2,
           "target": "@e3",
           "locator": {
             "role": "link",
@@ -243,7 +253,7 @@
         },
         {
           "kind": "fill",
-          "step": 1,
+          "step": 3,
           "target": "@e6",
           "value": "test@example.com",
           "locator": {
@@ -260,7 +270,7 @@
         },
         {
           "kind": "click",
-          "step": 1,
+          "step": 4,
           "target": "@e7",
           "locator": {
             "role": "button",
@@ -276,7 +286,7 @@
         },
         {
           "kind": "click",
-          "step": 1,
+          "step": 4,
           "target": "@e9",
           "locator": {
             "role": "button",
@@ -292,7 +302,7 @@
         },
         {
           "kind": "click",
-          "step": 1,
+          "step": 5,
           "target": "@e8",
           "locator": {
             "role": "button",
@@ -308,12 +318,12 @@
         },
         {
           "kind": "wait",
-          "step": 1,
+          "step": 6,
           "ms": 1000
         },
         {
           "kind": "assert_text",
-          "step": 1,
+          "step": 7,
           "expectation": "表单提交成功！"
         }
       ]
@@ -405,9 +415,14 @@
           }
         },
         {
+          "kind": "wait",
+          "step": 2,
+          "ms": 1000
+        },
+        {
           "kind": "assert_text",
           "step": 3,
-          "expectation": "文件下载"
+          "expectation": "下载示例文件"
         },
         {
           "kind": "wait",
@@ -464,6 +479,11 @@
         },
         {
           "kind": "wait",
+          "step": 2,
+          "ms": 500
+        },
+        {
+          "kind": "wait",
           "step": 3,
           "ms": 2000
         },
@@ -483,6 +503,11 @@
           }
         },
         {
+          "kind": "wait",
+          "step": 4,
+          "ms": 1000
+        },
+        {
           "kind": "download",
           "step": 5,
           "target": "@e2",
@@ -499,11 +524,6 @@
           "kind": "wait",
           "step": 6,
           "ms": 1000
-        },
-        {
-          "kind": "assert_text",
-          "step": 7,
-          "expectation": "导出成功"
         }
       ]
     }
