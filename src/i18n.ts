@@ -276,7 +276,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.hint":
       "Enter 提交 · Shift+Enter 换行 · Esc 中止当前场景 · ↑↓/PgUp/PgDn 滚日志 · Ctrl+P 历史 · Ctrl+C 收工 · /help",
     "tui.help":
-      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择本次会话使用的模型（Ctrl+S 设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（输入/输出/缓存读/缓存写/合计/调用次数，每轮 LLM 调用后刷新）",
+      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择本次会话使用的模型（Ctrl+S 设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
     "tui.scroll.paused": "↓ 已暂停跟随 · End 回到底部",
     "tui.appended": "（追加）",
     "tui.originAdded": "追加",
@@ -443,7 +443,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.sourceFile": "源用例文件：{path}（追加场景会写回这里）",
     "tui.running": "运行中 {i}/{n}（{duration}）",
     "tui.runningMany": "运行中 {n} 个 · 最早「{name}」已跑 {duration}",
-    "tui.usage.cacheHit": "缓存命中 {pct}%",
+    "tui.usage.cacheHit": "命中 {pct}%",
     "tui.notExecuted": "未执行",
     "tui.notRunSuffix": "（该场景未运行）",
     "tui.scenarioErrorExpectation": "场景正常执行完毕（未因错误中断）",
@@ -470,10 +470,13 @@ const catalogs: Record<Locale, Catalog> = {
       "--- 场景 {i}/{n}：{name} [{status}] ---",
     "report.traceTitle": "  执行轨迹（末尾 {shown}/{total} 条）:",
     "report.summaryLine": "汇总: {text}",
-    "report.usage.replay": "Token 消耗: 未调用大模型（回放模式）",
-    "report.usage.unavailable": "Token 消耗: 不可用（未采集到用量）",
+    "report.usage.replay": "Token: 未调用大模型（回放模式）",
+    "report.usage.unavailable": "Token: 不可用（未采集到用量）",
+    // 用量行压到最短：`⬇` = 输入（喂进模型的）、`⬆` = 输出，`读`/`写` = 缓存读/缓存写。
+    // 位置是固定的（输入 · 输出 · 读 · 写 · 总），所以省掉「输入/输出」四个字也不会串味；
+    // 顺序本身就是图例，别为了「更清楚」把它改回长标签——那正是这行要甩掉的重量。
     "report.usage.line":
-      "Token 消耗: 输入 {in} / 输出 {out} / 缓存读 {cr} / 缓存写 {cw} / 合计 {total}（LLM 调用 {calls} 次）",
+      "Token: ⬇ {in} / ⬆ {out} / 读 {cr} / 写 {cw} / 总 {total}（LLM 调用 {calls} 次）",
     "report.usage.noUsage": "（端点未返回 usage）",
     "report.assertIncomplete":
       "用例中的断言全部执行（实际 {got}/{expected}）",
@@ -1006,7 +1009,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.hint":
       "Enter submit · Shift+Enter newline · Esc abort current scenario · ↑↓/PgUp/PgDn scroll log · Ctrl+P history · Ctrl+C finish · /help",
     "tui.help":
-      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model used by this session (Ctrl+S sets the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (input / output / cache read / cache write / total / call count, refreshed after each LLM call)",
+      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model used by this session (Ctrl+S sets the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
     "tui.scroll.paused": "↓ follow paused · End to jump to bottom",
     "tui.appended": " (appended)",
     "tui.originAdded": "appended",
@@ -1187,7 +1190,7 @@ const catalogs: Record<Locale, Catalog> = {
       "source case file: {path} (appended scenarios are written back here)",
     "tui.running": "running {i}/{n} ({duration})",
     "tui.runningMany": "{n} running · oldest \"{name}\" for {duration}",
-    "tui.usage.cacheHit": "cache hit {pct}%",
+    "tui.usage.cacheHit": "hit {pct}%",
     "tui.notExecuted": "not executed",
     "tui.notRunSuffix": " (this scenario did not run)",
     "tui.scenarioErrorExpectation":
@@ -1215,10 +1218,13 @@ const catalogs: Record<Locale, Catalog> = {
       "--- scenario {i}/{n}: {name} [{status}] ---",
     "report.traceTitle": "  execution trace (last {shown}/{total}):",
     "report.summaryLine": "summary: {text}",
-    "report.usage.replay": "Token usage: no LLM called (replay mode)",
-    "report.usage.unavailable": "Token usage: unavailable (not collected)",
+    "report.usage.replay": "Token: no LLM called (replay mode)",
+    "report.usage.unavailable": "Token: unavailable (not collected)",
+    // Compact usage line: `⬇` = input (fed into the model), `⬆` = output, `read`/`write` =
+    // cache read/write. The order is the legend (input · output · read · write · total), which
+    // is what lets the long labels go; don't "clarify" it by putting the words back.
     "report.usage.line":
-      "Token usage: input {in} / output {out} / cache read {cr} / cache write {cw} / total {total} (LLM calls {calls})",
+      "Token: ⬇ {in} / ⬆ {out} / read {cr} / write {cw} / total {total} (LLM calls {calls})",
     "report.usage.noUsage": " (endpoint returned no usage)",
     "report.assertIncomplete":
       "all assertions in the case executed (actual {got}/{expected})",
