@@ -83,7 +83,7 @@ pageqa --tui examples/smoke.md   # 显式强制进入（非 TTY 下会直接报�
 | `/new` | 开新会话：清空视口与队列、token 重新计，但**上一批归档**（仍进退出报告与回放脚本）。队列还有在跑/待办时拒绝 |
 | `/model` | 切换本会话模型（`Enter` 本次生效，`Ctrl+S` 同时存为启动默认） |
 | `/login` · `/logout` | 登录 / 移除某 provider 的本地凭据（写入 `~/.pageqa/auth.json`） |
-| `/setting` | 改持久化偏好：测试报告(HTML) / 回放脚本 开关、语言 |
+| `/setting` | 改持久化偏好：测试报告(HTML) / 回放脚本 开关、语言、**并发量**（1/2/3/4/6/8） |
 | `/help` · `/exit` | 帮助 / 收工退出（`/quit` 同义） |
 
 ### 键位
@@ -114,12 +114,24 @@ pageqa "打开 https://example.com 并断言标题包含 Example"   # 内联自�
 pageqa examples/smoke.md        # 读用例文件（自动识别 ## 分隔的多场景）
 pageqa --json examples/smoke.md # 输出 JSON 报告
 pageqa --suite "..."            # 强制多场景套件模式
+pageqa --concurrency 4 examples/smoke-test.md   # 同时跑最多 4 个场景（默认 1 = 逐个跑）
+pageqa --only 2 examples/smoke.md    # 只跑第 2 个场景
+pageqa --only "表单填写测试" ...      # 按标题只跑一个（精确匹配）
+pageqa --no-side-outputs ...    # 不写 HTML 报告与默认回放脚本，只给 stdout
 pageqa --out report.txt ...     # 报告另存文件
 ```
 
 - stdout 只放最终报告，日志走 stderr（互不干扰，方便 `pageqa --json … > report.json`）。
 - 退出码：`0` 全部断言通过；`1` 任一断言失败/报错/无法执行——可直接作 CI 门槛。
 - 每个场景开跑前先探一次模型连通性；不通则如实记该场景失败并取消后续待办，不浪费浏览器窗口。
+
+**场景隔离**（见 `docs/adr/0013-scenario-process-isolation.md`）：套件模式下**每个场景在独立的子进程里执行**，父进程 fork 并汇总。因此某个场景把浏览器或 bsk daemon 搞崩（原生崩溃、被 OOM 杀掉）时，只会记这一个场景失败（报告里带 `reason: "crash"`），后面的场景照跑；失败后想单独重跑它，用 `--only <序号|标题>` 即可——`--only` 与父进程 fork 子进程走的是**同一条代码路径**。
+
+**并行跑场景**：默认**逐个**跑（顺序是「场景之间可能有隐含顺序依赖」的保护，比如「创建 → 编辑 → 删除」）。确认这些场景互不依赖时，用 `--concurrency <n>`（或 `PAGEQA_CONCURRENCY` / 配置项 `concurrency`）同时跑最多 n 个：每个场景仍然各自一个子进程、一个 session、一个**浏览器窗口**（n 就是同时开着的窗口数，所以上限 8，超过直接报错而不是静默截断）。结果顺序不变——报告与回放脚本一律按用例原文排，谁先跑完不影响。并发时每行日志会带 `[场景名]` 前缀，否则几路输出混在一起没法看。
+
+**交互模式同样认并发量**：启动时的 `--concurrency` 只是本次会话的起点，进去之后用 `/setting` → 「并发量」随时改（档位 1/2/3/4/6/8），**改完立刻生效**——之后派发的场景就按新值来，已经在跑的不受打扰——并写回 `~/.pageqa/config.json`。并发时看板带的「进行中」列会同时挂多张卡（各带自己的实时耗时），状态栏那句「第 k/n 个」换成「运行中 N 个 · 最早…已跑 …」，`Esc` 则一次中止**全部**在跑的场景（并发之后「当前场景」不再唯一）。`--replay` 不走场景调度器，并发对回放没有意义。
+
+崩溃与超时都记失败、不牵连别人；只有环境级故障（模型端点不可达、bsk/浏览器不可用）才会把剩余场景记为「已取消」。会话与浏览器窗口的生命周期归父进程，所以被强杀的子进程不会留下孤儿窗口。
 
 ---
 
@@ -144,7 +156,7 @@ pageqa --replay examples/smoke.replay.json --semantic  # 断言改用 Jev 语义
 
 **断言行要对齐工具调用**：报告会核对「用例里含『断言』的行数」与「实际产生的断言结果数」，两者必须相等——每个 `assert_text` 产一个断言，`download` 本身也算一个断言（别再单写一行「断言已下载」）。注释行不计，所以解释性文字不会虚增计数。
 
-**运行时占位符**（一处展开、同一次运行共用同一时刻）：
+**运行时占位符**（一处展开；因为每个场景各自在独立子进程里执行，时刻按**场景**取，不再整轮共用一个——见 ADR-0013）：
 
 | 占位符 | 展开为 |
 | --- | --- |
@@ -161,7 +173,9 @@ pageqa --replay examples/smoke.replay.json --semantic  # 断言改用 Jev 语义
 
 ## 配置与可选增强
 
-- **配置文件**：`~/.pageqa/config.json`，字段 `baseUrl`/`apiKey`/`model`/`locale`/`htmlReport`/`replayScript`/`downloadDir`/`downloadCleanup`。优先级：环境变量 `PAGEQA_*` > 配置文件 > 内置默认。
+- **配置文件**：`~/.pageqa/config.json`，字段 `baseUrl`/`apiKey`/`model`/`locale`/`htmlReport`/`replayScript`/`downloadDir`/`downloadCleanup`/`scenarioTimeoutMs`/`concurrency`。优先级：环境变量 `PAGEQA_*` > 配置文件 > 内置默认。
+- **并行度（可选）**：`concurrency` 或 `PAGEQA_CONCURRENCY`（**默认 1** = 逐个跑，上限 8）。并行等于声明「这些场景互不依赖」，所以默认不开；同时开着的浏览器窗口数就等于这个值。
+- **场景级执行上限（可选）**：`scenarioTimeoutMs` 或 `PAGEQA_SCENARIO_TIMEOUT`（毫秒，**默认不限**）。套件模式下单个场景超过上限即终止它的子进程、该场景记失败（报告里带 `reason: "timeout"`）、**继续跑后面的场景**。默认关着：长流程十几分钟是常态，凭空定一个上限就是给自己造新的失败来源；CI 要门禁时显式设。
 - **Jev 语义断言（可选）**：在 config 加 `jev` 字段（或 `PAGEQA_JEV_*` 环境变量），用于字面未命中时的语义复检，纠正同义/近义/格式差异造成的假 FAIL；调用失败自动降级回字符串匹配。
 - **语言**：`--locale zh|en` 或 `PAGEQA_LOCALE`；默认 `zh`。数据契约（JSON 字段、退出码）与语言无关。
 
@@ -175,8 +189,12 @@ pageqa --replay examples/smoke.replay.json --semantic  # 断言改用 Jev 语义
 | `--locale <zh\|en>` | 界面/日志/报告语种（默认 zh） |
 | `--json` | 输出 JSON 报告（与 TUI 互斥） |
 | `--suite` | 强制多场景套件模式 |
+| `--only <序号\|标题>` | 只跑其中一个场景（序号 1 起，或标题精确匹配）；输出仍是套件形态。与 `--suite`/`--tui`/`--replay` 互斥 |
+| `--concurrency <n>` | 同时跑最多 n 个场景（**上限**，默认 1 = 逐个跑；`PAGEQA_CONCURRENCY` / 配置项 `concurrency` 同效）。上限 8，超过报错；交互模式也认它（进去后用 `/setting` 的「并发量」随时改），`--replay` 不用 |
 | `--tui` / `--no-tui` | 强制开/关交互模式（`PAGEQA_NO_TUI=1` 同效） |
 | `--emit-script [path]` | 固化回放脚本（默认已开，路径贴源用例） |
+| `--no-side-outputs` | 不写旁路产物（HTML 报告、默认回放脚本）；显式 `--emit-script <path>` 仍然生效 |
+| `--usage-stream` | 把 LLM 用量逐次打到 stderr（一行一次，前缀 `[pageqa:usage]`）；场景在子进程里跑时父进程靠它取实时用量 |
 | `--replay <file>` | 零模型回放已有脚本 |
 | `--semantic` | 回放时断言用 Jev 语义判断 |
 | `--fail-fast` | 回放时任一失败即停该场景 |
