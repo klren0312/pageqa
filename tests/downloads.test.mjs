@@ -360,6 +360,7 @@ describe("回放：download 步骤", () => {
         return "断言文本";
       },
       wait: () => "已等待",
+      settle: () => "页面已稳定",
       lastAssert: () => assertOutcome,
       lastAssertSemantic: () => false,
     };

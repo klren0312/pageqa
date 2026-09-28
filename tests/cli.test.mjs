@@ -28,6 +28,10 @@ describe("并发量的文案两种语种都不缺", () => {
     "err.concurrencyInvalid",
     "err.concurrencyMax",
     "err.concurrencyWithReplay",
+    "err.concurrencyWithSession",
+    // --settle-waits 的说明与起始提示
+    "replay.log.settleWaits",
+    "help.full",
   ];
 
   test("zh 与 en 都能渲染出文案（而不是把 key 原样返回）", () => {
@@ -68,6 +72,14 @@ describe("CLI 参数解析", () => {
     assert.equal(args.error, undefined);
     assert.equal(args.input, "examples/smoke.md");
     assert.equal(args.json, true);
+  });
+
+  test("--settle-waits 默认关，显式给出才开", () => {
+    assert.equal(parseArgs(["--replay", "a.json"]).settleWaits, false);
+    const on = parseArgs(["--replay", "a.json", "--settle-waits"]);
+    assert.equal(on.error, undefined);
+    assert.equal(on.settleWaits, true);
+    assert.equal(on.replay, "a.json");
   });
 });
 

@@ -43,6 +43,7 @@ import {
 } from "./report.js";
 import { Recorder } from "./record.js";
 import type { ScenarioRecording } from "./replay.js";
+import { TimingCollector, renderTiming } from "./timing.js";
 import { restorePlaceholders, type RunVarValue } from "./vars.js";
 import { t } from "./i18n.js";
 
@@ -106,6 +107,7 @@ const DEFAULT_SYSTEM_PROMPT = [
   "- upload(target, file): 上传本地文件到文件输入框/上传区域，target 传触发上传的元素（或省略由工具自动查找）",
   "- download(target, expectName?): 捕获一次浏览器下载并落盘，target 传**触发下载的元素**（导出按钮，或确认弹框里的「确定」按钮）；expectName 可传文件名通配（如 *.xlsx）。它本身就是一条断言：捕获到且文件名符合即「成立」，捕获不到（超时）或文件名不符即「不成立」",
   "- scroll(target) / wait(ms): 滚动与等待",
+  "- wait_for(text | selector | gone, timeoutMs?): 等到页面出现某可见文本 / 某元素出现 / 某元素消失（如 loading 遮罩）；三者只能给一个。已知在等什么时用它，不要用 wait 猜秒数——条件一达成就会立刻返回",
   "- assert_text(expectation): 断言页面是否包含某文本，返回「成立/不成立」与证据",
   "",
   "工作流程（必须严格遵守）：",
@@ -334,6 +336,11 @@ interface AgentSession {
   steps: string[];
   /** 回放脚本录制器（记录成功执行过的浏览器操作）。 */
   recorder: Recorder;
+  /**
+   * 耗时构成累加器：从 agent 事件里记「每轮 LLM 花了多久」「每次工具调用多久」，
+   * 运行结束渲染进日志（见 timing.ts 里为什么需要它）。
+   */
+  timing: TimingCollector;
   /**
    * 本次运行中 `assert_text` 工具返回的断言结果（按执行顺序）。
    *
@@ -571,7 +578,8 @@ async function initializeAgent(
     },
   });
 
-  subscribeProgress(agent, events, recorder, opts.onUsage);
+  const timing = new TimingCollector();
+  subscribeProgress(agent, events, recorder, opts.onUsage, timing);
 
   // 用户在交互模式里按 Esc → 中止本轮运行。
   // `Agent.abort()` 是 pi-agent-core 唯一的中断入口：它 abort 内部那个 AbortController，
@@ -589,6 +597,7 @@ async function initializeAgent(
     numbered,
     steps,
     recorder,
+    timing,
     assertions,
     startedAt,
     abortSignal: opts.abortSignal,
@@ -640,7 +649,8 @@ function subscribeProgress(
   agent: Agent,
   events: string[],
   recorder: Recorder,
-  onUsage?: (usage: TokenUsage) => void,
+  onUsage: ((usage: TokenUsage) => void) | undefined,
+  timing: TimingCollector,
 ): void {
   const log = debugLog;
   let toolCount = 0;
@@ -654,13 +664,22 @@ function subscribeProgress(
       liveUsage = addUsage(liveUsage, turn);
       onUsage?.(liveUsage);
     }
+    // 耗时构成：一轮 LLM = turn_start → turn_end；工具 = 各自 start/end 配对。
+    // 这里只记时间点，判断与汇总都在 timing.ts（纯逻辑，可单测）。
+    if (e.type === "turn_start") {
+      timing.noteTurnStart();
+    } else if (e.type === "turn_end") {
+      timing.noteTurnEnd();
+    }
     if (e.type === "tool_execution_start") {
+      timing.noteToolStart(e.toolCallId);
       events.push("[tool] " + e.toolName);
       log("[agent] 工具调用开始: " + e.toolName);
       toolCount += 1;
       toolStartedAt = Date.now();
       info(t("log.toolStart", { n: toolCount, tool: e.toolName }));
     } else if (e.type === "tool_execution_end") {
+      timing.noteToolEnd(e.toolCallId, e.toolName, e.isError);
       const cost = toolStartedAt ? Date.now() - toolStartedAt : 0;
       // 失败原因必须落进日志与执行轨迹。
       // 只写「失败，将重试或报告」的话，交互模式下盯着视口也分不清是
@@ -842,6 +861,11 @@ function finalizeResult(
       dur: ((Date.now() - startedAt) / 1000).toFixed(1),
     }),
   );
+  // 耗时构成：把「这次运行的墙钟花在哪了」写进日志（不写进 stdout 报告——
+  // 那是 CI 的契约，见 ADR-0002）。放在结束行之后，作为这一场的收尾附注。
+  // 墙钟取报告里那个 durationMs（同一次运行的唯一口径），不另算一个。
+  const wallMs = report.durationMs ?? Date.now() - startedAt;
+  for (const line of renderTiming(session.timing.summary(wallMs, usage))) info(line);
 
   return {
     report,

@@ -125,6 +125,8 @@ const catalogs: Record<Locale, Catalog> = {
 
     "err.concurrencyWithReplay":
       "参数错误：--concurrency 不能与 --replay 同时使用（回放零模型、按脚本顺序执行，不走场景调度器）",
+    "err.concurrencyWithSession":
+      "参数错误：--concurrency={n} 不能与 --session 同时使用。并发的代价与前提是「每个场景一个 session 一个窗口」，而 --session 让所有场景共用同一个 session：它们会互相翻页——重启页面、跑到别人那一步上（报告照样给结论，只是结论来自另一个页面），还会被 bsk 以 session_busy 拒成一片假失败。请去掉 --session，或把并发设为 1",
     "err.replayRequired": "--replay 需要一个回放脚本路径",
     "err.unknownOption":
       "未知选项：{a}（用 --help 查看全部选项；若用例文本以 - 开头，请放在 -- 之后）",
@@ -164,7 +166,10 @@ const catalogs: Record<Locale, Catalog> = {
     "replay.err.noScenarios": "回放脚本没有可执行的场景：{path}",
     "replay.err.empty":
       "回放脚本不含任何可执行步骤（录制时模型未成功执行浏览器操作）：{path}\n请先跑一次自然语言用例使其通过，再用 --emit-script 重新生成。",
-    "replay.err.badStepKind": "回放脚本含不支持的步骤类型（{kind}）：{path}",
+    "replay.err.badStepKind":
+      "回放脚本含不支持的步骤类型（{kind}）：{path}\n  - 若是 pageqa 升级后生成的新脚本，请把 pageqa 一起升级到同一版本",
+    "replay.err.badWaitFor":
+      "回放脚本里的 wait_for 步骤必须**恰好**带一个条件（text / selector / gone 三选一）：{path}",
     "replay.normalized":
       "[pageqa] 已把脚本里写死的录制取值还原为占位符（回放时重新展开）：{items}",
     "replay.drift.missing": "源用例已不存在：{path}",
@@ -217,6 +222,8 @@ const catalogs: Record<Locale, Catalog> = {
     "replay.log.scriptStart.semantic": "（断言使用 Jev 语义判断）",
     "replay.log.semanticWarn":
       "[pageqa] 注意：脚本中有 {count} 条断言在录制时靠 Jev 语义判断成立（字面不含期望文本），回放默认用字符串包含匹配必然不成立；需要语义判断请加 --semantic",
+    "replay.log.settleWaits":
+      "[pageqa] --settle-waits：{count} 个 wait 步骤改为「等页面稳定，上限为脚本记下的毫秒数」。若某次等待是为页面之外的事情留的（服务端正在生成文件、后台排队等），页面可能早已稳定而被提前放行——此时紧随其后的断言/下载会失败，轨迹里的 wait 行会如实写出实际等待时长",
     "replay.log.suiteScenario": "[pageqa] ═══ 场景 {index}/{total}：{name} ═══",
     "replay.log.suiteSummary": "[pageqa] 回放汇总：{summary}",
 
@@ -493,6 +500,19 @@ const catalogs: Record<Locale, Catalog> = {
       "用户中止了该场景（已完成 {done}/{total} 步），剩余步骤未执行",
     "report.cancel": "用户中止了该场景，剩余步骤未执行",
     "report.agentErrorExpectation": "agent 正常执行完毕（未因错误中断）",
+
+    // ── 耗时构成（src/timing.ts）：一次运行的墙钟花在哪了。写进日志，不进 stdout 报告 ──
+    "timing.title": "耗时构成（墙钟 {wall}）",
+    "timing.llm": "  LLM 调用 {calls} 次，{total}（{pct}%），平均 {avg}",
+    "timing.commands":
+      "  工具调用 {calls} 次，{total}（{pct}%），平均 {avg}{errors}",
+    "timing.commands.errors": "，其中失败 {errors} 次",
+    "timing.commandLine": "    {name} {calls} 次  {total}  平均 {avg}{errors}",
+    "timing.commandLine.errors": "  失败 {errors} 次",
+    "timing.commandRest": "    （另有 {n} 种更快的工具未列出）",
+    "timing.other": "  其它（编排/等待/收尾）{total}（{pct}%）",
+    "timing.tokens":
+      "  token：输入 {input}，输出 {output}，缓存读取 {cache}（以上 {calls} 次调用合计）",
     "report.suiteSummaryBase": "共 {n} 个场景，通过 {passed} 个",
     "report.suiteSummaryCancelled": "，已取消 {cancelled} 个",
     // 异常终止的归因（`ScenarioDetail.reason`）在人读报告里的说法（见 ADR-0013 决策七）。
@@ -692,13 +712,18 @@ const catalogs: Record<Locale, Catalog> = {
   - 测试报告与回放脚本都是「旁路产物」：只落盘、不进 stdout，路径在收尾的产物清单里。
 
 回放脚本（零模型重跑同一用例）:
-  pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast]
+  pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast] [--settle-waits]
                    按脚本逐步驱动浏览器，**不调用任何大模型**，断言默认走字符串包含
                    --semantic 可改用 Jev 语义判断（需已在配置里启用 Jev）
                    元素定位用录制时的语义定位符在当次快照里重新解析，
                    因此页面小幅调整后脚本仍可命中；源用例变更会在 stderr 提示
                    --fail-fast 任一失败即停止该场景；默认会跑完剩余步骤，
                    以便一次拿到整条用例的完整健康报告（失败仍会让退出码非零）
+                   --settle-waits 把 wait 步骤执行成「等页面稳定，上限为脚本记下的毫秒数」：
+                   录制时的固定等待（如 wait 2000）只是模型当时的猜测，回放里却每次都照付；
+                   打开后页面一稳定就继续，通常在跳转/弹窗类等待上明显更快。默认关闭，
+                   因为「为页面之外的事情留的等待」（服务端正在生成导出文件等）会被提前放行，
+                   紧随其后的断言/下载可能因此失败——轨迹里的 wait 行会写出实际等待时长
 
 进度日志:
   - 运行进度会带时间戳实时输出到 stderr（bsk daemon 启动、session、每一步工具调用、
@@ -850,6 +875,8 @@ const catalogs: Record<Locale, Catalog> = {
 
     "err.concurrencyWithReplay":
       "argument error: --concurrency cannot be used with --replay (replay is zero-model and walks the script in order; it never uses the scenario scheduler)",
+    "err.concurrencyWithSession":
+      "argument error: --concurrency={n} cannot be used with --session. Concurrency assumes one session (and one browser window) per scenario, while --session makes every scenario share a single session: they would navigate away from each other (and still produce PASS/FAIL, just from another page), and bsk would reject the overlap with session_busy and turn it into a pile of false failures. Drop --session, or set concurrency to 1",
     "err.replayRequired": "--replay needs a replay script path",
     "err.unknownOption":
       "unknown option: {a} (see --help for all options; if the case text starts with -, put it after --)",
@@ -892,7 +919,9 @@ const catalogs: Record<Locale, Catalog> = {
     "replay.err.empty":
       "replay script contains no executable steps (the model performed no successful browser operations during recording): {path}\nrun the natural-language case to passing first, then regenerate with --emit-script.",
     "replay.err.badStepKind":
-      "replay script contains an unsupported step kind ({kind}): {path}",
+      "replay script contains an unsupported step kind ({kind}): {path}\n  - if the script was written by a newer pageqa, upgrade pageqa to the same version",
+    "replay.err.badWaitFor":
+      "a wait_for step in the replay script must carry exactly one condition (text / selector / gone): {path}",
     "replay.normalized":
       "[pageqa] restored recorded literal values in the script back to placeholders (re-expanded at replay time): {items}",
     "replay.drift.missing": "source case file no longer exists: {path}",
@@ -946,6 +975,8 @@ const catalogs: Record<Locale, Catalog> = {
     "replay.log.scriptStart.semantic": " (assertions use Jev semantic matching)",
     "replay.log.semanticWarn":
       "[pageqa] note: {count} assertion(s) in the script passed via Jev semantic matching at recording time (the expected text does not literally appear); replay defaults to string matching and will fail them — use --semantic for semantic matching",
+    "replay.log.settleWaits":
+      "[pageqa] --settle-waits: {count} wait step(s) now run as \"wait until the page settles, capped at the recorded milliseconds\". If a recorded wait was there for something outside the page (a server-side export, a background queue), the page may already be settled and the step is released early — an assertion/download right after it can then fail; the wait line in the trace states the actual wait",
     "replay.log.suiteScenario": "[pageqa] ═══ scenario {index}/{total}: {name} ═══",
     "replay.log.suiteSummary": "[pageqa] replay summary: {summary}",
 
@@ -1243,6 +1274,19 @@ const catalogs: Record<Locale, Catalog> = {
     "report.cancel": "user aborted this scenario, remaining steps not executed",
     "report.agentErrorExpectation":
       "agent finished executing normally (not interrupted by an error)",
+
+    // ── Timing breakdown (src/timing.ts) ──
+    "timing.title": "time breakdown (wall clock {wall})",
+    "timing.llm": "  LLM calls {calls}, {total} ({pct}%), avg {avg}",
+    "timing.commands":
+      "  tool calls {calls}, {total} ({pct}%), avg {avg}{errors}",
+    "timing.commands.errors": ", {errors} failed",
+    "timing.commandLine": "    {name} {calls} calls  {total}  avg {avg}{errors}",
+    "timing.commandLine.errors": "  {errors} failed",
+    "timing.commandRest": "    ({n} faster tools not listed)",
+    "timing.other": "  other (orchestration/waiting/teardown) {total} ({pct}%)",
+    "timing.tokens":
+      "  tokens: in {input}, out {output}, cache read {cache} (over {calls} calls)",
     "report.suiteSummaryBase":
       "{n} scenario(s) in total, {passed} passed",
     "report.suiteSummaryCancelled": ", {cancelled} cancelled",
@@ -1461,13 +1505,19 @@ Model switching & login:
     their paths appear in the exit side-outputs summary.
 
 Replay script (rerun the same case with zero models):
-  pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast]
+  pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast] [--settle-waits]
                    drives the browser step by step per the script, **calling no LLM**, assertions default to string contains
                    --semantic switches to Jev semantic judgment (Jev must be enabled in config)
                    element location re-parses the recorded semantic locator in the current snapshot,
                    so the script still hits after small page changes; source-case drift is warned on stderr
                    --fail-fast stops the scenario on any failure; by default it runs remaining steps,
                    to get a complete health report of the whole case in one go (failure still yields a non-zero exit code)
+                   --settle-waits runs wait steps as "wait until the page settles, capped at the recorded ms":
+                   a recorded fixed wait (e.g. wait 2000) was the model's guess and is paid in full on every replay;
+                   with this flag a step proceeds as soon as the page is stable, usually much faster after
+                   navigation/dialog waits. Off by default, because a wait that was there for something outside
+                   the page (a server-side export, a background queue) is then released early and the assertion/
+                   download right after it can fail — the wait line in the trace reports the actual wait
 
 Progress log:
   - run progress is output to stderr in real time with timestamps (bsk daemon start, session, every tool call,

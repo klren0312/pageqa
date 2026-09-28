@@ -48,12 +48,20 @@ import {
   type TestReport,
   type TokenUsage,
 } from "./report.js";
+import { TimingCollector, renderTiming } from "./timing.js";
 import { expandVars } from "./vars.js";
 
 export const REPLAY_FORMAT = "pageqa-replay";
 export const REPLAY_VERSION = 1;
 
-/** 回放步骤的类型。`snapshot` 不在其中：它只服务于模型的「观察」，回放不需要。 */
+/**
+ * 回放步骤的类型。`snapshot` 不在其中：它只服务于模型的「观察」，回放不需要。
+ *
+ * `wait_for` 是唯一一次「新增步骤类型而不升 `REPLAY_VERSION`」：判断依据是脚本格式里
+ * 本来就有针对它的闸门——加载时的**逐步类型校验**（`REPLAY_STEP_KINDS`）会在读到不认识的
+ * 类型时当场报 `badStepKind`，说清楚是哪个步骤、哪个文件。升版本号会把「只含 click/fill 的
+ * 新脚本」也一起拒掉（旧 pageqa 读到任何 version>1 都直接拒绝），代价更大而精度更低。
+ */
 export type ReplayStepKind =
   | "navigate"
   | "click"
@@ -63,6 +71,7 @@ export type ReplayStepKind =
   | "hover"
   | "scroll"
   | "wait"
+  | "wait_for"
   | "assert_text";
 
 /** 需要定位元素的步骤（click/hover/scroll 共用）。 */
@@ -127,6 +136,26 @@ export interface ReplayWaitStep {
   ms: number;
 }
 
+/**
+ * 条件等待步骤：回放时**重新等同一个条件**，条件达成立刻继续。
+ *
+ * 与 `wait` 的关系：录制时模型如果知道自己在等什么，就会走 `wait_for`，脚本里留下的是条件
+ * 而不是秒数；等到的东西一到就走，等不到则等满 `timeoutMs`（默认 `DEFAULT_WAIT_FOR_TIMEOUT_MS`）。
+ * 三个条件互斥，由加载校验与工具层共同保证。
+ */
+export interface ReplayWaitForStep {
+  kind: "wait_for";
+  step: number | null;
+  /** 等到页面可见文本出现。 */
+  text?: string;
+  /** 等到该 CSS 选择器命中元素。 */
+  selector?: string;
+  /** 等到该 CSS 选择器不再命中元素（如 loading 遮罩消失）。 */
+  gone?: string;
+  /** 等待上限（毫秒）；未给用当前默认值。 */
+  timeoutMs?: number;
+}
+
 export interface ReplayAssertStep {
   kind: "assert_text";
   step: number | null;
@@ -145,6 +174,7 @@ export type ReplayStep =
   | ReplayDownloadStep
   | ReplayNavigateStep
   | ReplayWaitStep
+  | ReplayWaitForStep
   | ReplayAssertStep;
 
 /** 一个场景的录制结果（套件模式下每个 `## 场景` 一条）。 */
@@ -286,6 +316,16 @@ export function loadReplayScript(path: string): ReplayScript {
           t("replay.err.badStepKind", { kind: String(st?.kind), path }),
         );
       }
+      // 条件等待必须**恰好**带一个条件：三个都给或一个都不给都会在回放中途变成一个
+      // 无意义的「等 3 秒」或空转，宁可在加载时就说清楚（与类型校验同一条理由）。
+      if (st?.kind === "wait_for") {
+        const given = [st.text, st.selector, st.gone].filter(
+          (v) => typeof v === "string" && v.length > 0,
+        ).length;
+        if (given !== 1) {
+          throw new Error(t("replay.err.badWaitFor", { path }));
+        }
+      }
     }
   }
   // 旧版本生成的脚本可能在定位符/用例原文里残留录制当次写死的取值；加载时就地还原，
@@ -307,6 +347,7 @@ const REPLAY_STEP_KINDS: ReadonlySet<string> = new Set<ReplayStepKind>([
   "hover",
   "scroll",
   "wait",
+  "wait_for",
   "assert_text",
 ]);
 
@@ -417,6 +458,11 @@ export function normalizePlaceholderLiterals(script: ReplayScript): string[] {
         case "assert_text":
           st.expectation = apply(st.expectation);
           break;
+        case "wait_for":
+          // 条件文本里同样可能残留录制当次写死的动态值（例如等「刚创建的那条产品」出现）：
+          // 还原成占位符，回放时才能重新展开新时间戳（与 locator.name 同一条规则）。
+          if (st.text) st.text = apply(st.text);
+          break;
         case "click":
         case "hover":
         case "scroll":
@@ -468,6 +514,20 @@ export interface ReplayOptions {
   now?: Date;
   /** 任一失败（含元素未找到）即停止该场景，不跑完剩余步骤。 */
   failFast?: boolean;
+  /**
+   * `--settle-waits`：把脚本里的 `wait` 步骤执行成「**等页面稳定，上限为记下的毫秒数**」。
+   *
+   * 为什么值得做：录制时模型给出的 `wait(2000)` 是它对「给页面一点时间」的**猜测**，回放却把
+   * 这个猜测当成了事实——固定等待在每一次回放里都照付。实测一份 6 场景的脚本里，
+   * `wait` 步骤占了墙钟的 47%（`--settle-waits` 之前 11s / 23s）。而回放真正需要的是
+   * 「等到页面不再变化」，不是「等满 2 秒」。
+   *
+   * **默认关闭，且明确标注风险**：如果那次等待是为**页面之外**的事情留的（服务端正在生成
+   * 导出文件、后台排队等），页面其实早已稳定，提前放行会让紧随其后的断言/下载假失败。
+   * 因此这是显式开关：打开后轨迹里的 wait 行会如实写出实际等待（`页面已稳定（等待 120ms…）`），
+   * 一旦出现「wait 变快之后紧跟的断言挂了」，就能一眼看到是这个开关造成的。
+   */
+  settleWaits?: boolean;
 }
 
 export interface ReplayRunResult {
@@ -561,6 +621,7 @@ async function runStep(
   ops: BskOps,
   step: ReplayStep,
   expand: (text: string) => string,
+  settleWaits: boolean,
 ): Promise<{ text: string; assertion?: AssertionResult }> {
   switch (step.kind) {
     case "navigate":
@@ -634,7 +695,20 @@ async function runStep(
       };
     }
     case "wait":
-      return { text: await ops.wait(step.ms) };
+      // `--settle-waits`：把这一步记下的秒数当作**上限**，页面稳定就提前放行（见 ReplayOptions）。
+      return { text: settleWaits ? await ops.settle(step.ms) : await ops.wait(step.ms) };
+    case "wait_for":
+      // 与录制时同一条路径（ADR-0001）：等的是**条件**，达成即走，不达成等满上限。
+      return {
+        text: await ops.waitFor(
+          {
+            ...(step.text ? { text: expand(step.text) } : {}),
+            ...(step.selector ? { selector: expand(step.selector) } : {}),
+            ...(step.gone ? { gone: expand(step.gone) } : {}),
+          },
+          step.timeoutMs,
+        ),
+      };
     case "assert_text": {
       const expectation = expand(step.expectation);
       const out = await ops.assertText(expectation);
@@ -660,15 +734,20 @@ async function runStep(
 }
 
 /**
- * 执行一步并重试（默认最多 3 次，每次间隔 500ms）。
+ * 执行一步并重试（默认最多 3 次，两次尝试之间等页面稳定）。
  *
  * 重试的理由有两类：bsk 侧的时序抖动（el-upload 首次触发可能返回
  * `did not activate a file input`，重试即成功），以及页面动画/弹窗延迟导致元素晚出现。
- * 定位每次都会重新取快照，所以对「稍后才出现」有效；代价是失败步骤多花约 1 秒，
- * 比把一条长流程判死划算。
+ * 定位每次都会重新取快照，所以对「稍后才出现」有效。
+ *
+ * 间隔从**固定 500ms** 换成了 `ops.settle()`（见 settle.ts）：固定的那 500ms 在
+ * 「页面上根本没有这个元素」时纯属浪费——实测里这类 miss 占绝大多数（录制时模型顺手点的
+ * 补救按钮，回放时弹窗早关了），而它本来只要重新取一次快照就能立刻得出同样结论。
+ * settle 在页面已稳定时同步返回（一次 evaluate 往返），只在真的在加载/播动画时才等，
+ * 上限 800ms。于是：真·缺失的步骤从 ~1s 降到毫秒级，动画中的步骤反而比原来更耐心。
  *
  * navigate 不适用这套逻辑（调用方传 attempts=1）：目标不可达时重试是纯浪费——
- * 连接被拒绝/域名解析失败不会因为 500ms 后再试一次就变得可达，诊断文本里也是这么说的。
+ * 连接被拒绝/域名解析失败不会因为等一下再试就变得可达，诊断文本里也是这么说的。
  */
 async function runStepWithRetry(
   ops: BskOps,
@@ -677,11 +756,12 @@ async function runStepWithRetry(
   trace: string[],
   index: number,
   attempts: number,
+  settleWaits: boolean,
 ): Promise<{ text: string; assertion?: AssertionResult }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      return await runStep(ops, step, expand);
+      return await runStep(ops, step, expand, settleWaits);
     } catch (err) {
       lastError = err;
       if (attempt >= attempts) break;
@@ -690,7 +770,7 @@ async function runStepWithRetry(
         t("replay.retry.trace", { index, kind: step.kind, attempt, attempts, reason }),
       );
       debugLog(t("replay.retry.debug", { index, reason }));
-      await ops.wait(500);
+      await ops.settle();
     }
   }
   throw lastError;
@@ -728,6 +808,13 @@ export interface ReplayStepOutcome {
   failed: number;
   /** 中止时的步骤标签；未中止为 null。 */
   aborted: string | null;
+  /**
+   * 每步（含重试与等待在内）的耗时明细，按步骤类型聚合。
+   *
+   * 回放的墙钟就是「步数 × 每步命令耗时」，而每步的耗时只有在这里量得到（含重试）；
+   * 汇总后写进日志，用来回答「回放慢在哪一类命令上」——见 timing.ts。
+   */
+  timing: TimingCollector;
 }
 
 export interface ReplayStepOptions {
@@ -739,6 +826,8 @@ export interface ReplayStepOptions {
   failFast?: boolean;
   /** 单步重试次数（默认 3）。 */
   attempts?: number;
+  /** `wait` 步骤是否按「等页面稳定、上限为记下的毫秒数」执行（见 ReplayOptions.settleWaits）。 */
+  settleWaits?: boolean;
 }
 
 /**
@@ -764,6 +853,7 @@ export async function executeReplaySteps(
     executed: 0,
     failed: 0,
     aborted: null,
+    timing: new TimingCollector(),
   };
   const attempts = opts.attempts ?? 3;
 
@@ -782,9 +872,12 @@ export async function executeReplaySteps(
         outcome.trace,
         index,
         stepAttempts,
+        opts.settleWaits ?? false,
       );
       outcome.executed = index;
       const cost = Date.now() - startedAt;
+      // cost 覆盖了这一步的全部尝试与等待（含重试），正是「这一步有多贵」的口径。
+      outcome.timing.noteCommand(step.kind, cost);
       outcome.trace.push(`[replay-ok] ${label} ${cost}ms`);
       if (out.text) outcome.outputs.push(out.text);
       if (out.assertion) {
@@ -825,12 +918,16 @@ export async function executeReplaySteps(
       // 元素不存在 = 当前页面状态下不需要这一步，跳过并继续（但要在报告里点名）
       if (err instanceof LocatorMissError && !opts.failFast) {
         outcome.skipped.push(`${context}：${reason}`);
+        // 跳过也照记耗时：它跑了完整的重试（每次都要重新取快照），
+        // 而「元素不存在」这一类正是最值得从统计里看出来的浪费。
+        outcome.timing.noteCommand(step.kind, cost);
         outcome.trace.push(`[replay-skip] ${label}：${reason}`);
         info(t("replay.log.skip", { label, cost, reason }));
         continue;
       }
 
       outcome.failed += 1;
+      outcome.timing.noteCommand(step.kind, cost, true);
       outcome.trace.push(`[replay-error] ${label}：${reason}`);
       info(t("replay.log.fail", { label, cost, reason }));
       const giveUp = step.kind === "navigate" || opts.failFast === true;
@@ -876,6 +973,7 @@ async function replayScenario(
     executed: 0,
     failed: 0,
     aborted: null,
+    timing: new TimingCollector(),
   };
 
   try {
@@ -893,6 +991,7 @@ async function replayScenario(
       expand,
       jevActive: Boolean(jev?.enabled),
       failFast: opts.failFast ?? false,
+      settleWaits: opts.settleWaits ?? false,
     });
   } finally {
     // 回放同样在场景收尾统一清理下载产物（与带模型跑同一条规则，见 downloads.ts）。
@@ -902,6 +1001,10 @@ async function replayScenario(
 
   const { trace, assertions, skipped } = outcome;
   const status = replayScenarioStatus(outcome);
+  // 耗时构成（墙钟 = 建 session + 逐步执行）：回放零模型，所以只会出现命令与「其它」两类。
+  // 与录制路径一样只写日志，不写 stdout 报告（ADR-0002）。
+  const wallMs = Date.now() - startedAt;
+  for (const line of renderTiming(outcome.timing.summary(wallMs))) info(line);
   const report: TestReport = {
     mode: "replay",
     script: opts.scriptPath,
@@ -981,6 +1084,15 @@ export async function runReplayScript(
       semantic: opts.semantic ? t("replay.log.scriptStart.semantic") : "",
     }),
   );
+  // `--settle-waits` 改变了 wait 步骤的语义（不再等满，而是等到稳定）：先说清它会影响几步、
+  // 以及失败时该看哪里——这个开关的风险正好落在「提前放行」上，不能让人事后猜。
+  if (opts.settleWaits) {
+    const waitSteps = scenarios.reduce(
+      (n, sc) => n + sc.steps.filter((s) => s.kind === "wait").length,
+      0,
+    );
+    info(t("replay.log.settleWaits", { count: waitSteps }));
+  }
   // 录制时靠 Jev 语义复核才成立的断言（如「检出成功」「标题包含 Example」这类
   // 字面不出现在页面上的措辞），默认的字符串包含匹配必然判为不成立。
   // 开始前就说清楚，别等跑到一半才让人猜。
