@@ -53,10 +53,11 @@
  */
 import {
   ModelUnreachableError,
-  runAgent,
   splitScenarios,
   type AgentRunResult,
 } from "../agent.js";
+// 场景在独立子进程里执行（ADR-0013）：交互模式与批处理共用同一个执行器。
+import { EnvironmentUnavailableError, runScenarioInChild } from "../suite.js";
 import { info, setSink } from "../log.js";
 import {
   emptyUsage,
@@ -72,7 +73,6 @@ import {
   type TokenUsage,
 } from "../report.js";
 import type { ScenarioRecording } from "../replay.js";
-import { expandVars, type RunVarValue } from "../vars.js";
 // 仅类型导入（编译期擦除），不会让「非交互路径」为 UI 依赖付出加载开销。
 import type {
   Component,
@@ -115,6 +115,7 @@ import { getLocale, setLocale, t } from "../i18n.js";
 import {
   CONFIG_PATH,
   readSideOutputPrefs,
+  saveConcurrency,
   saveLocale,
   saveModelSelection,
   saveSideOutputPref,
@@ -146,17 +147,6 @@ export interface InteractiveOptions {
    * 无参启动的会话没有它——落点由运行中的 `/run` 决定（见 ADR-0005 决策四）。
    */
   sourcePath?: string;
-  /** 本次运行展开占位符的取值。 */
-  vars: RunVarValue[];
-  /**
-   * 展开 `${...}` 占位符用的时刻。
-   *
-   * 初始场景、`/run` 加载的场景与全部追加场景**共用同一个**：回放脚本靠
-   * 「具体值 → 占位符」反查还原，若各场景各用各的时刻，同一份脚本里一个占位符
-   * 会对应多个取值（见 ADR-0002 决策六）。加载场景为何也必须跟会话时刻走，
-   * 见 ADR-0005 决策八——同一落点派生的场景会进同一份脚本，而回放端只展开一次。
-   */
-  now: Date;
   debug: boolean;
   /**
    * 显式指定的回放脚本输出路径（仅用于在汇总报告里标注）。
@@ -165,6 +155,20 @@ export interface InteractiveOptions {
    * 那些路径只有退出时才知道，因此打 stderr 而不是塞进报告。
    */
   scriptPath?: string;
+  /**
+   * 单个场景的执行时长上限（毫秒；`0` = 不限）。
+   *
+   * 场景跑在子进程里，超时只能由父进程看门狗来掐（见 ADR-0013 决策八）：
+   * 掐掉后该场景记失败，**后面的场景照跑**——隔离的另一半就是「卡死不该拖住别人」。
+   */
+  scenarioTimeoutMs: number;
+  /**
+   * 本次会话的初始并发度（1..8）。
+   *
+   * 只是**起点**：`/setting` 里的「并发量」可以随时改，改了立刻生效并写回配置；
+   * 启动时 `--concurrency` / `PAGEQA_CONCURRENCY` / 配置里的值都由调用方解析好传进来。
+   */
+  concurrency: number;
 }
 
 export interface InteractiveRunResult {
@@ -401,7 +405,13 @@ export async function runInteractive(
    *
    * 场景结束时以 `results` 里的权威结算值取代它，因此必须清空——否则同一份消耗会被算两遍。
    */
-  let runningUsage: TokenUsage | null = null;
+  /**
+   * 正在跑的每个场景的实时用量，按场景 id 存。
+   *
+   * 串行时它最多一条，与历史上那个「单值」等价；并发时多条要一起算进会话累计，
+   * 否则状态栏的「已经烧了多少」会漏掉除第一条以外的所有场景。
+   */
+  const runningUsages = new Map<number, TokenUsage>();
 
   /**
    * 本次会话累计 token 用量 = 已结束场景的结算值 + 正在跑的场景的实时值。
@@ -412,7 +422,7 @@ export async function runInteractive(
   function sessionUsage(): TokenUsage {
     let acc = emptyUsage();
     for (const r of results.values()) acc = mergeUsage(acc, r.usage);
-    if (runningUsage) acc = mergeUsage(acc, runningUsage);
+    for (const u of runningUsages.values()) acc = mergeUsage(acc, u);
     return acc;
   }
   /**
@@ -443,6 +453,14 @@ export async function runInteractive(
   let currentChoice: ModelChoice = { ...catalog.defaultChoice };
   /** 配置里保存的启动默认（Ctrl+S 会更新它）。 */
   let defaultChoice: ModelChoice = { ...catalog.defaultChoice };
+  /**
+   * 本次会话的并发度（1..8）。
+   *
+   * `/setting` 里的「并发量」改的就是它：队列每轮派发前现取，所以立刻生效；
+   * 同时写回配置，下次启动还是这个值。启动时的初始值来自 `--concurrency` /
+   * `PAGEQA_CONCURRENCY` / 配置文件，由 CLI 解析好传进来。
+   */
+  let concurrency = opts.concurrency;
   /** 文本/密钥提问的等待态（同一时刻最多一个）。 */
   let pendingAsk: {
     resolve: (value: string) => void;
@@ -780,10 +798,35 @@ export async function runInteractive(
     updateStatus();
   }
 
+  /** 并发档位：固定几档（上限 8 天然满足，也省掉一整套数字输入的校验）。 */
+  const CONCURRENCY_LEVELS = [1, 2, 3, 4, 6, 8];
+
+  /** 并发量的文案：一串（默认）说清「这是上限、代价是窗口数」。 */
+  function concurrencyLabel(n: number): string {
+    return n <= 1
+      ? t("tui.setting.concurrencyOne")
+      : t("tui.setting.concurrencyMany", { n });
+  }
+
+  /** 挑一个并发档位；Esc 返回 undefined（保持原值）。 */
+  async function pickConcurrency(): Promise<number | undefined> {
+    const pick = await openSelector(
+      t("tui.setting.concurrencyTitle"),
+      CONCURRENCY_LEVELS.map((n) => ({
+        value: String(n),
+        label:
+          n === concurrency
+            ? `${concurrencyLabel(n)} ${t("tui.setting.concurrencyCurrent")}`
+            : concurrencyLabel(n),
+      })),
+    );
+    return pick ? Number(pick.value) : undefined;
+  }
+
   /**
-   * `/setting`：修改旁路产物开关与语言（ADR-0011 决策二）。
+   * `/setting`：修改旁路产物开关、语言与并发量（ADR-0011 决策二、ADR-0013 决策三）。
    *
-   * 切换即写回配置并**重开面板**：三项常常一次要改不止一项，让用户关掉再敲一次 `/setting`
+   * 切换即写回配置并**重开面板**：这几项常常一次要改不止一项，让用户关掉再敲一次 `/setting`
    * 是多余的一步。Esc 关面板。语言并入这里之后，`/toggle-language` 只作为未文档化的别名
    * 保留（不进 `/help`、不进补全），老习惯不被打断。
    */
@@ -810,6 +853,11 @@ export async function runInteractive(
           label: t("tui.setting.locale"),
           description: localeLabel(),
         },
+        {
+          value: "concurrency",
+          label: t("tui.setting.concurrency"),
+          description: concurrencyLabel(concurrency),
+        },
       ];
       const pick = await openSelector(
         t("tui.setting.title", { version: packageVersion() }),
@@ -819,6 +867,26 @@ export async function runInteractive(
       if (!pick) return;
       if (pick.value === "locale") {
         switchLocale();
+        continue;
+      }
+      if (pick.value === "concurrency") {
+        const level = await pickConcurrency();
+        if (level === undefined) continue;
+        // 先改本次会话（队列下一轮派发就用新值），再写回配置——写盘失败不影响本次生效，
+        // 但要如实说出来（否则用户以为「下次启动也是这个」，其实没存上）。
+        concurrency = level;
+        try {
+          saveConcurrency(level);
+          append(
+            t("tui.setting.concurrencySaved", {
+              n: level,
+              path: CONFIG_PATH,
+            }),
+          );
+        } catch (err2) {
+          append(err(t("tui.setting.failed", { msg: msgOf(err2) })));
+        }
+        updateStatus();
         continue;
       }
       const key: keyof SideOutputPrefs =
@@ -1037,13 +1105,26 @@ export async function runInteractive(
 
   function updateStatus(): void {
     const all = queue.all();
-    const running = queue.running();
+    const runningAll = queue.runningAll();
+    const running = runningAll[0];
     const waiting = queue.waiting().length;
     const settled = all.filter(
       (i) => i.state !== "queued" && i.state !== "running",
     ).length;
     const bits: string[] = [title(t("tui.title"))];
-    if (running) {
+    if (runningAll.length > 1) {
+      // 并发时「第 k/n 个」不再有定义（同时有好几个都算「当前」）：改报数量 + 最早那个
+      // 的耗时——它是这批里最可能先结束的一条，也是最该盯着的那条。
+      bits.push(
+        accent(
+          t("tui.runningMany", {
+            n: runningAll.length,
+            name: running.name,
+            duration: fmtDuration(Date.now() - (running.startedAt ?? Date.now())),
+          }),
+        ),
+      );
+    } else if (running) {
       bits.push(
         accent(running.name) +
           " " +
@@ -1123,20 +1204,26 @@ export async function runInteractive(
     );
     let result: AgentRunResult;
     try {
-      // 占位符在这里展开（而不是入队时）：追加场景与初始场景共用同一个时刻，
-      // 与批处理模式的「同一次运行共用一个时刻」保持一致。
-      result = await runAgent(expandVars(item.body, opts.now), {
-        debug: opts.debug,
-        vars: opts.vars,
-        scenarioName: item.name,
-        abortSignal: item.abort.signal,
+      // 场景交给独立子进程跑（ADR-0013）：本进程只负责把「日志往哪写、用量往哪报、
+      // 会话选了哪个模型」接进去，执行本身与批处理共用同一个执行器。
+      //
+      // 占位符由**子进程**展开（这里传的是原文）：回放脚本靠「具体值 → 占位符」反查还原，
+      // 父进程先展开就把这个反查依据抹掉了。
+      result = await runScenarioInChild({
+        name: item.name,
+        body: item.body,
         // 用「开跑那一刻」的选择：用户在场景执行期间 /model，只影响之后的场景，
         // 不会把跑到一半的会话换成另一个模型（那会让报告里的模型归属含糊不清）。
+        // `/model` 只改本进程内存，所以必须显式传给子进程。
         model: { ...currentChoice },
-        catalog,
+        debug: opts.debug,
+        timeoutMs: opts.scenarioTimeoutMs,
+        abortSignal: item.abort.signal,
+        // 子进程的进度日志直接进日志视口：它自带时间戳，与 log.ts 的输出同形。
+        onChildLog: append,
         // 每轮 LLM 调用后刷新状态栏里的 token 累计：长流程跑到一半就能看出已经烧了多少。
         onUsage: (usage) => {
-          runningUsage = usage;
+          runningUsages.set(item.id, usage);
           updateStatus();
         },
       });
@@ -1151,32 +1238,42 @@ export async function runInteractive(
         append(dim(t("err.modelUnreachableHint")));
         const stopped = queue.cancelAllWaiting(t("tui.model.stopNote"));
         if (stopped > 0) append(warn(t("tui.model.stopRun", { n: stopped })));
+      } else if (err2 instanceof EnvironmentUnavailableError) {
+        // 浏览器环境跑不起来：同样记失败 + 停队列，但说法必须与「模型不通」分开，
+        // 否则报告会把人引到错误的方向去（见 ADR-0013 决策七）。
+        result = failedResult(item, err2, t("tui.env.expectation"));
+        const stopped = queue.cancelAllWaiting(t("tui.env.stopNote"));
+        if (stopped > 0) append(warn(t("tui.env.stopRun", { n: stopped })));
       } else {
         result = failedResult(item, err2);
       }
     }
     results.set(item.id, result);
-    // 结算值已进 results，实时值必须清掉，否则这份消耗会在状态栏里被算两遍。
-    runningUsage = null;
-    const tag = statusTag(result.report.status);
-    const line = t("tui.sceneEnd", {
-      name: item.name,
-      tag,
-      n: result.report.assertions.length,
-      duration: fmtDuration(Date.now() - startedAt),
-    });
-    append(result.report.status === "pass" ? ok(line) : result.report.status === "cancelled" ? warn(line) : err(line));
-    // 这一条场景花了多少：状态栏只有会话累计，看不出单条成本。没发生过 LLM 调用
-    // （排队中被取消、模型探活就失败）时不打这行——那只会是一串 0。
-    if (result.usage.calls > 0) append(dim(formatUsage(result.usage)));
-    return result.report.status;
+    try {
+      const tag = statusTag(result.report.status);
+      const line = t("tui.sceneEnd", {
+        name: item.name,
+        tag,
+        n: result.report.assertions.length,
+        duration: fmtDuration(Date.now() - startedAt),
+      });
+      append(result.report.status === "pass" ? ok(line) : result.report.status === "cancelled" ? warn(line) : err(line));
+      // 这一条场景花了多少：状态栏只有会话累计，看不出单条成本。没发生过 LLM 调用
+      // （排队中被取消、模型探活就失败）时不打这行——那只会是一串 0。
+      if (result.usage.calls > 0) append(dim(formatUsage(result.usage)));
+      return result.report.status;
+    } finally {
+      // 结算值已进 results，实时值必须清掉，否则这份消耗会在状态栏里被算两遍。
+      // 放在 finally 里：中间任何一步抛错都不能让这条实时值永远挂着。
+      runningUsages.delete(item.id);
+    }
   };
 
   /**
    * 当前这一批的运行队列。`/new` 会把它换成一条新队列（上一批先快照进 `batches`），
    * 因此是 `let`：所有引用点读到的都必须是最新那条。
    */
-  let queue = new ScenarioQueue(runScenario, updateStatus);
+  let queue = new ScenarioQueue(runScenario, updateStatus, () => concurrency);
 
   /** `/new` 归档下来的历史批次：退出报告与回放脚本要覆盖整个进程跑过的全部场景。 */
   const batches: SessionBatch[] = [];
@@ -1445,8 +1542,8 @@ export async function runInteractive(
     logLines.length = 0;
     document.setText("");
     results.clear();
-    runningUsage = null;
-    queue = new ScenarioQueue(runScenario, updateStatus);
+    runningUsages.clear();
+    queue = new ScenarioQueue(runScenario, updateStatus, () => concurrency);
     append(
       title(
         t("tui.new.banner", {
@@ -1547,8 +1644,8 @@ export async function runInteractive(
     // 不中止的话下面的等队列循环会白等到超时。
     loginController?.abort();
     rejectAsk(cancelledError());
-    if (queue.running()) {
-      append(dim(t("tui.abortingCurrent")));
+    if (queue.runningAll().length > 0) {
+      append(dim(t("tui.abortingCurrent", { n: queue.runningAll().length })));
       queue.abortRunning();
     }
     const cancelled = queue.cancelAllWaiting();
@@ -1631,8 +1728,17 @@ export async function runInteractive(
       if (tui.hasOverlay()) return undefined;
       // 其余时候只在有场景在跑时接管，否则留给编辑器（它用 Esc 关自动补全）。
       if (queue.running()) {
-        const item = queue.abortRunning();
-        append(warn(t("tui.abortScene", { name: item?.name ?? "" })));
+        // 并发之后「当前场景」不再唯一：一次中止全部在跑的，并逐个点名，
+        // 免得用户以为「只停了第一个」（见 ADR-0013）。
+        const aborted = queue.abortRunning();
+        append(
+          warn(
+            t("tui.abortScene", {
+              names: aborted.map((i) => i.name).join("、"),
+              n: aborted.length,
+            }),
+          ),
+        );
         return { consume: true };
       }
     }

@@ -70,6 +70,17 @@ export interface PageQaConfig {
    * （失败时的文件正是排查对象）时一律保留。要留档就把这项设为 false，或在用例里写 `out`。
    */
   downloadCleanup?: boolean;
+  /**
+   * 单个场景的执行时长上限（毫秒）。**缺失视为不限**（0），理由同 `htmlReport`：
+   * 它是个默认应该关着、只有 CI 才需要的门禁。见 ADR-0013 决策八。
+   */
+  scenarioTimeoutMs?: number;
+  /**
+   * 同时执行几个场景（**上限**，不是要求）。**缺失视为 1**（逐个跑），理由同上：
+   * 串行是「场景之间可能有隐含顺序依赖」的默认保护，并行必须由人显式声明。
+   * 见 ADR-0013 决策三。
+   */
+  concurrency?: number;
 }
 
 const DEFAULTS: PageQaConfig = {
@@ -226,6 +237,49 @@ export function readDownloadDir(): string {
 export function readDownloadCleanup(): boolean {
   const raw = readRawConfig();
   return typeof raw.downloadCleanup === "boolean" ? raw.downloadCleanup : true;
+}
+
+/**
+ * 只读地取「单个场景的执行时长上限」（毫秒；`0` 表示不限）。
+ *
+ * **默认不限**：README 把「十几分钟的长流程」当常态，凭空定一个默认上限就是给自己
+ * 造一个新的失败来源。既有的超时都是「贴着单条命令」的（bsk 命令默认 60s、download
+ * 等待上限可配、`wait-ms` 按等待时长放宽），场景级上限是**新增的一层**，不做默认值猜测。
+ *
+ * 只认正数：手写成字符串 `"300000"` 也接受（配置文件是手写的），但类型不对、非数字、
+ * 非正数一律按「不限」处理——宁可不管，也不要因为一个坏值把长流程半路掐死。
+ */
+export function readScenarioTimeoutMs(): number {
+  const raw = readRawConfig();
+  const value = process.env.PAGEQA_SCENARIO_TIMEOUT ?? raw.scenarioTimeoutMs;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+/**
+ * 只读地取「同时跑几个场景」的上限：`PAGEQA_CONCURRENCY` > 配置文件 > 1。
+ *
+ * **默认 1（逐个跑）**：串行是「场景之间可能有隐含顺序依赖」的默认保护
+ * （「创建 → 编辑 → 删除」这种用例并行跑不是失败，是数据错乱，更难查）。
+ * 并行等于用户声明「这些场景互不依赖」，这个声明只能由人来做。
+ *
+ * 只认正整数；坏值一律回落到 1，而不是猜一个并发度——猜错的代价是同时开出一堆
+ * 浏览器窗口。上限由 `MAX_CONCURRENCY` 把关（那条在 CLI 里报错，这里不做静默截断）。
+ */
+export function readConcurrency(): number {
+  const value = process.env.PAGEQA_CONCURRENCY ?? readRawConfig().concurrency;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(n) && n > 0 ? n : 1;
+}
+
+/**
+ * 把并发度持久化（保留其它字段）；供交互模式 /setting 的「并发量」使用。
+ *
+ * 与 `saveSideOutputPref` 同一个口子：它只负责写文件，**本次会话立即生效**是调用方
+ * （TUI 的队列读的是内存里那个值）的事——两件事分开，谁也不替谁假装。
+ */
+export function saveConcurrency(n: number): void {
+  updateUserConfig({ concurrency: n });
 }
 
 /** 把某一个旁路产物开关持久化（保留其它字段）；供交互模式 /setting 使用。 */

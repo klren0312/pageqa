@@ -19,6 +19,15 @@ export interface TokenUsage {
   calls: number;
 }
 
+/**
+ * 场景的**异常终止**归因（机器可读）。
+ *
+ * 与「断言不成立」区分开：那类失败看 `assertions` 就够了，这里说的是
+ * 「这个场景压根没跑完」——CI 据此可以直接判断该重试还是该查环境。
+ * 三种取值都来自 ADR-0013：场景跑在独立子进程里，父进程只能从它的退出方式判断。
+ */
+export type ScenarioFailureReason = "crash" | "timeout" | "infrastructure";
+
 export interface TestReport {
   /**
    * 场景结论。`cancelled` 是第三种终态：用户在交互模式里主动中止了该场景。
@@ -28,6 +37,11 @@ export interface TestReport {
   status: "pass" | "fail" | "cancelled";
   /** 被中止时的说明（`status === "cancelled"` 时存在）。 */
   cancelReason?: string;
+  /**
+   * 异常终止的归因（`status === "fail"` 且不是断言不成立时存在）。
+   * 崩溃/超时不该被写成一条假断言，也不该只留一句人读的话——见 ADR-0013 决策七。
+   */
+  reason?: ScenarioFailureReason;
   /** 运行模式：`llm`（自然语言解析，默认，旧报告无此字段）或 `replay`（零模型回放）。 */
   mode?: "llm" | "replay";
   /** 回放脚本路径（回放模式为所用脚本，LLM 模式为生成的脚本）。 */
@@ -62,6 +76,8 @@ export interface ScenarioDetail {
   durationMs?: number;
   /** 场景摘要（成员报告有才写）。 */
   summary?: string;
+  /** 异常终止的归因（成员报告有才写）；断言不成立时没有这个字段。 */
+  reason?: ScenarioFailureReason;
   /** 回放中因「元素未找到」被跳过的步骤（非空才写）。 */
   skipped?: string[];
 }
@@ -529,6 +545,8 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
       // 只有调用方给出了来源才写这个字段：批处理模式的 JSON 与历史逐字一致。
       ...(m.origin ? { origin: m.origin } : {}),
       ...(m.report.summary ? { summary: m.report.summary } : {}),
+      // 异常归因同样只在成员报告有时才写：断言失败的场景不带这个字段。
+      ...(m.report.reason ? { reason: m.report.reason } : {}),
       ...(m.report.skipped?.length ? { skipped: m.report.skipped } : {}),
     })),
     usage,
