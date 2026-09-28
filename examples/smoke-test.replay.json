@@ -1,9 +1,9 @@
 {
   "format": "pageqa-replay",
   "version": 1,
-  "recordedAt": "2026-09-24T08:03:27.921Z",
+  "recordedAt": "2026-09-28T08:33:00.964Z",
   "source": {
-    "path": "./examples\\smoke-test.md",
+    "path": ".\\examples\\smoke-test.md",
     "hash": "53689cd4507a1e9a"
   },
   "scenarios": [
@@ -24,7 +24,7 @@
         },
         {
           "kind": "assert_text",
-          "step": 1,
+          "step": 2,
           "expectation": "冒烟测试页面"
         },
         {
@@ -48,7 +48,7 @@
         },
         {
           "kind": "assert_text",
-          "step": 3,
+          "step": 4,
           "expectation": "表单页面 1"
         },
         {
@@ -72,7 +72,7 @@
         },
         {
           "kind": "assert_text",
-          "step": 5,
+          "step": 6,
           "expectation": "文件上传"
         }
       ]
@@ -269,7 +269,7 @@
           }
         },
         {
-          "kind": "click",
+          "kind": "hover",
           "step": 4,
           "target": "@e7",
           "locator": {
@@ -287,6 +287,22 @@
         {
           "kind": "click",
           "step": 4,
+          "target": "@e7",
+          "locator": {
+            "role": "button",
+            "name": "请选择职业",
+            "nth": 0,
+            "target": "@e7",
+            "path": [
+              "RootWebArea \"冒烟测试页面\"",
+              "main \"表单页面 2 邮箱 * 职业 * 请选择职业\"",
+              "form \"邮箱 * 职业 * 请选择职业\""
+            ]
+          }
+        },
+        {
+          "kind": "click",
+          "step": 5,
           "target": "@e9",
           "locator": {
             "role": "button",
@@ -301,22 +317,6 @@
           }
         },
         {
-          "kind": "click",
-          "step": 5,
-          "target": "@e8",
-          "locator": {
-            "role": "button",
-            "name": "提交表单",
-            "nth": 0,
-            "target": "@e8",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 2 邮箱 * 职业 * 工程师\"",
-              "form \"邮箱 * 职业 * 工程师\""
-            ]
-          }
-        },
-        {
           "kind": "wait",
           "step": 6,
           "ms": 1000
@@ -324,7 +324,7 @@
         {
           "kind": "assert_text",
           "step": 7,
-          "expectation": "表单提交成功！"
+          "expectation": "提交成功"
         }
       ]
     },
@@ -381,7 +381,7 @@
         {
           "kind": "assert_text",
           "step": 5,
-          "expectation": "smoke-test.md"
+          "expectation": "smoke-test.md (3.7 KB)"
         }
       ]
     },
@@ -422,7 +422,7 @@
         {
           "kind": "assert_text",
           "step": 3,
-          "expectation": "下载示例文件"
+          "expectation": "文件下载"
         },
         {
           "kind": "wait",
@@ -479,51 +479,50 @@
         },
         {
           "kind": "wait",
-          "step": 2,
-          "ms": 500
-        },
-        {
-          "kind": "wait",
           "step": 3,
           "ms": 2000
         },
         {
+          "kind": "wait",
+          "step": 4,
+          "ms": 1000
+        },
+        {
+          "kind": "navigate",
+          "step": 4,
+          "url": "http://localhost:18888/smoke-test-page.html#/file-download"
+        },
+        {
           "kind": "click",
           "step": 4,
-          "target": "@e7",
+          "target": "@e5",
           "locator": {
-            "role": "button",
-            "name": "导出数据",
+            "role": "link",
+            "name": "文件下载",
             "nth": 0,
-            "target": "@e7",
+            "target": "@e5",
             "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"文件下载 直接下载 导出（需要在确认弹框里点「确定」才会开始下载）\""
+              "RootWebArea \"冒烟测试页面\""
             ]
           }
         },
         {
           "kind": "wait",
-          "step": 4,
+          "step": 6,
           "ms": 1000
         },
         {
           "kind": "download",
-          "step": 5,
-          "target": "@e2",
+          "step": 7,
+          "target": "button:has-text(\"确定\")",
           "locator": {
-            "role": "button",
-            "name": "确定",
-            "nth": 0,
-            "target": "@e2",
+            "role": "",
+            "name": "",
+            "nth": -1,
+            "target": "button:has-text(\"确定\")",
             "path": []
           },
           "expectName": "*.txt"
-        },
-        {
-          "kind": "wait",
-          "step": 6,
-          "ms": 1000
         }
       ]
     }
