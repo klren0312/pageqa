@@ -347,6 +347,40 @@ describe("Recorder 录制", () => {
     );
   });
 
+  test("wait_for 录的是条件本身，而不是这次等到的时长", () => {
+    const r = new Recorder(vars);
+    r.noteText("第 1 步完成：已点击导出");
+    r.noteTool({
+      name: "wait_for",
+      params: { text: "导出成功", timeoutMs: 5000 },
+      ok: true,
+      lastSnapshot: "",
+    });
+    r.noteText("第 2 步完成：已等到导出成功");
+    r.noteTool({ name: "wait_for", params: { gone: ".el-loading-mask" }, ok: true, lastSnapshot: "" });
+    const [byText, byGone] = r.recorded;
+    assert.deepEqual(byText, { kind: "wait_for", step: 2, text: "导出成功", timeoutMs: 5000 });
+    // 没给上限就不写进脚本（与 download 同一条规则：写死默认值会让将来改默认值失效）
+    assert.deepEqual(byGone, { kind: "wait_for", step: 3, gone: ".el-loading-mask" });
+  });
+
+  test("wait_for 的条件文本里的动态取值也还原成占位符", () => {
+    const r = new Recorder(vars);
+    r.noteTool({
+      name: "wait_for",
+      params: { text: "自动化测试产品202609210905 已创建" },
+      ok: true,
+      lastSnapshot: "",
+    });
+    assert.equal(r.recorded[0].text, "自动化测试产品${timestamp} 已创建");
+  });
+
+  test("wait_for 没有条件（不该发生）不进脚本", () => {
+    const r = new Recorder(vars);
+    r.noteTool({ name: "wait_for", params: {}, ok: true, lastSnapshot: "" });
+    assert.equal(r.recorded.length, 0);
+  });
+
   test("靠 Jev 语义复核才成立的断言带 semantic 标记", () => {
     const r = new Recorder(vars);
     r.noteTool({
@@ -415,6 +449,14 @@ describe("回放失败语义（executeReplaySteps）", () => {
         calls.push(["wait", ms]);
         return `已等待 ${ms}ms`;
       },
+      settle: (maxMs) => {
+        calls.push(["settle", maxMs ?? 0]);
+        return "页面已稳定";
+      },
+      waitFor: (cond, timeoutMs) => {
+        calls.push(["wait_for", cond, timeoutMs]);
+        return "等待：已达成";
+      },
       assertText: async (expectation) => {
         calls.push(["assert_text", expectation]);
         assertOutcome = {
@@ -457,6 +499,10 @@ describe("回放失败语义（executeReplaySteps）", () => {
     assert.equal(out.executed, 3); // 跳过后仍然跑到第 3 步
     assert.equal(ops.calls.filter((c) => c[0] === "click").length, 0);
     assert.equal(ops.calls.filter((c) => c[0] === "assert_text").length, 1);
+    // 3 次尝试之间是「等页面稳定」，不再是固定 500ms 盲等：
+    // 元素真的不存在时，盲等那 1 秒换不来任何东西。
+    assert.equal(ops.calls.filter((c) => c[0] === "settle").length, 2);
+    assert.equal(ops.calls.filter((c) => c[0] === "wait").length, 0);
   });
 
   test("元素找到了但操作失败 → 记为失败并继续", async () => {
@@ -521,8 +567,7 @@ describe("回放失败语义（executeReplaySteps）", () => {
     );
   });
 
-  test("前两次失败、第三次成功时不记失败（重试有效）", async () => {
-    const ops = makeOps();
+  test("前两次失败、第三次成功时不记失败（重试有效）", async () => {    const ops = makeOps();
     let attempts = 0;
     ops.click = () => {
       attempts += 1;
@@ -533,6 +578,59 @@ describe("回放失败语义（executeReplaySteps）", () => {
     assert.equal(out.failed, 0);
     assert.equal(out.executed, 1);
     assert.equal(out.trace.filter((t) => t.startsWith("[replay-retry]")).length, 2);
+    // 时序抖动型失败的重试靠「重试本身」修好，不靠等：两次重试之间各等一次稳定。
+    assert.equal(ops.calls.filter((c) => c[0] === "settle").length, 2);
+  });
+
+  test("wait 步骤默认等满记下的毫秒数（不擅自改语义）", async () => {
+    const ops = makeOps();
+    const waitStep = { kind: "wait", step: 1, ms: 2_000 };
+    const out = await run(ops, [waitStep]);
+    assert.deepEqual(ops.calls, [["wait", 2_000]]);
+    assert.equal(out.timing.summary(1_000).commands.byName[0].name, "wait");
+  });
+
+  test("--settle-waits：wait 步骤按「等页面稳定、上限为记下的毫秒数」执行", async () => {
+    const ops = makeOps();
+    const waitStep = { kind: "wait", step: 1, ms: 2_000 };
+    await run(ops, [waitStep], { settleWaits: true });
+    // 上限就是脚本记下的那 2000ms：页面 120ms 就稳定时它才真的省下时间。
+    assert.deepEqual(ops.calls, [["settle", 2_000]]);
+    assert.equal(ops.calls.filter((c) => c[0] === "wait").length, 0);
+  });
+
+  test("wait_for 步骤：等的是条件本身（不是秒数），上限透传", async () => {
+    const ops = makeOps();
+    const step = { kind: "wait_for", step: 1, text: "导出成功", timeoutMs: 5_000 };
+    await run(ops, [step]);
+    assert.deepEqual(ops.calls, [["wait_for", { text: "导出成功" }, 5_000]]);
+  });
+
+  test("wait_for 的条件文本也走占位符展开（回放时才拿到新时间戳）", async () => {
+    const ops = makeOps();
+    await run(
+      ops,
+      [{ kind: "wait_for", step: 1, text: "产品${timestamp} 已创建" }],
+      { expand: (s) => s.replace("${timestamp}", "20260928") },
+    );
+    assert.deepEqual(ops.calls, [["wait_for", { text: "产品20260928 已创建" }, undefined]]);
+  });
+
+  test("未给上限时不传（用当前默认值，而不是把默认值写死进脚本）", async () => {
+    const ops = makeOps();
+    await run(ops, [{ kind: "wait_for", step: 1, selector: ".row" }]);
+    assert.deepEqual(ops.calls, [["wait_for", { selector: ".row" }, undefined]]);
+  });
+
+  test("--settle-waits 只改 wait 步骤，其它步骤的执行路径不变", async () => {
+    const ops = makeOps();
+    await run(ops, [nav, { kind: "wait", step: 2, ms: 500 }, assertOk], {
+      settleWaits: true,
+    });
+    assert.deepEqual(
+      ops.calls.map((c) => c[0]),
+      ["navigate", "settle", "assert_text"],
+    );
   });
 });
 
@@ -657,6 +755,42 @@ describe("回放脚本文件", () => {
       }),
     );
     assert.throws(() => loadReplayScript(p), /不支持的步骤类型/);
+  });
+
+  test("wait_for 步骤缺条件或条件多于一个都当场拒绝", () => {
+    const base = {
+      format: REPLAY_FORMAT,
+      version: REPLAY_VERSION,
+      scenarios: [{ name: "A1", caseSteps: [], steps: [] }],
+    };
+    const cases = [
+      { kind: "wait_for", step: null },
+      { kind: "wait_for", step: null, text: "x", selector: ".y" },
+      { kind: "wait_for", step: null, text: "", selector: ".y", gone: ".z" },
+    ];
+    for (const [i, step] of cases.entries()) {
+      const p = join(dir, `bad-waitfor-${i}.json`);
+      writeFileSync(p, JSON.stringify({ ...base, scenarios: [{ name: "A1", caseSteps: [], steps: [step] }] }));
+      assert.throws(() => loadReplayScript(p), /必须\*\*恰好\*\*带一个条件/);
+    }
+    // 恰好一个条件则正常加载（并且不会因为新增类型而需要升版本号）
+    const ok = join(dir, "ok-waitfor.json");
+    writeFileSync(
+      ok,
+      JSON.stringify({
+        ...base,
+        scenarios: [
+          {
+            name: "A1",
+            caseSteps: [],
+            steps: [{ kind: "wait_for", step: 1, gone: ".el-loading-mask", timeoutMs: 5000 }],
+          },
+        ],
+      }),
+    );
+    const loaded = loadReplayScript(ok);
+    assert.equal(loaded.scenarios[0].steps[0].gone, ".el-loading-mask");
+    assert.equal(loaded.scenarios[0].steps[0].timeoutMs, 5000);
   });
 
   test("一处写法里的多个占位符取值都能还原（不止第一个）", () => {

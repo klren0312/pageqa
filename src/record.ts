@@ -165,6 +165,27 @@ export class Recorder {
         });
         return;
       }
+      case "wait_for": {
+        // 条件等待按**条件本身**录进脚本：回放时重新等同一个条件，而不是把这次等到的时长写死
+        // （写死就退化成了 wait，正是这个工具要消灭的东西）。
+        const cond = {
+          ...(text("text") ? { text: restore(text("text")) } : {}),
+          ...(text("selector") ? { selector: text("selector") } : {}),
+          ...(text("gone") ? { gone: text("gone") } : {}),
+        };
+        // 三种条件互斥且必居其一，工具层已校验过；这里再兜一次，避免把空条件写进脚本。
+        if (Object.keys(cond).length !== 1) return;
+        const ms = Number(p["timeoutMs"]);
+        this.steps.push({
+          kind: "wait_for",
+          step,
+          ...cond,
+          // 与 download 同一条规则：只有模型明确给过上限才写进脚本，
+          // 写死一个默认值会让将来改默认值失效。
+          ...(Number.isFinite(ms) && ms > 0 ? { timeoutMs: ms } : {}),
+        });
+        return;
+      }
       case "assert_text": {
         const raw = text("expectation");
         if (!raw) return;

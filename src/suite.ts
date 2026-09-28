@@ -202,6 +202,10 @@ export async function runSuiteInChildren(
   // 并发是**上限**：不给就是 1（逐个跑），给了也不超过 MAX_CONCURRENCY。
   const concurrency = Math.max(1, Math.min(opts.concurrency ?? 1, MAX_CONCURRENCY));
   const parallel = concurrency > 1 && scenarios.length > 1;
+  // 并发与共享 session 是**语义冲突**，不是「不支持」：见 ConcurrencySessionConflictError。
+  if (isConcurrencySessionConflict(concurrency, scenarios.length, opts.session)) {
+    throw new ConcurrencySessionConflictError(concurrency);
+  }
   info(
     t("log.suiteStart", {
       n: scenarios.length,
@@ -764,6 +768,40 @@ export class EnvironmentUnavailableError extends Error {
     super(t("err.envUnavailable", { msg: reason }));
     this.name = "EnvironmentUnavailableError";
   }
+}
+
+/**
+ * `--concurrency > 1` 与显式 `--session` 同时给出：场景之间会互相翻页。
+ *
+ * 这不是「参数组合不支持」，而是**语义上不成立**。并发的前提是每个场景独占一个浏览器窗口，
+ * 而 `--session` 让所有场景共用一个 session：
+ * - bsk 对「同一 session 已有命令在跑」直接回 `session_busy`（不是排队），
+ *   于是这堆真并发会被摊成一片「场景失败 / 超时」的假结论；
+ * - 更糟的是它**不一定报错**：A 导航、B 导航、A 的点击落在 B 的页面上，
+ *   报告照样会给出 PASS/FAIL，只是那结论来自另一个页面。
+ *
+ * 因此宁可当场拒绝，也不静默改成串行——「你不说就动你的并发度」与
+ * `--concurrency` 超上限时不静默截断是同一条原则（见 MAX_CONCURRENCY 的说明）。
+ */
+export class ConcurrencySessionConflictError extends Error {
+  constructor(readonly concurrency: number) {
+    super(t("err.concurrencyWithSession", { n: concurrency }));
+    this.name = "ConcurrencySessionConflictError";
+  }
+}
+
+/**
+ * 这个组合是否会真的并发：**只有两个以上场景**、并发上限大于 1、且显式给了 session 才算冲突。
+ *
+ * 抽成纯函数是为了让单测把「什么时候该拒、什么时候不该拒」钉死：
+ * 一个场景时并发无从谈起（单场景照跑），并发为 1 时本来就是一个一个跑（共享 session 正是它的用法）。
+ */
+export function isConcurrencySessionConflict(
+  concurrency: number,
+  scenarioCount: number,
+  session: string | undefined,
+): boolean {
+  return concurrency > 1 && scenarioCount > 1 && Boolean(session);
 }
 
 // ── 交互模式的单场景入口（ADR-0013 第二步）──

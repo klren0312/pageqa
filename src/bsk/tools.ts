@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync, renameSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { basename } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { readDownloadCleanup } from "../config.js";
@@ -23,7 +24,33 @@ import {
   type SnapshotRef,
 } from "../locator.js";
 import { debugLog, info, timer } from "../log.js";
+import {
+  buildConfirmExpression,
+  buildProbeExpression,
+  describeCondition,
+  needsConfirm,
+  parseConfirm,
+  parseProbe,
+  pollUntil,
+  probeSaysMaybe,
+  type ConditionProbe,
+  type WaitCondition,
+} from "./condition.js";
+import { buildSettleProbeExpression, describeSample, isSettled, parseSettleSample } from "./settle.js";
 import { slimSnapshot } from "../snapshot.js";
+import {
+  BskIpcAbortError,
+  BskIpcRpcError,
+  BskIpcTransportError,
+  ipcCall,
+} from "./ipc.js";
+import {
+  ipcErrorToCliError,
+  ipcTimeoutToCliError,
+  isProtocolDrift,
+  planIpcCall,
+  withCliTrailingNewline,
+} from "./ipc-commands.js";
 import {
   diagnoseNavigateFailure,
   readErrorText,
@@ -57,6 +84,35 @@ const BSK_TIMEOUT_MS = 60_000;
  */
 const DOWNLOAD_ATTEMPTS = 2;
 
+/**
+ * 「等页面稳定」的等待上限（毫秒）。
+ *
+ * 800ms 是照着重试循环里原来那个固定 500ms 定的：页面真在播动画时比它耐心一点，
+ * 页面本来就稳定时则一步都不等（第一次探针就判定稳定）。
+ */
+const SETTLE_MAX_MS = 800;
+
+/** 轮询间隔（毫秒）：页面还没稳定时每隔这么久问一次探针。 */
+const SETTLE_POLL_MS = 50;
+
+/** 距离上一个资源结束多久算「网络安静」（毫秒）。 */
+const SETTLE_NETWORK_QUIET_MS = 200;
+
+/** 单次探针的超时（毫秒）。探针是同步表达式，正常是毫秒级；这个上限只防页面卡死。 */
+const SETTLE_PROBE_TIMEOUT_MS = 5_000;
+
+/** 探针不可用（页面抛异常、命令失败）时的固定短等待（毫秒）。 */
+const SETTLE_FALLBACK_MS = 300;
+
+/** `wait_for` 的默认等待上限（毫秒）；模型没给时用它。 */
+export const DEFAULT_WAIT_FOR_TIMEOUT_MS = 3_000;
+
+/** `wait_for` 能吃下的最大等待上限（毫秒）：再长几乎肯定是写错了。 */
+export const MAX_WAIT_FOR_TIMEOUT_MS = 60_000;
+
+/** `wait_for` 的轮询间隔（毫秒）：一次探针在 IPC 快路径下是毫秒级，150ms 已经足够灵敏。 */
+const WAIT_FOR_POLL_MS = 150;
+
 /** 操作被调用方主动中止（交互模式下按 Esc）。 */
 export class BskAbortError extends Error {
   constructor(message: string) {
@@ -75,11 +131,41 @@ export class BskAbortError extends Error {
 let commandChain: Promise<unknown> = Promise.resolve();
 
 /**
+ * 常驻 IPC 快路径的状态。
+ *
+ * `disabled` 只在**协议漂移**（daemon 不认我们发的那个方法）时置位：那说明 bsk 换了
+ * 协议，本进程里再怎么试也是白试。传输层问题（连不上、超时）**不永久关**——daemon 重启、
+ * 升级这类抖动会自己恢复，用一段冷却期（`suspendedUntil`）把失败尝试的代价关在笼子里
+ * 就够了（每次失败都要先等一次建连超时再退回 CLI）。
+ */
+let ipcDisabled = false;
+let ipcSuspendedUntil = 0;
+
+/** 传输层问题的冷却时长：期间直接走 CLI，不再尝试 IPC。 */
+const IPC_SUSPEND_MS = 30_000;
+
+/**
+ * 现在能不能用快路径。
+ *
+ * `PAGEQA_BSK_IPC=0`（也接受 `off`/`false`）强制走 CLI 子进程：排查「回退是否正常」
+ * 与做 A/B 计时都要一条不依赖代码改动的开关。
+ */
+function ipcFastPathUsable(): boolean {
+  if (ipcDisabled || Date.now() < ipcSuspendedUntil) return false;
+  const flag = process.env.PAGEQA_BSK_IPC?.trim().toLowerCase();
+  return !(flag === "0" || flag === "off" || flag === "false");
+}
+
+/**
  * 执行一条 bsk 命令：**异步、可中止、全局串行**。
  *
  * 异步不是风格选择：`execFileSync` 会阻塞整个事件循环，交互模式下界面在这期间完全不
  * 渲染、不收键，Esc 也停不下来（与 daemon 轮询必须异步是同一个原因，见 bskStatusJsonAsync）。
  * `signal` 触发时直接 kill 子进程，否则「中止」只能等当前这条命令自己跑完（最坏 60s）。
+ *
+ * 之所以先试 IPC：每条命令的「起进程 + 连管道 + daemon 探测」实测约 13–20ms，
+ * 而常驻连接的往返是 0–1ms（见 ipc.ts 文件头）。快路径失败一律退回 CLI 子进程，
+ * 语义与今天逐字一致；回退的判定规则见 runBskCommand。
  */
 function bsk(
   args: string[],
@@ -88,14 +174,61 @@ function bsk(
 ): Promise<string> {
   // 上一条成功还是失败都要继续跑下一条：单条命令失败不该堵死整个队列。
   const run = commandChain.then(
-    () => runBsk(args, signal, timeoutMs),
-    () => runBsk(args, signal, timeoutMs),
+    () => runBskCommand(args, signal, timeoutMs),
+    () => runBskCommand(args, signal, timeoutMs),
   );
   commandChain = run.then(
     () => undefined,
     () => undefined,
   );
   return run;
+}
+
+/**
+ * 一条命令的实际执行：常驻 IPC 优先，不合适/不可用时退回 CLI 子进程。
+ *
+ * 回退规则（这一层最需要说清楚的事）：
+ * - **daemon 的结构化错误**：不回退。那是命令的结果，不是故障；
+ * - **改动型命令在请求已发出后失败**（超时、连接断）：不回退，按 CLI 超时的口径如实报失败。
+ *   动作可能已经在页面上生效，退回 CLI 重发就是「点两次」；
+ * - **请求还没发出去**（读不到端点、连不上、握手失败），或**只读命令**：回退 CLI 重来一次；
+ * - **协议漂移**（daemon 不认这个方法）：永久关掉快路径并回退 CLI。
+ */
+async function runBskCommand(
+  args: string[],
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<string> {
+  const plan = ipcFastPathUsable() && !signal?.aborted ? planIpcCall(args) : null;
+  if (!plan) return await runBsk(args, signal, timeoutMs);
+
+  try {
+    const result = await ipcCall(plan.sessionKey, plan.method, plan.params, timeoutMs, signal);
+    return withCliTrailingNewline(plan.render(result));
+  } catch (err) {
+    if (err instanceof BskIpcAbortError) {
+      throw new BskAbortError(t("bsk.err.aborted", { cmd: args.join(" ") }));
+    }
+    if (err instanceof BskIpcRpcError) {
+      if (isProtocolDrift(err)) {
+        ipcDisabled = true;
+        debugLog(`[bsk-ipc] daemon 不认 ${plan.method}（bsk 协议已变？），本进程改用 CLI 子进程`);
+        return await runBsk(args, signal, timeoutMs);
+      }
+      throw ipcErrorToCliError(err);
+    }
+    if (err instanceof BskIpcTransportError) {
+      if (err.sent && plan.mutating) {
+        // 动作可能已经生效：不回退、不重发，按「超时且结果未知」交给上层。
+        debugLog(`[bsk-ipc] ${plan.method} 已发出但没拿到结果（${err.message}），不重发`);
+        throw ipcTimeoutToCliError(plan.method, err.message);
+      }
+      ipcSuspendedUntil = Date.now() + IPC_SUSPEND_MS;
+      debugLog(`[bsk-ipc] 快路径不可用（${err.message}），本条改走 CLI 子进程`);
+      return await runBsk(args, signal, timeoutMs);
+    }
+    throw err;
+  }
 }
 
 function runBsk(
@@ -407,6 +540,22 @@ export interface BskOps {
   scroll(target: string, signal?: AbortSignal): Promise<string>;
   wait(ms: number, signal?: AbortSignal): Promise<string>;
   /**
+   * 等页面稳定下来：没有正在播的动画、且 DOM 已经安静一小会儿；已经是稳定状态时立刻返回。
+   *
+   * 与 `wait(ms)` 的区别是**盲等 vs 条件等**：回放里「一步失败后重试」用它替代固定 500ms，
+   * 因为那笔等待的绝大多数花在「页面上根本没有这个元素」上——再等也不会出现。
+   * 上限 `maxMs` 内一定返回，不会把一步拖死。
+   */
+  settle(maxMs?: number, signal?: AbortSignal): Promise<string>;
+  /**
+   * 等到条件成立：页面出现某文本 / 某元素出现 / 某元素消失；到点仍未成立则如实返回「未达成」。
+   *
+   * 与 `wait(ms)` 的区别是**知道在等什么**：条件一成立就走，因此回放里能省掉录制时猜的秒数；
+   * 又不像 `settle` 那样等的是「页面稳定」这个代理指标，条件不成立就一定等满上限，
+   * 因此不存在提前放行的风险。
+   */
+  waitFor(cond: WaitCondition, timeoutMs?: number, signal?: AbortSignal): Promise<string>;
+  /**
    * 断言页面是否包含期望文本：字面包含优先，字面未命中时（Jev 可用）才做语义复核。
    */
   assertText(expectation: string, signal?: AbortSignal): Promise<string>;
@@ -593,6 +742,139 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     }
     await takeSnapshot(signal);
     return snapshotRawText;
+  };
+
+  /**
+   * daemon 端 sleep（`wait-ms` 不接受 --session）。
+   * 抽成本地函数是因为 `settle` 的兜底路径也要用它——写成对象方法会依赖 `this`。
+   */
+  const doWait = async (ms: number, signal?: AbortSignal): Promise<string> => {
+    // 等待本身就是为了让页面变化（异步渲染/动画/弹窗），因此必须置为不新鲜：
+    // 回放的「每步重试前重新取快照」正是靠它生效的。
+    markStale();
+    // 超时按等待时长放宽：一律套默认 60s 的话 wait(90_000) 必然中途被杀，
+    // 报出的还是「daemon 未启动」这种南辕北辙的提示。
+    await bsk(["wait-ms", String(ms)], signal, ms + 30_000);
+    return `已等待 ${ms}ms`;
+  };
+
+  /**
+   * 等页面稳定：**由我们轮询页面侧同步探针**（判定规则与理由见 settle.ts）。
+   *
+   * 页面本来就稳定时只花一次探针（IPC 快路径下是毫秒级）；还在加载/播动画时每
+   * `SETTLE_POLL_MS` 问一次，最多问到 `maxMs`。刻意不使用「页面内 await 一个 Promise」：
+   * 那种写法依赖页面里的定时器，而后台标签页的定时器会被节流到 1s 以上，
+   * 在用户切走窗口的场景下会比它要替代的固定 500ms 盲等还慢（详见 settle.ts 文件头）。
+   *
+   * 这一步同样要置快照为不新鲜——它的意义就是「等页面变完」，之后的重试必须重新取快照，
+   * 否则会拿到变化前的缓存。
+   */
+  const doSettle = async (
+    maxMs: number = SETTLE_MAX_MS,
+    signal?: AbortSignal,
+  ): Promise<string> => {
+    markStale();
+    const started = Date.now();
+    const expr = buildSettleProbeExpression();
+    for (;;) {
+      const elapsed = Date.now() - started;
+      let sample;
+      try {
+        const out = await bsk(
+          ["evaluate", expr, "--session", session, "--timeout", `${SETTLE_PROBE_TIMEOUT_MS}ms`],
+          signal,
+          SETTLE_PROBE_TIMEOUT_MS + 10_000,
+        );
+        sample = parseSettleSample(out);
+      } catch (err) {
+        if (err instanceof BskAbortError) throw err;
+        // 探针本身不可用（页面抛异常、evaluate 被拒）：退回固定短等待，
+        // 「尽量少等」这件事失败了不该把一步回放判死。
+        debugLog(
+          "[bsk] settle 探针失败，退回固定短等待：" +
+            (err instanceof Error ? err.message : String(err)),
+        );
+        await doWait(Math.min(SETTLE_FALLBACK_MS, maxMs), signal);
+        return `页面稳定检测不可用，已等待 ${Math.min(SETTLE_FALLBACK_MS, maxMs)}ms`;
+      }
+      if (!sample) {
+        debugLog("[bsk] settle 探针未返回可解析的结果，退回固定短等待");
+        await doWait(Math.min(SETTLE_FALLBACK_MS, maxMs), signal);
+        return `页面稳定检测不可用，已等待 ${Math.min(SETTLE_FALLBACK_MS, maxMs)}ms`;
+      }
+      if (isSettled(sample, { networkQuietMs: SETTLE_NETWORK_QUIET_MS })) {
+        debugLog(`[bsk] settle：稳定（等待 ${elapsed}ms，${describeSample(sample)}）`);
+        return `页面已稳定（等待 ${elapsed}ms，${describeSample(sample)}）`;
+      }
+      if (elapsed >= maxMs) {
+        debugLog(`[bsk] settle：${maxMs}ms 内未稳定（${describeSample(sample)}），按上限继续`);
+        return `页面未在 ${maxMs}ms 内稳定（${describeSample(sample)}），按上限继续`;
+      }
+      await sleep(Math.min(SETTLE_POLL_MS, maxMs - elapsed));
+    }
+  };
+
+  /**
+   * 等到条件成立（见 condition.ts）：页面**可见文本**出现、元素出现、或元素消失。
+   *
+   * 一条 `evaluate` 探针就是一次 IPC 往返（快路径下毫秒级），因此轮询是便宜的；
+   * 命中判定与超时取证各多花一次 `evaluate`（读 `innerText` 比 `textContent` 贵，
+   * 所以只在需要结论时读，而不是每次轮询都读）。
+   */
+  const doWaitFor = async (
+    cond: WaitCondition,
+    timeoutMs: number = DEFAULT_WAIT_FOR_TIMEOUT_MS,
+    signal?: AbortSignal,
+  ): Promise<string> => {
+    const limit = Math.min(Math.max(1, Math.round(timeoutMs)), MAX_WAIT_FOR_TIMEOUT_MS);
+    // 等待的意义就是让页面变化：缓存的快照一律不能再信（与 wait / settle 同一条规则）。
+    markStale();
+    const probeExpr = buildProbeExpression(cond);
+    const confirmExpr = buildConfirmExpression(cond);
+    const probe = async (expr: string): Promise<string> =>
+      await bsk(
+        ["evaluate", expr, "--session", session, "--timeout", `${SETTLE_PROBE_TIMEOUT_MS}ms`],
+        signal,
+        SETTLE_PROBE_TIMEOUT_MS + 10_000,
+      );
+
+    const outcome = await pollUntil<ConditionProbe>({
+      timeoutMs: limit,
+      intervalMs: WAIT_FOR_POLL_MS,
+      sleep,
+      now: Date.now,
+      // 探针不可解析时返回 null：pollUntil 按「这次没取到」处理，继续轮询到上限。
+      sample: async () => parseProbe(await probe(probeExpr)),
+      isHit: async (sample) => {
+        if (!probeSaysMaybe(cond, sample)) return false;
+        if (!needsConfirm(cond)) return true;
+        // 文本类条件：`textContent` 命中只说明「字在 DOM 里」，还要确认它**看得见**。
+        const confirmed = parseConfirm(await probe(confirmExpr));
+        return confirmed?.visibleHit === true;
+      },
+    });
+
+    const what = describeCondition(cond);
+    if (outcome.hit) {
+      debugLog(`[bsk] wait_for：${what} 已达成（等待 ${outcome.waitedMs}ms，探针 ${outcome.polls} 次）`);
+      return `等待「${what}」：已达成（等待 ${outcome.waitedMs}ms）`;
+    }
+    // 超时：取一次页面当前可见文本作为证据，并明确劝阻「再等一遍」——
+    // 同一个条件等第二遍只会白烧时间，该做的是看清页面现在是什么。
+    let excerpt = "";
+    try {
+      const confirmed = parseConfirm(await probe(confirmExpr));
+      excerpt = confirmed?.excerpt ?? "";
+    } catch (err) {
+      if (err instanceof BskAbortError) throw err;
+      debugLog("[bsk] wait_for 取证失败：" + (err instanceof Error ? err.message : String(err)));
+    }
+    debugLog(`[bsk] wait_for：${what} 未达成（等待 ${outcome.waitedMs}ms）`);
+    return (
+      `等待「${what}」：${limit}ms 内未达成` +
+      (excerpt ? `（页面当前可见文本：「${excerpt}」）` : "") +
+      `。不要重复等待同一个条件，先用 snapshot 确认页面当前状态`
+    );
   };
 
   return {
@@ -857,16 +1139,11 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       return `已滚动到 ${target}${landed}\n${out}`;
     },
 
-    async wait(ms: number, signal?: AbortSignal): Promise<string> {
-      // wait-ms 是 daemon 端 sleep，不接受 --session。
-      // 等待本身就是为了让页面变化（异步渲染/动画/弹窗），因此必须置为不新鲜：
-      // 回放的「每步重试前重新取快照」正是靠它生效的。
-      markStale();
-      // 超时按等待时长放宽：一律套默认 60s 的话 wait(90_000) 必然中途被杀，
-      // 报出的还是「daemon 未启动」这种南辕北辙的提示。
-      await bsk(["wait-ms", String(ms)], signal, ms + 30_000);
-      return `已等待 ${ms}ms`;
-    },
+    wait: doWait,
+
+    settle: doSettle,
+
+    waitFor: doWaitFor,
 
     async assertText(
       expectation: string,
@@ -1212,6 +1489,57 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     },
   };
 
+  const waitFor: AgentTool = {
+    name: "wait_for",
+    label: "Wait For",
+    description:
+      "等到页面出现某个东西：text（等到可见文本出现）、selector（等到元素出现）、gone（等到元素消失，如 loading 遮罩）。" +
+      "三者**只能给一个**。已知在等什么时用它，不要用 wait 猜秒数：条件达成会立刻返回，" +
+      "因此比盲等更快也更稳；到了 timeoutMs（默认 3000）仍未达成会如实返回「未达成」并附上" +
+      "页面当前可见文本，那时应当 snapshot 看清页面，而不是再等一遍。" +
+      "典型用法：等列表刷新出现新行（text/selector）、等弹窗出现（selector）、等遮罩消失（gone）。",
+    parameters: paramsOf(
+      {
+        text: { type: "string", description: "等到页面**可见文本**中出现该文本" },
+        selector: { type: "string", description: "等到该 CSS 选择器命中元素" },
+        gone: { type: "string", description: "等到该 CSS 选择器不再命中元素（如 loading 消失）" },
+        timeoutMs: {
+          type: "number",
+          description: `等待上限（毫秒，默认 ${DEFAULT_WAIT_FOR_TIMEOUT_MS}，最大 ${MAX_WAIT_FOR_TIMEOUT_MS}）`,
+        },
+      },
+      [],
+    ),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = (params as WaitForParams) ?? {};
+      const cond: WaitCondition = {};
+      if (typeof p.text === "string" && p.text.trim()) cond.text = p.text;
+      if (typeof p.selector === "string" && p.selector.trim()) cond.selector = p.selector;
+      if (typeof p.gone === "string" && p.gone.trim()) cond.gone = p.gone;
+      // 三种条件互斥且必居其一：给错就在**本地**报错（不消耗一次浏览器往返），
+      // 且这次失败不会被记进回放脚本（录制层只记成功的操作）。
+      const given = [cond.text, cond.selector, cond.gone].filter(Boolean).length;
+      if (given !== 1) {
+        throw new Error(
+          given === 0
+            ? "wait_for 需要给出 text / selector / gone 中的一个（要等到什么？）"
+            : "wait_for 的 text / selector / gone 只能给一个（分别是「等到文本出现」「等到元素出现」「等到元素消失」）",
+        );
+      }
+      return exec(
+        "wait_for",
+        {
+          ...(cond.text ? { text: cond.text } : {}),
+          ...(cond.selector ? { selector: cond.selector } : {}),
+          ...(cond.gone ? { gone: cond.gone } : {}),
+          ...(typeof p.timeoutMs === "number" ? { timeoutMs: p.timeoutMs } : {}),
+        },
+        (s) => ops.waitFor(cond, p.timeoutMs, s),
+        signal,
+      );
+    },
+  };
+
   const assertText: AgentTool = {
     name: "assert_text",
     label: "Assert Text",
@@ -1244,6 +1572,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     hover,
     scroll,
     wait,
+    waitFor,
     assertText,
   ];
 }
@@ -1270,6 +1599,12 @@ interface DownloadParams {
 }
 interface WaitParams {
   ms?: number;
+}
+interface WaitForParams {
+  text?: string;
+  selector?: string;
+  gone?: string;
+  timeoutMs?: number;
 }
 interface ExpectParams {
   expectation: string;

@@ -8,12 +8,15 @@ import {
 } from "../dist/agent.js";
 import {
   buildChildArgs,
+  ConcurrencySessionConflictError,
   formatUsageLine,
+  isConcurrencySessionConflict,
   mapWithConcurrency,
   MAX_CONCURRENCY,
   parseUsageLine,
   resolveCliEntry,
   runScenarioChild,
+  runSuiteInChildren,
   USAGE_LINE_PREFIX,
 } from "../dist/suite.js";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -35,6 +38,41 @@ const CASE = [
   "打开 https://example.com",
   "断言页面包含 IANA",
 ].join("\n");
+
+describe("并发与共享 session 的语义冲突", () => {
+  test("判定矩阵：只有「多场景 + 并发>1 + 显式 session」才算冲突", () => {
+    assert.equal(isConcurrencySessionConflict(2, 2, "s1"), true);
+    // 一个场景：并发无从谈起，共享 session 照跑
+    assert.equal(isConcurrencySessionConflict(2, 1, "s1"), false);
+    // 并发 1：本来就是一个一个跑，共享 session 正是它的用法
+    assert.equal(isConcurrencySessionConflict(1, 2, "s1"), false);
+    // 没给 session：每个场景自己建 session，这才是并发的前提
+    assert.equal(isConcurrencySessionConflict(2, 2, undefined), false);
+    assert.equal(isConcurrencySessionConflict(2, 2, ""), false);
+  });
+
+  test("命中时在**起浏览器之前**就拒绝：带类型的错 + 可执行的改法", async () => {
+    await assert.rejects(
+      () =>
+        runSuiteInChildren({
+          script: CASE,
+          input: "case.md",
+          sourcePath: null,
+          session: "shared-session",
+          timeoutMs: 1_000,
+          wantScript: false,
+          concurrency: 2,
+        }),
+      (err) => {
+        assert.ok(err instanceof ConcurrencySessionConflictError);
+        assert.equal(err.concurrency, 2);
+        assert.match(err.message, /--session/);
+        assert.match(err.message, /并发设为 1/);
+        return true;
+      },
+    );
+  });
+});
 
 describe("--only 的场景选择", () => {
   test("纯数字按序号（1 起）", () => {

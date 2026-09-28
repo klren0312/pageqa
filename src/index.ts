@@ -24,7 +24,12 @@ import {
 } from "./config.js";
 import { downloadedFiles } from "./downloads.js";
 import type { TestReport, TokenUsage } from "./report.js";
-import { formatUsageLine, MAX_CONCURRENCY, runSuiteInChildren } from "./suite.js";
+import {
+  ConcurrencySessionConflictError,
+  formatUsageLine,
+  MAX_CONCURRENCY,
+  runSuiteInChildren,
+} from "./suite.js";
 import {
   emitSideOutputs,
   writeReportSideOutput,
@@ -72,6 +77,13 @@ interface CliArgs {
   /** `--fail-fast`：回放时任一失败即停止该场景（默认跑完剩余步骤）。 */
   failFast: boolean;
   /**
+   * `--settle-waits`：回放时把 `wait` 步骤当作「等页面稳定，上限为脚本记下的毫秒数」。
+   *
+   * 默认关闭：它的收益是把录制时留下的固定等待（实测占回放墙钟近一半）压成「页面一稳定就走」，
+   * 代价是「为页面之外的事情留的等待」会被提前放行（见 replay.ts 的 ReplayOptions.settleWaits）。
+   */
+  settleWaits: boolean;
+  /**
    * `--only <序号|标题>`：只跑其中一个场景（由 `## 场景名` 分隔出来的那一个）。
    * 批处理选项，与 `--suite` / `--tui` / `--replay` 互斥；见 ADR-0013 决策二。
    */
@@ -115,6 +127,7 @@ export function parseArgs(argv: string[]): CliArgs {  const args: CliArgs = {
     emitScript: false,
     semantic: false,
     failFast: false,
+    settleWaits: false,
     tui: false,
     noTui: false,
     noSideOutputs: false,
@@ -240,6 +253,9 @@ export function parseArgs(argv: string[]): CliArgs {  const args: CliArgs = {
         break;
       case "--fail-fast":
         args.failFast = true;
+        break;
+      case "--settle-waits":
+        args.settleWaits = true;
         break;
       case "--tui":
         args.tui = true;
@@ -583,12 +599,19 @@ async function replayMode(args: CliArgs): Promise<number> {
       scriptPath: path,
       now: new Date(),
       failFast: args.failFast,
+      settleWaits: args.settleWaits,
     });
     const out = args.json ? result.json : result.text;
     if (args.out) writeFileSync(args.out, out + "\n");
     process.stdout.write(out + "\n");
+    // 旁路产物：与批处理路径同一条口径——`--no-side-outputs` 关掉默认产出，
+    // 否则看 /setting 里的开关。回放模式此前**漏了这一层**：无论开关怎么说都照写 HTML 报告，
+    // 于是「零模型的 CI 回放」每次都在工作区留下一份报告文件（ADR-0011 决策三）。
+    const prefs: SideOutputPrefs = args.noSideOutputs
+      ? { htmlReport: false, replayScript: false }
+      : readSideOutputPrefs();
     // 回放用的是现成的脚本、不产出脚本：清单里不列脚本行（ADR-0011 决策五）。
-    emitSideOutputs(writeReportSideOutput(result.report), { kind: "na" }, downloadedFiles());
+    emitSideOutputs(writeReportSideOutput(result.report, prefs), { kind: "na" }, downloadedFiles());
     return result.report.status === "pass" ? 0 : 1;
   } catch (err) {
     process.stderr.write(
@@ -899,6 +922,12 @@ async function main(): Promise<number> {
     }
     return exitCodeFor(result.report);
   } catch (err) {
+    // 并发 + 共享 session 是参数语义冲突：原样给出可执行的改法（去掉 --session / 把并发设为 1），
+    // 一条用例都没跑，同样不该往 stdout 塞报告。
+    if (err instanceof ConcurrencySessionConflictError) {
+      process.stderr.write(err.message + "\n\n");
+      return 1;
+    }
     // 模型不可达是「环境不对」，不是「跑挂了」：给干净的报错 + 出路，不打印一坨栈。
     // 这时一条用例都没执行，stdout 上不该出现一份伪装成结果的报告。
     process.stderr.write(
