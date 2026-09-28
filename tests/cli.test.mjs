@@ -15,6 +15,7 @@ describe("并发量的文案两种语种都不缺", () => {
   const KEYS = [
     "log.suiteParallel",
     "tui.runningMany",
+    "tui.usage.cacheHit",
     "tui.abortScene",
     "tui.abortingCurrent",
     "tui.setting.concurrency",
