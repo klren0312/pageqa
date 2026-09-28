@@ -9,7 +9,8 @@
  * 判定口径（见 docs/adr/0012）：**捕获到一次下载 + 文件真的落盘非空**才算成立；
  * 不校验文件内容——那是导出方自己的事，pageqa 越界去解析 xlsx 只会引入格式耦合。
  */
-import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { readDownloadDir } from "./config.js";
 import { t } from "./i18n.js";
@@ -58,7 +59,7 @@ export function sanitizeFileName(name: string): string {
  *
  * - 用例显式给了 `out` → 原样用它（相对路径按当前工作目录解析），**不加时间戳前缀**：
  *   显式路径就是要「就在那儿、就叫这个名」，加前缀等于不认用户的指定。
- * - 没给 → `<下载目录>/<时间戳>-<服务器建议名>`。与 HTML 报告「文件名带时间戳、多次运行
+ * - 没给 → `<本次运行目录>/<时间戳>-<服务器建议名>`。与 HTML 报告「文件名带时间戳、多次运行
  *   互不覆盖」是同一套做法：一次运行一次证据，回放反复跑也不会把上一次的文件吃掉。
  */
 export function downloadDestination(opts: {
@@ -72,7 +73,7 @@ export function downloadDestination(opts: {
   }
   const stamp = formatLocalTime(opts.now, STAMP_FORMAT);
   const name = sanitizeFileName(opts.suggestedName ?? FALLBACK_NAME);
-  return join(downloadDir(), `${stamp}-${name}`);
+  return join(runDownloadDir(), `${stamp}-${name}`);
 }
 
 /** 解析最终生效的下载目录（配置值优先，相对路径按当前工作目录解析）。 */
@@ -82,16 +83,64 @@ export function downloadDir(): string {
 }
 
 /**
+ * 本次运行的下载子目录名：`run-<启动时间戳>-<pid>-<随机短串>`。
+ *
+ * 三段各有分工——**pid** 把并发跑着的两个场景分开（套件模式下每个场景一个子进程，
+ * 见 ADR-0013）；**启动时间戳**让「这批文件是哪次运行留下的」一眼可读；**随机短串**
+ * 兜住「pid 被系统回收后在同一个 pid 值上再来一次」那种理论窗口（Windows 的 pid
+ * 分配会较快复用，只靠 pid + 秒级时间戳并不能说死）。
+ */
+export function runDownloadDirName(
+  startedAt: Date,
+  pid: number,
+  token: string,
+): string {
+  return `run-${formatLocalTime(startedAt, STAMP_FORMAT)}-${pid}-${token}`;
+}
+
+/** 本次运行的身份：进程一开始就定下来，进程内不再变。 */
+const runStartedAt = new Date();
+const runToken = randomBytes(3).toString("hex");
+
+/** 已算出的本次运行目录；`undefined` 表示这次运行还没碰过默认落盘路径。 */
+let scopedDir: string | undefined;
+
+/**
+ * 本次运行专属的下载目录：`<下载目录>/run-<启动时间戳>-<pid>-<随机串>`。
+ *
+ * 为什么要在下载目录之下再分一层：并发跑场景时**一个场景一个子进程**，而捕获下载
+ * 绕不开「先落到临时名、拿到服务器建议名后再改名」（见 downloadStagingPath），临时名里
+ * 只有秒级时间戳与**进程内**计数器——两个子进程在同一秒发起捕获就会算出同一个临时路径。
+ * 默认路径不带 `--overwrite`（bsk 默认拒绝覆盖已存在文件），后到的那个捕获直接失败，
+ * 按既定口径被记成一条**不成立的断言**：明明是并发撞名，报告里却像「页面没下载」。
+ * 最终落盘名的同秒同名也要靠 uniquePath 的「先查后改」退让，而跨进程时那是一次 TOCTOU
+ * （两个进程同时查、同时都没看到，于是都选中同一个路径，后者把前者覆盖掉）。
+ *
+ * 落到每进程一个目录之后，进程之间不再共享任何路径；而进程之内是单线程同步写，
+ * uniquePath 的「先查后改」中间不会被插入别的动作，因此无需再加锁。
+ */
+export function runDownloadDir(): string {
+  scopedDir ??= join(
+    downloadDir(),
+    runDownloadDirName(runStartedAt, process.pid, runToken),
+  );
+  return scopedDir;
+}
+
+/**
  * 捕获用的临时落盘路径。
  *
  * 必须先落到临时名再改名：bsk 要求**先给 `--out`** 才能开始捕获，而「服务器建议的文件名」
  * 只有捕获完成后才知道——想用建议名命名，就绕不开这一跳。临时文件与最终文件同目录，
  * 改名是同卷操作，不会退化成复制。
+ *
+ * 落点也在本次运行目录里（见 runDownloadDir）：临时名的去重序号是进程内的，跨进程
+ * 并发时会算出同一个路径，而 bsk 默认拒绝覆盖已存在文件。
  */
 export function downloadStagingPath(now: Date): string {
   stagingSeq += 1;
   const stamp = formatLocalTime(now, STAMP_FORMAT);
-  return join(downloadDir(), `.pageqa-staging-${stamp}-${stagingSeq}.part`);
+  return join(runDownloadDir(), `.pageqa-staging-${stamp}-${stagingSeq}.part`);
 }
 
 /** 按需创建目录（显式路径的父目录也一并创建：写不进去比晚创建更糟）。 */
@@ -242,6 +291,26 @@ export function flushDownloadCleanup(): void {
     if (!cleanupDownloadedFile(path)) continue;
     const artifact = captured.find((a) => a.path === path && !a.cleaned);
     if (artifact) artifact.cleaned = true;
+  }
+  // 文件清完之后，把本次运行目录本身也收掉——否则回归跑一百次就堆一百个空目录，
+  // 而「按结论清理」的初衷（ADR-0012 决策七）是不留垃圾。只在这次运行真的用过
+  // 默认落盘路径时才动它（`scopedDir` 为空说明压根没建过这个目录，不该凭空创建再来删）。
+  if (scopedDir) removeDirIfEmpty(scopedDir);
+}
+
+/**
+ * 尽力收掉一个目录：**非递归**，非空就失败。
+ *
+ * 「非空」正是我们要的判据——目录里还留着失败证据（断言不成立时的文件）、或被
+ * `downloadCleanup: false` 点名保留的文件时，删除自然失败、目录原地留下，
+ * 不需要维护「这个目录该不该留」的第二套判断。
+ * 目录不存在、被占用、没权限同理：都不是问题，不该因此惊动人。
+ */
+export function removeDirIfEmpty(dir: string): void {
+  try {
+    rmdirSync(dir);
+  } catch {
+    // 非空 / 已被删掉 / 删不动：都不是「出问题」，如实留着就好。
   }
 }
 

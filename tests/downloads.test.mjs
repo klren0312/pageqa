@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
@@ -10,11 +10,15 @@ import {
   downloadDir,
   downloadExpectation,
   downloadRetention,
+  downloadStagingPath,
   downloadedFiles,
   flushDownloadCleanup,
   matchFileName,
   recordDownloaded,
+  removeDirIfEmpty,
   resetDownloadedFiles,
+  runDownloadDir,
+  runDownloadDirName,
   sanitizeFileName,
 } from "../dist/downloads.js";
 import { Recorder } from "../dist/record.js";
@@ -75,9 +79,9 @@ describe("下载产物：落盘路径", () => {
     assert.equal(path, resolve("out/报表.xlsx"));
   });
 
-  test("默认路径 = 下载目录/时间戳-服务器建议名", () => {
+  test("默认路径 = 本次运行目录/时间戳-服务器建议名", () => {
     const path = downloadDestination({ suggestedName: "报表.xlsx", now: NOW });
-    assert.equal(dirname(path), downloadDir());
+    assert.equal(dirname(path), runDownloadDir());
     assert.equal(basename(path), "20260923-172511-报表.xlsx");
   });
 
@@ -89,7 +93,60 @@ describe("下载产物：落盘路径", () => {
   test("建议名里的非法字符在落盘前就被清洗掉", () => {
     const path = downloadDestination({ suggestedName: "../evil.xlsx", now: NOW });
     assert.equal(basename(path), "20260923-172511-_evil.xlsx");
-    assert.equal(dirname(path), downloadDir());
+    assert.equal(dirname(path), runDownloadDir());
+  });
+});
+
+describe("下载产物：本次运行的下载目录", () => {
+  test("目录名 = run-启动时间戳-pid-随机串（三段各有分工）", () => {
+    assert.equal(
+      runDownloadDirName(NOW, 4242, "ab12cd"),
+      "run-20260923-172511-4242-ab12cd",
+    );
+  });
+
+  test("同一秒内不同进程（pid 不同）算出不同目录：并发跑的场景互不共享落盘路径", () => {
+    const a = runDownloadDirName(NOW, 100, "ab12cd");
+    const b = runDownloadDirName(NOW, 101, "ab12cd");
+    assert.notEqual(a, b);
+    // pid 被回收复用（同 pid、同一秒）时由随机串兜住
+    const c = runDownloadDirName(NOW, 100, "ffffffff");
+    assert.notEqual(a, c);
+  });
+
+  test("运行目录挂在下载目录之下，且同一进程内算多少次都是同一个", () => {
+    const dir = runDownloadDir();
+    assert.equal(dirname(dir), downloadDir());
+    assert.match(basename(dir), /^run-\d{8}-\d{6}-\d+-[0-9a-f]{6}$/);
+    assert.equal(runDownloadDir(), dir);
+  });
+
+  test("默认落盘路径与临时落盘路径同目录（改名是同卷操作）", () => {
+    const dest = downloadDestination({ suggestedName: "报表.xlsx", now: NOW });
+    const staging = downloadStagingPath(NOW);
+    assert.equal(dirname(dest), dirname(staging));
+  });
+});
+
+describe("下载产物：收尾删掉空的运行目录", () => {
+  test("空目录被删掉", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pageqa-dl-rmdir-"));
+    assert.equal(existsSync(dir), true);
+    removeDirIfEmpty(dir);
+    assert.equal(existsSync(dir), false);
+  });
+
+  test("还有保留文件的目录原地留下（失败证据不许被顺手清掉）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pageqa-dl-rmdir-keep-"));
+    const kept = join(dir, "报表.xls");
+    writeFileSync(kept, "x", "utf8");
+    removeDirIfEmpty(dir);
+    assert.equal(existsSync(kept), true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("目录不存在也不报错（收尾是尽力而为）", () => {
+    removeDirIfEmpty(join(tmpdir(), "pageqa-dl-not-there"));
   });
 });
 
