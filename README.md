@@ -62,13 +62,14 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 ├──────────────────────────────────────────────────────────┤
 │ Status line: current model · pending count · write-back     │
 │ > input box (fixed at bottom)                               │
-│ Token usage: input … / output … / total … (LLM calls n)     │
+│ Token usage: input … / output … / total … · cache hit …%    │
 │ hint line                                                  │
 └──────────────────────────────────────────────────────────┘
 ```
 
 - **Kanban band**: all scenarios grouped into 5 columns by state (waiting / running / pass / fail / cancelled); the running column shows live elapsed time. Only the most recent few cards per column fit, with `+N more` when exceeded. Display-only (no click actions); hidden entirely below 90 columns so the log keeps the space.
 - **Status line** always shows: current model, pending count, written-back count, and the **write-back target** (the case file appended scenarios are written back to; when none, it says so — appended scenarios then live only in this session and are lost on exit).
+- **Token line** (under the input box) is the same sentence as the report's last line, with the running scenarios' live values, **plus the cache hit rate**: `cache hit 92%` = cache read / (input + cache read), i.e. how much of this input came back from the prompt cache. Seeing it hold steady while a run is in progress means the prompt prefix is stable and the cache keeps hitting. When the denominator is zero (replay, endpoint returned no usage, nothing called yet) that part is simply not shown, rather than printing a 0%.
 
 ### Submitting scenarios
 

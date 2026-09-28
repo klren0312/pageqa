@@ -60,6 +60,7 @@ import {
 import { EnvironmentUnavailableError, runScenarioInChild } from "../suite.js";
 import { info, setSink } from "../log.js";
 import {
+  cacheHitRate,
   emptyUsage,
   formatUsage,
   mergeUsage,
@@ -1103,6 +1104,23 @@ export async function runInteractive(
     kanban.setText(rows.join("\n"));
   }
 
+  /**
+   * TUI 专用的用量行：报告末行那句话 + **缓存命中率**。
+   *
+   * 命中率只加在 TUI：它的价值在于**实时反馈**——跑着看到「命中 92%」就说明 prompt
+   * 前缀稳定、缓存一直在命中；报告的末行是事后贴给人看的，绝对数已经够。
+   * 命中率算不出来时（回放、端点没返回用量、还没开始调用）就不加这一段，而不是硬写
+   * 一个 0%——那会被读成「完全没命中」。缓存读/写的绝对值本来就在同一行里，不重复。
+   */
+  function tuiUsageLine(usage: TokenUsage): string {
+    const line = formatUsage(usage);
+    const hit = cacheHitRate(usage);
+    if (hit === null) return line;
+    return (
+      line + "  ·  " + t("tui.usage.cacheHit", { pct: Math.round(hit * 100) })
+    );
+  }
+
   function updateStatus(): void {
     const all = queue.all();
     const runningAll = queue.runningAll();
@@ -1156,7 +1174,7 @@ export async function runInteractive(
     statusLine.setText(bits.join(dim("  ·  ")));
     // token 消耗放在**输入框下方**（与报告末行同一句话：`formatUsage`），含正在跑的场景的
     // 实时值，每轮 LLM 调用后随 updateStatus 一起刷新；端点没返回 usage 时它会自己说明。
-    usageLine.setText(formatUsage(sessionUsage()));
+    usageLine.setText(tuiUsageLine(sessionUsage()));
     renderKanban();
     tui.requestRender();
   }

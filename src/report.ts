@@ -159,6 +159,23 @@ export function formatUsage(usage?: TokenUsage, mode?: TestReport["mode"]): stri
 }
 
 /**
+ * 缓存命中率：这次**输入侧**的 token 里有多少是命中缓存读回来的（0..1）。
+ *
+ * 分母只取 `input + cacheRead`：`input` 在端点不返回 `totalTokens` 时被定义为
+ * 「不含缓存的那部分输入」（见 `addUsage` 的合计口径），输出与缓存无关，
+ * 混进分母只会让这个数字随输出长度漂移。
+ *
+ * 没有可统计的输入（还没调用过、端点是回放、端点没返回用量）时返回 `null`，
+ * 由调用方决定怎么显示——**不要**回落成 0，那会被读成「完全没命中」。
+ */
+export function cacheHitRate(usage?: TokenUsage): number | null {
+  if (!usage) return null;
+  const denominator = usage.input + usage.cacheRead;
+  if (denominator <= 0) return null;
+  return usage.cacheRead / denominator;
+}
+
+/**
  * 组装报告。
  *
  * 断言以 `assert_text` 工具的**结构化结果**为准（`toolAssertions`）：工具返回的

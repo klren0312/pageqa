@@ -443,6 +443,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.sourceFile": "源用例文件：{path}（追加场景会写回这里）",
     "tui.running": "运行中 {i}/{n}（{duration}）",
     "tui.runningMany": "运行中 {n} 个 · 最早「{name}」已跑 {duration}",
+    "tui.usage.cacheHit": "缓存命中 {pct}%",
     "tui.notExecuted": "未执行",
     "tui.notRunSuffix": "（该场景未运行）",
     "tui.scenarioErrorExpectation": "场景正常执行完毕（未因错误中断）",
@@ -1186,6 +1187,7 @@ const catalogs: Record<Locale, Catalog> = {
       "source case file: {path} (appended scenarios are written back here)",
     "tui.running": "running {i}/{n} ({duration})",
     "tui.runningMany": "{n} running · oldest \"{name}\" for {duration}",
+    "tui.usage.cacheHit": "cache hit {pct}%",
     "tui.notExecuted": "not executed",
     "tui.notRunSuffix": " (this scenario did not run)",
     "tui.scenarioErrorExpectation":
