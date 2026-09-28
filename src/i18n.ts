@@ -70,6 +70,23 @@ const catalogs: Record<Locale, Catalog> = {
     "log.suiteStart": "[pageqa] 套件共 {n} 个场景：{names}",
     "log.suiteScenario": "[pageqa] ═══ 场景 {i}/{n}：{name} ═══",
     "log.suiteScenarioEnd": "[pageqa] ═══ 场景 {i}/{n} 结束：{status} ═══",
+    // ── 套件的子进程编排（src/suite.ts，见 ADR-0013）──
+    "log.suiteChildProbe":
+      "[pageqa] 场景 {i}/{n} 没有产出报告，回查模型与浏览器环境…",
+    "log.suiteChildTimeout":
+      "[pageqa] 场景 {i}/{n} 超过 {sec}s 的场景级上限，已终止子进程并记为失败，继续后续场景",
+    "log.suiteChildCrash":
+      "[pageqa] 场景 {i}/{n} 的子进程异常结束（{how}），记为失败，继续后续场景",
+    "log.suiteInfraGone":
+      "[pageqa] 环境不可用（{msg}）：已完成 {done} 个场景，不再开始新的场景",
+    "log.suiteModelGone":
+      "[pageqa] 模型不可达：已完成 {done} 个场景，不再开始新的场景",
+    "log.suiteParallel":
+      "[pageqa] 并发上限 {n}：同时最多跑 {n} 个场景，每个一个子进程与一个浏览器窗口",
+    "log.onlySelected":
+      "[pageqa] --only {selector} → 只跑第 {i}/{n} 个场景「{name}」",
+    "log.sideOutputsOff":
+      "[pageqa] 旁路产物已关闭：不生成 HTML 报告，也不默认生成回放脚本",
     "log.undeclared": "未声明",
 
     // ── CLI 错误（src/index.ts）──
@@ -80,9 +97,34 @@ const catalogs: Record<Locale, Catalog> = {
     "err.modelUnreachable": "模型不可达：{provider}/{model}：{msg}",
     "err.modelUnreachableHint":
       "本次没有执行任何用例。修好端点后重试：交互模式用 /model 换一个模型（或 /login 登录 provider）；批处理模式检查 ~/.pageqa/config.json 的 baseUrl 与 apiKey（本地反代没起也会这样）。",
+    "err.modelUnreachableHintMid":
+      "套件已经跑完 {done} 个场景，剩余的记为「已取消」；上面的报告是已完成的那部分（退出码 1）。修好端点后可对被取消的场景逐个重跑（--only）。",
+    "err.childEntryMissing":
+      "内部错误：找不到子进程入口脚本（{path}），无法把场景放到独立进程里执行。若是从源码运行，请先构建（npm run build）；见 ADR-0013",
+    "err.envUnavailable":
+      "环境不可用（{msg}）：浏览器环境跑不起来，后续场景不再执行",
     "err.modelProbeTimeout": "探活请求 {ms} 毫秒内没有响应",
     "err.modelProbeNoReason": "端点未给出失败原因",
     "err.outRequired": "--out 需要一个文件路径参数",
+    "err.onlyRequired": "--only 需要一个场景标识：序号，或场景标题原文",
+    "err.onlyNotFound":
+      "找不到场景「{selector}」：这份用例有 {n} 个场景（序号 1-{n}），标题依次是 {names}",
+    "err.onlyNeedsScenarios":
+      "参数错误：--only 需要一份用「## 场景名」分隔的用例。整份用例只有一个场景时，直接跑它就是它本身",
+    "err.onlyWithSuite":
+      "参数错误：--only 与 --suite 不能同时使用（--only 本身就是「只跑其中一个场景」）",
+    "err.onlyWithTui":
+      "参数错误：--only 不能与 --tui 同时使用（--only 是批处理选项，交互模式下一次跑整份用例）",
+    "err.onlyWithReplay":
+      "参数错误：--only 不能与 --replay 同时使用（回放按脚本里的场景顺序整体执行）",
+    "err.concurrencyRequired": "--concurrency 需要一个正整数参数（同时跑几个场景）",
+    "err.concurrencyInvalid":
+      "参数错误：--concurrency 只收正整数，收到「{value}」",
+    "err.concurrencyMax":
+      "参数错误：--concurrency 最大 {max}，收到 {n}。并发的代价是同时开着同样多的浏览器窗口（一个场景一个 session 一个窗口），所以不做静默截断",
+
+    "err.concurrencyWithReplay":
+      "参数错误：--concurrency 不能与 --replay 同时使用（回放零模型、按脚本顺序执行，不走场景调度器）",
     "err.replayRequired": "--replay 需要一个回放脚本路径",
     "err.unknownOption":
       "未知选项：{a}（用 --help 查看全部选项；若用例文本以 - 开头，请放在 -- 之后）",
@@ -320,6 +362,13 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.setting.hint": "↑↓ 选择 · Enter 切换 · Esc 关闭 · 配置: {path}",
     "tui.setting.saved": "已更新：{name} = {value}",
     "tui.setting.failed": "写入配置失败：{msg}",
+    "tui.setting.concurrency": "并发量",
+    "tui.setting.concurrencyTitle": "同时跑几个场景（↑↓ 选择 · Enter 确认 · Esc 取消）",
+    "tui.setting.concurrencyOne": "1 个（逐个跑，默认）",
+    "tui.setting.concurrencyMany": "{n} 个（同时最多 {n} 个，也就是 {n} 个浏览器窗口）",
+    "tui.setting.concurrencyCurrent": "· 当前",
+    "tui.setting.concurrencySaved":
+      "并发量已设为 {n}：之后派发的场景立刻生效，并已写回 {path}",
 
     // ── 模型切换与登录 ──
     "tui.model.status": "模型 {model}",
@@ -345,6 +394,10 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.model.stopRun":
       "已停止执行剩余 {n} 个场景：模型不通时继续跑，只会把一次配置错误摊成一堆「用例失败」，每个还要白开一次浏览器。",
     "tui.model.stopNote": "模型不可达，已停止执行",
+    "tui.env.expectation": "浏览器环境可用（不可用则不执行用例）",
+    "tui.env.stopNote": "浏览器环境不可用，已停止执行",
+    "tui.env.stopRun":
+      "已停止执行剩余 {n} 个场景：浏览器环境跑不起来时继续跑，只会得到一堆同样的失败。",
     "tui.login.title": "选择要登录的 provider（Esc 取消）",
     "tui.login.methodTitle": "选择 {provider} 的登录方式（Esc 取消）",
     "tui.login.methodOauth": "订阅登录：{label}",
@@ -378,17 +431,18 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.signalReason": "Ctrl+C（终端信号）",
     "tui.shutdownNow":
       "再按一次 Ctrl+C：不再等队列停下，立刻收尾（汇总报告照打）",
-    "tui.abortingCurrent": "正在中止当前场景…",
+    "tui.abortingCurrent": "正在中止 {n} 个在跑的场景…",
     "tui.cancelledWaiting": "已取消 {n} 个未开始的待办",
     "tui.abortTimeout":
       "中止超时，强制收尾（该场景的报告可能缺失）",
     "tui.abortScene":
-      '已请求中止场景「{name}」，剩余步骤不再执行',
+      "已请求中止 {n} 个在跑的场景（{names}），剩余步骤不再执行",
     "tui.enterHint":
       "输入一段自然语言用例并回车即可追加场景（有落点时写回该文件）；/run <用例文件> 加载已有用例；/help 查看命令。",
     "tui.interactiveStart": "交互模式：{n} 个初始场景已入队",
     "tui.sourceFile": "源用例文件：{path}（追加场景会写回这里）",
     "tui.running": "运行中 {i}/{n}（{duration}）",
+    "tui.runningMany": "运行中 {n} 个 · 最早「{name}」已跑 {duration}",
     "tui.notExecuted": "未执行",
     "tui.notRunSuffix": "（该场景未运行）",
     "tui.scenarioErrorExpectation": "场景正常执行完毕（未因错误中断）",
@@ -437,6 +491,12 @@ const catalogs: Record<Locale, Catalog> = {
     "report.agentErrorExpectation": "agent 正常执行完毕（未因错误中断）",
     "report.suiteSummaryBase": "共 {n} 个场景，通过 {passed} 个",
     "report.suiteSummaryCancelled": "，已取消 {cancelled} 个",
+    // 异常终止的归因（`ScenarioDetail.reason`）在人读报告里的说法（见 ADR-0013 决策七）。
+    "report.reason.crash": "子进程异常结束（{how}），本场景没有跑完",
+    "report.reason.timeout":
+      "超过 {sec} 秒的场景级上限，已终止子进程",
+    "report.reason.infrastructure": "环境不可用（{msg}），本场景没有执行",
+    "report.cancelEnvGone": "环境不可用，本场景没有执行",
 
     // ── HTML 报告（src/report-html.ts）──
     "reportHtml.generatedAt": "生成时间: {time}",
@@ -551,6 +611,21 @@ const catalogs: Record<Locale, Catalog> = {
   --locale <zh|en> 界面/日志/报告的显示语种（默认 zh；可用 PAGEQA_LOCALE 环境变量）
   --json           输出 JSON 报告
   --suite          强制按多场景套件运行（即使只有一个场景）
+  --concurrency <n>
+                   同时跑几个场景（**上限**，默认 1 = 逐个跑；也可用 PAGEQA_CONCURRENCY）
+                   并行等于声明「这些场景互不依赖」，所以默认不开：串行是
+                   「创建 → 编辑 → 删除」这类隐含顺序依赖的保护
+                   代价是同时开着 n 个浏览器窗口（一个场景一个 session 一个窗口）
+                   最大 8，超过直接报错（不静默截断）
+                   交互模式也认它：这个值只是本次会话的起点，进去之后用
+                   /setting 里的「并发量」随时改（改完立刻生效并写回配置）
+                   --replay 不走场景调度器，并发对回放没有意义
+  --only <序号|标题>
+                   只跑其中一个场景（被「## 场景名」分隔出来的那一个）
+                  序号从 1 起；不是纯数字时按场景标题**精确**匹配（大小写不敏感）
+                  匹配不到会报错并列出全部场景标题；刻意不做模糊匹配
+                  输出仍是一份套件形态的报告（只有一个场景），便于 CI 统一解析
+                  不能与 --suite / --tui / --replay 同时使用
   --tui            强制进入交互模式（默认在交互式终端下自动进入，见下方「交互模式」）
   --no-tui         不要交互模式（只想看滚动日志、或排障时用）
                   也可用环境变量关闭：PAGEQA_NO_TUI=1
@@ -567,6 +642,12 @@ const catalogs: Record<Locale, Catalog> = {
   --semantic       回放时断言改用 Jev 语义判断（默认字符串包含）
   --init-config    在用户目录创建/重置配置文件
   --out <file>     将报告写入文件
+  --no-side-outputs
+                   不写旁路产物：既不生成 HTML 测试报告，也不默认生成回放脚本
+                   stdout 上的报告与退出码不受影响（CI 只取 stdout 时用）
+                   显式给出的 --emit-script <path> 仍然生效（显式请求优先）
+  --usage-stream   把 LLM 用量的结构化记录逐次打到 stderr（一行一次，前缀 [pageqa:usage]）
+                   场景在独立子进程里执行时，父进程靠它把「已经烧了多少」实时带回来
   --debug          显示调试日志（bsk 命令、快照体积、上下文裁剪、Jev 请求详情）
   -v, --version    显示版本号
   -h, --help       显示帮助
@@ -597,8 +678,9 @@ const catalogs: Record<Locale, Catalog> = {
 
   - 提交的场景会**立即追加写回源用例文件**（原文原样保留，含运行时占位符），
     因此「pageqa --tui examples/smoke.md」会改动该文件。
-  - 场景串行执行：每个场景各自创建并关闭自己的 bsk session 与浏览器窗口，
-    排队中的场景在轮到它执行时才创建 session。
+  - 场景串行执行，且**每个场景跑在自己的子进程里**（见 docs/adr/0013）：
+    某个场景把浏览器或 bsk daemon 搞崩时只影响它自己，后面的场景照跑。
+    父进程持有 session 与浏览器窗口的生命周期，轮到某个场景时才为它创建。
   - 不能与 --json / --replay / --session 同时使用（前两个要独占 stdout 或无需等待，
     第三个与「场景各有独立 session」冲突）。
   - 回放脚本默认生成：退出时把跑过的场景按来源写成脚本，已取消的场景不含在内；
@@ -707,6 +789,23 @@ const catalogs: Record<Locale, Catalog> = {
       "[pageqa] ═══ scenario {i}/{n}: {name} ═══",
     "log.suiteScenarioEnd":
       "[pageqa] ═══ scenario {i}/{n} ended: {status} ═══",
+    // ── suite child-process orchestration (src/suite.ts, see ADR-0013) ──
+    "log.suiteChildProbe":
+      "[pageqa] scenario {i}/{n} produced no report; re-checking the model and browser environment…",
+    "log.suiteChildTimeout":
+      "[pageqa] scenario {i}/{n} exceeded the {sec}s per-scenario limit; the child was killed and recorded as failed, moving on to the next scenario",
+    "log.suiteChildCrash":
+      "[pageqa] scenario {i}/{n} child process ended abnormally ({how}); recorded as failed, moving on to the next scenario",
+    "log.suiteInfraGone":
+      "[pageqa] environment unavailable ({msg}): {done} scenario(s) done, no new scenario will start",
+    "log.suiteModelGone":
+      "[pageqa] model unreachable: {done} scenario(s) done, no new scenario will start",
+    "log.suiteParallel":
+      "[pageqa] concurrency limit {n}: up to {n} scenarios run at once, each with its own child process and browser window",
+    "log.onlySelected":
+      "[pageqa] --only {selector} → running only scenario {i}/{n} \"{name}\"",
+    "log.sideOutputsOff":
+      "[pageqa] side outputs disabled: no HTML report, and no default replay script",
     "log.undeclared": "undeclared",
 
     // ── CLI errors ──
@@ -717,9 +816,36 @@ const catalogs: Record<Locale, Catalog> = {
     "err.modelUnreachable": "model unreachable: {provider}/{model}: {msg}",
     "err.modelUnreachableHint":
       "no scenario was executed. Fix the endpoint and retry: in interactive mode use /model to pick another model (or /login to sign in a provider); in batch mode check baseUrl and apiKey in ~/.pageqa/config.json (a stopped local proxy looks exactly like this).",
+    "err.modelUnreachableHintMid":
+      "the suite had already run {done} scenario(s); the rest are recorded as \"cancelled\". The report above covers what did run (exit code 1) — re-run the cancelled scenarios individually with --only once the endpoint is fixed.",
+    "err.childEntryMissing":
+      "internal error: the child-process entry script was not found ({path}), so scenarios cannot be run in separate processes. If you are running from source, build first (npm run build); see ADR-0013",
+    "err.envUnavailable":
+      "environment unavailable ({msg}): the browser environment cannot run, so remaining scenarios are skipped",
     "err.modelProbeTimeout": "the probe got no response within {ms} ms",
     "err.modelProbeNoReason": "the endpoint reported no failure reason",
     "err.outRequired": "--out needs a file path argument",
+    "err.onlyRequired":
+      "--only needs a scenario identifier: an index, or the exact scenario title",
+    "err.onlyNotFound":
+      "no scenario matches \"{selector}\": this case has {n} scenario(s) (indexes 1-{n}) titled {names}",
+    "err.onlyNeedsScenarios":
+      "argument error: --only needs a case split by \"## title\". A case with a single scenario is already just that scenario",
+    "err.onlyWithSuite":
+      "argument error: --only cannot be used with --suite (--only already means \"run just this one scenario\")",
+    "err.onlyWithTui":
+      "argument error: --only cannot be used with --tui (--only is a batch-mode option; interactive mode runs the whole case file)",
+    "err.onlyWithReplay":
+      "argument error: --only cannot be used with --replay (replay walks the script's scenarios in order)",
+    "err.concurrencyRequired":
+      "--concurrency needs a positive integer (how many scenarios to run at once)",
+    "err.concurrencyInvalid":
+      "argument error: --concurrency accepts a positive integer only, got \"{value}\"",
+    "err.concurrencyMax":
+      "argument error: --concurrency is capped at {max}, got {n}. Concurrency costs the same number of simultaneously open browser windows (one scenario, one session, one window), so this is not silently clamped",
+
+    "err.concurrencyWithReplay":
+      "argument error: --concurrency cannot be used with --replay (replay is zero-model and walks the script in order; it never uses the scenario scheduler)",
     "err.replayRequired": "--replay needs a replay script path",
     "err.unknownOption":
       "unknown option: {a} (see --help for all options; if the case text starts with -, put it after --)",
@@ -971,6 +1097,15 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.setting.hint": "↑↓ select · Enter toggles · Esc closes · config: {path}",
     "tui.setting.saved": "updated: {name} = {value}",
     "tui.setting.failed": "failed to write config: {msg}",
+    "tui.setting.concurrency": "concurrency",
+    "tui.setting.concurrencyTitle":
+      "how many scenarios run at once (↑↓ select · Enter confirms · Esc cancels)",
+    "tui.setting.concurrencyOne": "1 (one at a time, the default)",
+    "tui.setting.concurrencyMany":
+      "{n} (up to {n} at once, i.e. {n} browser windows)",
+    "tui.setting.concurrencyCurrent": "· current",
+    "tui.setting.concurrencySaved":
+      "concurrency set to {n}: takes effect for scenarios dispatched from now on, and was written back to {path}",
 
     // ── model switching & login ──
     "tui.model.status": "model {model}",
@@ -998,6 +1133,11 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.model.stopRun":
       "stopped the remaining {n} scenario(s): running on with a dead model only turns one config error into a pile of \"scenario failed\", each paying for a browser window that is thrown away.",
     "tui.model.stopNote": "model unreachable, run stopped",
+    "tui.env.expectation":
+      "the browser environment is usable (no scenario runs when it is not)",
+    "tui.env.stopNote": "browser environment unavailable, run stopped",
+    "tui.env.stopRun":
+      "stopped the remaining {n} scenario(s): running on with an unusable browser environment only produces the same failure over and over.",
     "tui.login.title": "Select a provider to sign in (Esc to cancel)",
     "tui.login.methodTitle":
       "Choose how to sign in to {provider} (Esc to cancel)",
@@ -1033,18 +1173,19 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.signalReason": "Ctrl+C (terminal signal)",
     "tui.shutdownNow":
       "Ctrl+C again: not waiting for the queue, finishing now (the summary is still printed)",
-    "tui.abortingCurrent": "aborting current scenario…",
+    "tui.abortingCurrent": "aborting {n} running scenario(s)…",
     "tui.cancelledWaiting": "cancelled {n} not-yet-started pending item(s)",
     "tui.abortTimeout":
       "abort timed out, forcing finish (this scenario's report may be missing)",
     "tui.abortScene":
-      'requested abort of scenario "{name}", remaining steps will not run',
+      "requested abort of {n} running scenario(s) ({names}); remaining steps will not run",
     "tui.enterHint":
       "type a natural-language case and press Enter to append a scenario (written back to the write-back target, if any); /run <case file> loads an existing case; /help for commands.",
     "tui.interactiveStart": "interactive mode: {n} initial scenario(s) queued",
     "tui.sourceFile":
       "source case file: {path} (appended scenarios are written back here)",
     "tui.running": "running {i}/{n} ({duration})",
+    "tui.runningMany": "{n} running · oldest \"{name}\" for {duration}",
     "tui.notExecuted": "not executed",
     "tui.notRunSuffix": " (this scenario did not run)",
     "tui.scenarioErrorExpectation":
@@ -1097,6 +1238,15 @@ const catalogs: Record<Locale, Catalog> = {
     "report.suiteSummaryBase":
       "{n} scenario(s) in total, {passed} passed",
     "report.suiteSummaryCancelled": ", {cancelled} cancelled",
+    // human-readable wording for the abnormal-termination reason (see ADR-0013 decision 7)
+    "report.reason.crash":
+      "child process ended abnormally ({how}); this scenario did not finish",
+    "report.reason.timeout":
+      "exceeded the {sec}s per-scenario limit; the child process was killed",
+    "report.reason.infrastructure":
+      "environment unavailable ({msg}); this scenario was not executed",
+    "report.cancelEnvGone":
+      "environment unavailable; this scenario was not executed",
 
     "reportHtml.generatedAt": "generated at: {time}",
     "reportHtml.duration": "duration: {dur}",
@@ -1215,6 +1365,26 @@ Options:
   --locale <zh|en> display language for the UI / logs / report (default zh; PAGEQA_LOCALE env also works)
   --json           output a JSON report
   --suite          force multi-scenario suite mode (even for a single scenario)
+  --concurrency <n>
+                  how many scenarios run at once (**a limit**, default 1 = one at a time;
+                  PAGEQA_CONCURRENCY also works)
+                  parallelism is a claim that "these scenarios do not depend on each other",
+                  so it is off by default: running in order is what protects implicit
+                  sequences such as create -> edit -> delete
+                  the cost is n simultaneously open browser windows (one scenario, one
+                  session, one window)
+                  capped at 8, and exceeding it is an error rather than a silent clamp
+                  interactive mode honours it too: this value is just the starting point
+                  for the session; once inside, /setting > concurrency changes it live
+                  (and writes it back to the config)
+                  --replay never uses the scenario scheduler, so concurrency is inert there
+  --only <index|title>
+                   run just one of the scenarios (one of the "## title" units)
+                  index starts at 1; a non-numeric value is matched **exactly** against
+                  the scenario title (case-insensitive). No fuzzy matching: a miss errors
+                  out and lists every scenario title
+                  the output is still suite-shaped (one scenario) so CI parses one structure
+                  cannot be used with --suite / --tui / --replay
   --tui            force interactive mode (auto-enters in an interactive terminal by default, see "Interactive mode" below)
   --no-tui         don't use interactive mode (when you only want the scrolling log, or for troubleshooting)
                   also disablable via env: PAGEQA_NO_TUI=1
@@ -1233,6 +1403,13 @@ Options:
   --semantic       at replay, assertions use Jev semantic judgment (default string contains)
   --init-config    create/reset the config file in the user directory
   --out <file>     write the report to a file
+  --no-side-outputs
+                  write no side outputs: no HTML report, and no default replay script
+                  the stdout report and the exit code are unaffected (for CI that only wants stdout)
+                  an explicit --emit-script <path> still wins (explicit request first)
+  --usage-stream   print one structured LLM-usage record per call to stderr (prefix [pageqa:usage] )
+                  when a scenario runs in its own child process, this is how the parent gets
+                  "how much has been burned so far" in real time
   --debug          show debug logs (bsk commands, snapshot size, context trimming, Jev request details)
   -v, --version    show the version
   -h, --help       show help
@@ -1265,8 +1442,9 @@ Model switching & login:
 
   - submitted scenarios are **immediately appended back to the source case file** (original text preserved verbatim, including runtime placeholders),
     so "pageqa --tui examples/smoke.md" modifies that file.
-  - scenarios run serially: each creates and closes its own bsk session and browser window;
-    a queued scenario only creates its session when its turn comes.
+  - scenarios run serially, and **each runs in its own child process** (see docs/adr/0013):
+    a scenario that takes the browser or the bsk daemon down only affects itself.
+    The parent owns session and browser-window lifetimes, creating one when a scenario's turn comes.
   - cannot be combined with --json / --replay / --session (the first two need exclusive stdout or no waiting,
     the third conflicts with "each scenario has its own session").
   - replay scripts are generated by default: on exit the run scenarios are written per source, cancelled
