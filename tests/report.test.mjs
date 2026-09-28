@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   addUsage,
   buildReport,
+  cacheHitRate,
   countAssertions,
   emptyUsage,
   extractTrace,
@@ -329,9 +330,9 @@ describe("Token 用量统计", () => {
     const line = formatUsage(
       addUsage(emptyUsage(), { input: 100, output: 20, totalTokens: 120 }),
     );
-    assert.ok(line.includes("输入 100"));
-    assert.ok(line.includes("合计 120"));
-    assert.ok(line.includes("LLM 调用 1 次"));
+    // 逐字对齐：这行的省字全靠**位置**当图例（⬇ 输入 · ⬆ 输出 · 读 · 写 · 总），
+    // 顺序一旦被改动，`读 0` 就可能被读成别的东西。所以钉死整行而不是抽查片段。
+    assert.equal(line, "Token: ⬇ 100 / ⬆ 20 / 读 0 / 写 0 / 总 120（LLM 调用 1 次）");
     assert.ok(!line.includes("未返回 usage"));
   });
 
@@ -341,6 +342,46 @@ describe("Token 用量统计", () => {
 
   test("无用量数据时给出不可用提示", () => {
     assert.ok(formatUsage(undefined).includes("不可用"));
+  });
+});
+
+describe("缓存命中率（TUI 用量行那个百分比）", () => {
+  test("分母只取输入侧：缓存读 / (输入 + 缓存读)", () => {
+    // 输入 100（没命中）+ 缓存读 900（命中）→ 900/1000
+    const usage = addUsage(emptyUsage(), {
+      input: 100,
+      output: 50,
+      cacheRead: 900,
+      cacheWrite: 10,
+      totalTokens: 1060,
+    });
+    assert.equal(cacheHitRate(usage), 0.9);
+  });
+
+  test("输出长度不影响结果（它不是输入侧的东西）", () => {
+    const at = (output) =>
+      cacheHitRate(
+        addUsage(emptyUsage(), { input: 50, output, cacheRead: 50, totalTokens: 100 + output }),
+      );
+    assert.equal(at(1), 0.5);
+    assert.equal(at(100000), 0.5);
+  });
+
+  test("完全没有缓存时是 0（而不是 null）", () => {
+    assert.equal(
+      cacheHitRate(addUsage(emptyUsage(), { input: 100, totalTokens: 100 })),
+      0,
+    );
+  });
+
+  test("没有可统计的输入时给 null：不回落成 0%，那会被读成「完全没命中」", () => {
+    assert.equal(cacheHitRate(undefined), null);
+    assert.equal(cacheHitRate(emptyUsage()), null);
+    // 只写缓存、还没读（第一次调用）：分母仍是 0
+    assert.equal(
+      cacheHitRate(addUsage(emptyUsage(), { cacheWrite: 500, totalTokens: 500 })),
+      null,
+    );
   });
 });
 

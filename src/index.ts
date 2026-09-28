@@ -2,16 +2,29 @@
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ModelUnreachableError, runAgent, runSuite } from "./agent.js";
+import {
+  ModelUnreachableError,
+  renderScenarios,
+  runAgent,
+  runSuite,
+  selectScenario,
+  splitScenarios,
+  type AgentRunResult,
+  type ScenarioSelection,
+} from "./agent.js";
 import {
   ensureConfigDir,
   CONFIG_PATH,
   loadConfig,
+  readConcurrency,
   readSavedLocale,
+  readScenarioTimeoutMs,
   readSideOutputPrefs,
+  type SideOutputPrefs,
 } from "./config.js";
 import { downloadedFiles } from "./downloads.js";
-import type { TestReport } from "./report.js";
+import type { TestReport, TokenUsage } from "./report.js";
+import { formatUsageLine, MAX_CONCURRENCY, runSuiteInChildren } from "./suite.js";
 import {
   emitSideOutputs,
   writeReportSideOutput,
@@ -25,6 +38,7 @@ import {
   runReplayScript,
   sourceDriftNotice,
   writeReplayScript,
+  type ReplayScript,
   type ScenarioRecording,
 } from "./replay.js";
 import {
@@ -57,6 +71,30 @@ interface CliArgs {
   semantic: boolean;
   /** `--fail-fast`：回放时任一失败即停止该场景（默认跑完剩余步骤）。 */
   failFast: boolean;
+  /**
+   * `--only <序号|标题>`：只跑其中一个场景（由 `## 场景名` 分隔出来的那一个）。
+   * 批处理选项，与 `--suite` / `--tui` / `--replay` 互斥；见 ADR-0013 决策二。
+   */
+  only?: string;
+  /**
+   * `--no-side-outputs`：不写旁路产物（HTML 报告、默认回放脚本）。
+   * 显式给出的 `--emit-script <path>` 仍然生效——显式请求优先（ADR-0011 决策三）。
+   */
+  noSideOutputs: boolean;
+  /**
+   * `--usage-stream`：把 LLM 用量的结构化记录逐次打到 stderr（一行一次）。
+   *
+   * 场景在子进程里执行时，父进程靠它把「已经烧了多少」实时带回来（见 ADR-0013 第二步）。
+   * 谁都能自己跑一次带这个开关的命令看到它——不是内部暗规则。
+   */
+  usageStream: boolean;
+  /**
+   * `--concurrency <n>`：同时跑几个场景（**上限**，默认 1 = 逐个跑）。
+   *
+   * 并行等于声明「这些场景互不依赖」——这个声明只能由人来做，所以默认不开。
+   * 只作用于批处理的多场景套件；交互模式与回放仍然是逐个跑（见 ADR-0013 决策三）。
+   */
+  concurrency?: number;
   /** `--tui`：显式要求进入交互模式。 */
   tui: boolean;
   /** `--no-tui`：显式拒绝交互模式（本机只想看滚动日志时用）。 */
@@ -79,6 +117,8 @@ export function parseArgs(argv: string[]): CliArgs {  const args: CliArgs = {
     failFast: false,
     tui: false,
     noTui: false,
+    noSideOutputs: false,
+    usageStream: false,
     locale: "",
   };
   for (let i = 0; i < argv.length; i++) {
@@ -116,6 +156,40 @@ export function parseArgs(argv: string[]): CliArgs {  const args: CliArgs = {
       case "--suite":
         args.suite = true;
         break;
+      case "--only": {
+        const v = argv[++i];
+        // 与 `--session` 同一套判据：以 - 开头的「值」多半是下一个选项被吞了。
+        // 场景标题倒是可以以 - 开头，但那种标题本来就该用引号包起来，而引号在 shell 里
+        // 就被剥掉了——所以这里宁可报缺参，也不拿一个 flag 当场景标识去找。
+        if (v === undefined || v.startsWith("-")) {
+          args.error = t("err.onlyRequired");
+          return args;
+        }
+        args.only = v;
+        break;
+      }
+      case "--no-side-outputs":
+        args.noSideOutputs = true;
+        break;
+      case "--usage-stream":
+        args.usageStream = true;
+        break;
+      case "--concurrency": {
+        const v = argv[++i];
+        if (v === undefined || v.startsWith("-")) {
+          args.error = t("err.concurrencyRequired");
+          return args;
+        }
+        // 只收正整数：`--concurrency 0`、`--concurrency 两个` 这类必须当场报错，
+        // 静默回落成 1 会让人以为「我明明开了并行怎么还是一个个跑」。
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1) {
+          args.error = t("err.concurrencyInvalid", { value: v });
+          return args;
+        }
+        args.concurrency = n;
+        break;
+      }
       case "--init-config":
         args.initConfig = true;
         break;
@@ -213,12 +287,15 @@ export function parseArgs(argv: string[]): CliArgs {  const args: CliArgs = {
  * - 以 `-` 开头 → 是下一个选项，不是路径；
  * - 以 .md/.txt 结尾 → 是用例文件，留给输入位（支持 `--emit-script 用例.md` 的写法）；
  * - 含空白或中文 → 是内联用例文本，留给输入位；
- * - 其余（`./replay`、`out.json`、`reports/run1`）→ 当作输出路径。
+ * - 其余（`./replay`、`out.json`、`reports/run1`、`C:\out.json`）→ 当作输出路径。
+ *
+ * 盘符里的 `:` 也要认：套件编排把每个场景的临时脚本写到系统临时目录，Windows 下
+ * 就是 `C:\Users\…\Temp\…` 这个形状；不认它就会把路径当成用例输入吞掉。
  */
 function looksLikeScriptPath(token: string): boolean {
   if (token.startsWith("-")) return false;
   if (/\.(md|txt)$/i.test(token)) return false;
-  return /^[A-Za-z0-9_./\\-]+$/.test(token);
+  return /^[A-Za-z0-9_./\\:-]+$/.test(token);
 }
 
 /**
@@ -355,11 +432,19 @@ function detectInteractive(
   args: CliArgs,
   isFile: boolean,
   hasInput: boolean,
+  concurrency: number,
 ): { run: boolean; error?: string } {
   const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   if (args.tui) {
     if (args.noTui)
       return { run: false, error: t("err.tuiConflict") };
+    // `--only` 把「跑哪一个场景」定死了，而交互模式的核心是「随时追加场景」：
+    // 两者诉求相反，硬凑在一起只会得到半套行为（见 ADR-0013）。
+    if (args.only !== undefined) {
+      return { run: false, error: t("err.onlyWithTui") };
+    }
+    // `--concurrency` 与交互模式**不冲突**了：TUI 的队列也认并发上限（`/setting`
+    // 里的「并发量」就是它，CLI 这个值只是本次会话的起点）。见 ADR-0013 决策三。
     if (args.json) {
       return { run: false, error: t("err.tuiWithJson") };
     }
@@ -375,6 +460,8 @@ function detectInteractive(
     return { run: true };
   }
   if (args.noTui || process.env.PAGEQA_NO_TUI) return { run: false };
+  // `--only` 是批处理选项：不自动进交互模式（理由同上）。
+  if (args.only !== undefined) return { run: false };
   // 自动识别：两个流都是 TTY、未给 --json，且「给了源用例文件」或「什么都没给」。
   // 前者是「跑这条用例」，后者是「先开个会话再决定跑什么」（ADR-0005 决策一）。
   // 内联文本仍不进——批处理与交互的差别只该是「人看不看这个终端」。
@@ -392,17 +479,18 @@ function detectInteractive(
  */
 async function interactiveMode(
   source: { path?: string; text?: string },
-  now: Date,
-  vars: RunVarValue[],
   args: CliArgs,
+  concurrency: number,
 ): Promise<number> {
   info(t("log.startupInteractive"));
   const result = await runInteractive(source.text ?? "", {
     sourcePath: source.path,
-    vars,
-    now,
     debug: args.debug,
     scriptPath: args.emitScriptPath,
+    // 场景级上限：交互模式下场景也跑在子进程里，超时只能由父进程看门狗掐（ADR-0013）。
+    scenarioTimeoutMs: readScenarioTimeoutMs(),
+    // 并发度只是本次会话的起点，`/setting` 里的「并发量」随时可改（并写回配置）。
+    concurrency,
   });
 
   if (result.writtenBack > 0 && source.path) {
@@ -452,12 +540,11 @@ async function interactiveMode(
 /** 交互模式的统一收尾：把抛出的异常翻成可读报错（而不是一个裸栈）。 */
 async function runInteractiveSafely(
   source: { path?: string; text?: string },
-  now: Date,
-  vars: RunVarValue[],
   args: CliArgs,
+  concurrency: number,
 ): Promise<number> {
   try {
-    return await interactiveMode(source, now, vars, args);
+    return await interactiveMode(source, args, concurrency);
   } catch (err) {
     process.stderr.write(
       t("err.execFailed", {
@@ -544,6 +631,17 @@ async function main(): Promise<number> {
     );
     return 0;
   }
+  // ── 并发上限：CLI > PAGEQA_CONCURRENCY > 配置文件 > 1（逐个跑）──
+  // 在这里统一解析（而不是等到套件那一步）是因为它还要参与「要不要进交互模式」的判断。
+  const concurrency = args.concurrency ?? readConcurrency();
+  if (concurrency > MAX_CONCURRENCY) {
+    // 不做静默截断：说 16 却只跑 8，比直接报错更难查。
+    process.stderr.write(
+      t("err.concurrencyMax", { n: concurrency, max: MAX_CONCURRENCY }) + "\n\n",
+    );
+    return 1;
+  }
+
   // ── 回放模式：零模型执行已有脚本（与用例输入互斥）──
   if (args.replay) {
     if (args.input) {
@@ -558,6 +656,16 @@ async function main(): Promise<number> {
       process.stderr.write(t("err.tuiWithReplay") + "\n\n");
       return 1;
     }
+    if (args.only !== undefined) {
+      process.stderr.write(t("err.onlyWithReplay") + "\n\n");
+      return 1;
+    }
+    // 回放不走场景调度器（零模型、按脚本顺序执行），显式要求并发是矛盾的。
+    // 只看显式开关：配置文件里的默认值不该让 `--replay` 变成错误。
+    if (args.concurrency !== undefined && concurrency > 1) {
+      process.stderr.write(t("err.concurrencyWithReplay") + "\n\n");
+      return 1;
+    }
     setDebug(args.debug);
     return await replayMode(args);
   }
@@ -566,16 +674,14 @@ async function main(): Promise<number> {
   // 非 TTY（管道 / CI）维持原口径：打印帮助并退出码 1——那里没有「人看不看这个终端」
   // 这个判据，而 help 是它唯一的发现途径（ADR-0005 决策一）。
   if (!args.input) {
-    const interactive = detectInteractive(args, false, false);
+    const interactive = detectInteractive(args, false, false, concurrency);
     if (interactive.error) {
       process.stderr.write(t("err.param", { msg: interactive.error }) + "\n\n");
       return 1;
     }
     if (interactive.run) {
       setDebug(args.debug);
-      // 占位符时刻取自会话启动那一刻：`/run` 加载的场景与追加场景共用它（ADR-0005 决策八）。
-      const now = new Date();
-      return await runInteractiveSafely({}, now, captureRunVars(now), args);
+      return await runInteractiveSafely({}, args, concurrency);
     }
     process.stdout.write(buildHelp() + "\n");
     return 1;
@@ -597,7 +703,41 @@ async function main(): Promise<number> {
   const vars = captureRunVars(now);
   const hasScenarios = /^##\s+/m.test(input);
   const suiteMode = hasScenarios || args.suite;
-  const prefs = readSideOutputPrefs();
+
+  // ── `--only`：只跑其中一个场景 ──
+  // 它是个批处理选项，且要求用例真的按「## 场景名」分隔：整份用例只有一个场景时，
+  // 直接跑它就是它本身，`--only` 没有任何可指定的东西（见 ADR-0013）。
+  let onlyPick: ScenarioSelection | undefined;
+  let onlyTotal = 0;
+  if (args.only !== undefined) {
+    if (args.suite) {
+      process.stderr.write(t("err.onlyWithSuite") + "\n\n");
+      return 1;
+    }
+    if (!hasScenarios) {
+      process.stderr.write(t("err.onlyNeedsScenarios") + "\n\n");
+      return 1;
+    }
+    // 选不出来是**参数错误**，不是执行失败：在开跑前就判掉，走「参数错误 + 候选列表」
+    // 这条口径，而不是让它从 try 里抛出去变成一坨栈。
+    const all = splitScenarios(input);
+    onlyTotal = all.length;
+    try {
+      onlyPick = selectScenario(all, args.only);
+    } catch (err) {
+      process.stderr.write(
+        t("err.param", {
+          msg: err instanceof Error ? err.message : String(err),
+        }) + "\n\n",
+      );
+      return 1;
+    }
+  }
+
+  // ── 旁路产物：`--no-side-outputs` 关掉「默认产出」，但显式 --emit-script 仍然生效 ──
+  const prefs: SideOutputPrefs = args.noSideOutputs
+    ? { htmlReport: false, replayScript: false }
+    : readSideOutputPrefs();
   // 显式 --emit-script 永远先生效（ADR-0011 决策三）；否则看 /setting 的开关。
   // 默认生成时只贴「当前打开的用例文件」：内联文本没有落点，不生成（决策四）。
   const scriptPath = args.emitScript
@@ -607,7 +747,7 @@ async function main(): Promise<number> {
       : undefined;
 
   // ── 交互模式：跑用例的同时可以提交新场景（会写回落点）──
-  const interactive = detectInteractive(args, isFile, true);
+  const interactive = detectInteractive(args, isFile, true, concurrency);
   if (interactive.error) {
     process.stderr.write(t("err.param", { msg: interactive.error }) + "\n\n");
     return 1;
@@ -615,9 +755,8 @@ async function main(): Promise<number> {
   if (interactive.run) {
     return await runInteractiveSafely(
       { path: isFile ? rawInput : undefined, text: sourceText },
-      now,
-      vars,
       args,
+      concurrency,
     );
   }
 
@@ -632,35 +771,96 @@ async function main(): Promise<number> {
       (args.session ? t("log.sessionNote", { id: args.session }) : "") +
       (args.debug ? t("log.debugNote") : ""),
   );
+  if (onlyPick) {
+    info(
+      t("log.onlySelected", {
+        selector: args.only ?? "",
+        i: onlyPick.index,
+        n: onlyTotal,
+        name: onlyPick.scenario.name,
+      }),
+    );
+  }
   if (scriptPath) {
     info(t("log.scriptWillEmit", { path: scriptPath }));
   }
+  if (args.noSideOutputs) info(t("log.sideOutputsOff"));
+
+  // 用量流水线：把「已经烧了多少」按行打到 stderr。自己跑（单场景 / `--only`）时
+  // 直接回调；子进程跑时由子进程回调、父进程原样转出来（ADR-0013 第二步）。
+  const usageSink: ((usage: TokenUsage) => void) | undefined = args.usageStream
+    ? (usage) => process.stderr.write(formatUsageLine(usage) + "\n")
+    : undefined;
 
   try {
     // 报告里的 `script` 字段保持现状：只有显式 `--emit-script` 才写进去；默认生成的那些
     // 路径由收尾的产物清单交代（ADR-0011 决策五），不往 stdout 报告里塞。
     const reportedScriptPath = args.emitScript ? scriptPath : undefined;
-    const result = suiteMode
-      ? await runSuite(input, {
-          session: args.session,
-          debug: args.debug,
-          vars,
-          scriptPath: reportedScriptPath,
-        })
-      : await runAgent(input, {
-          session: args.session,
-          debug: args.debug,
-          vars,
-          scriptPath: reportedScriptPath,
-        });
+    let result: AgentRunResult;
+    /** 套件模式下由父进程合并出的脚本；非套件路径仍走 result.recordings。 */
+    let mergedScript: ReplayScript | null = null;
+    /** 套件跑到一半模型不可达：报告照给，另补一条干净报错。 */
+    let modelGone: { message: string; done: number } | undefined;
+    if (onlyPick) {
+      // ── 只跑其中一个场景 ──
+      // 就走「在本进程里跑一个套件」这条路：输出仍是套件形态（只有一个场景），
+      // 与父进程 fork 子进程时调用的那条路径完全同一份代码（ADR-0013 决策二）。
+      result = await runSuite(renderScenarios([onlyPick.scenario]), {
+        session: args.session,
+        debug: args.debug,
+        vars,
+        scriptPath: reportedScriptPath,
+        ...(usageSink ? { onUsage: usageSink } : {}),
+      });
+    } else if (suiteMode) {
+      // ── 套件：每个场景一个子进程，父进程串行 fork 并汇总（ADR-0013）──
+      const outcome = await runSuiteInChildren({
+        script: input,
+        // 子进程拿的是**未展开**的输入（文件路径或原文）：占位符由它自己展开，
+        // 这样录制回放脚本时才能把具体值还回 `${...}` 写法。
+        input: rawInput,
+        sourcePath: isFile ? rawInput : null,
+        session: args.session,
+        debug: args.debug,
+        timeoutMs: readScenarioTimeoutMs(),
+        // 要让父进程合并脚本，才需要子进程把录制写到临时文件里。
+        wantScript: scriptPath !== undefined,
+        reportedScriptPath,
+        usageStream: args.usageStream,
+        concurrency,
+        ...(usageSink ? { onChildUsage: usageSink } : {}),
+      });
+      result = {
+        report: outcome.report,
+        text: outcome.text,
+        json: outcome.json,
+        transcript: outcome.transcript,
+        usage: outcome.usage,
+        recordings: [],
+      };
+      mergedScript = outcome.script;
+      modelGone = outcome.modelUnreachable;
+    } else {
+      result = await runAgent(input, {
+        session: args.session,
+        debug: args.debug,
+        vars,
+        scriptPath: reportedScriptPath,
+        ...(usageSink ? { onUsage: usageSink } : {}),
+      });
+    }
     let scriptError: string | undefined;
     let scriptOutcome: ScriptOutcome;
     if (scriptPath) {
       try {
-        const script = buildReplayScript(result.recordings, {
-          sourcePath: isFile ? rawInput : null,
-          sourceText,
-        });
+        // 套件模式用的是父进程从各子进程合并出来的那一份（ADR-0013 决策六）；
+        // 其余路径仍然就地组装（单场景 / --only 都只有一个录制结果）。
+        const script =
+          mergedScript ??
+          buildReplayScript(result.recordings, {
+            sourcePath: isFile ? rawInput : null,
+            sourceText,
+          });
         writeReplayScript(scriptPath, script);
         scriptOutcome = { kind: "written", paths: [scriptPath] };
       } catch (err) {
@@ -685,6 +885,16 @@ async function main(): Promise<number> {
     );
     if (scriptError) {
       process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");
+      return 1;
+    }
+    if (modelGone) {
+      // 套件跑到一半端点没了：报告照给（已完成场景的结论不该被丢掉），
+      // 但必须让人一眼看到「这是环境不对，不是这批用例挂了」。
+      process.stderr.write(
+        `${modelGone.message}\n${t("err.modelUnreachableHintMid", {
+          done: modelGone.done,
+        })}\n`,
+      );
       return 1;
     }
     return exitCodeFor(result.report);

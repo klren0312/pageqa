@@ -62,13 +62,20 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 ├──────────────────────────────────────────────────────────┤
 │ Status line: current model · pending count · write-back     │
 │ > input box (fixed at bottom)                               │
-│ Token usage: input … / output … / total … (LLM calls n)     │
+│ Token: ⬇ … / ⬆ … / read … / write … / total … · hit …%      │
 │ hint line                                                  │
 └──────────────────────────────────────────────────────────┘
 ```
 
 - **Kanban band**: all scenarios grouped into 5 columns by state (waiting / running / pass / fail / cancelled); the running column shows live elapsed time. Only the most recent few cards per column fit, with `+N more` when exceeded. Display-only (no click actions); hidden entirely below 90 columns so the log keeps the space.
 - **Status line** always shows: current model, pending count, written-back count, and the **write-back target** (the case file appended scenarios are written back to; when none, it says so — appended scenarios then live only in this session and are lost on exit).
+- **Token line** (under the input box) is the same sentence as the report's last line, with the running scenarios' live values, **plus the cache hit rate**:
+
+  ```text
+  Token: ⬇ 1234 / ⬆ 567 / read 8901 / write 42 / total 10744 (LLM calls 3)  ·  hit 92%
+  ```
+
+  The short words work because the **order is the legend**: `⬇` = input (fed into the model), `⬆` = output, `read`/`write` = cache read / cache write, `total` = the sum. The trailing `hit 92%` = cache read / (input + cache read), i.e. how much of this input came back from the prompt cache. Seeing it hold steady while a run is in progress means the prompt prefix is stable and the cache keeps hitting. When the denominator is zero (replay, endpoint returned no usage, nothing called yet) that part is simply not shown, rather than printing a 0%.
 
 ### Submitting scenarios
 
@@ -85,7 +92,7 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 | `/new` | New session: clears viewport and queue, resets token counter, but **archives the previous batch** (still in the exit report and replay script). Refuses while something is running/pending |
 | `/model` | Switch this session's model (`Enter` applies now, `Ctrl+S` also saves as the startup default) |
 | `/login` · `/logout` | Sign in / remove a provider's local credentials (`~/.pageqa/auth.json`) |
-| `/setting` | Persistent prefs: test report (HTML) / replay script toggles, language |
+| `/setting` | Persistent prefs: test report (HTML) / replay script toggles, language, **concurrency** (1/2/3/4/6/8) |
 | `/help` · `/exit` | Help / finish and exit (`/quit` is an alias) |
 
 ### Keybindings
@@ -116,12 +123,24 @@ pageqa "Open https://example.com and assert the title contains Example"   # inli
 pageqa examples/smoke.md        # read a case file (auto-detects ##-separated scenarios)
 pageqa --json examples/smoke.md # JSON report
 pageqa --suite "..."            # force multi-scenario suite mode
+pageqa --concurrency 4 examples/smoke-test.md   # run up to 4 scenarios at once (default 1)
+pageqa --only 2 examples/smoke.md    # run just scenario 2
+pageqa --only "form filling" ...     # run one by exact title
+pageqa --no-side-outputs ...    # no HTML report, no default replay script — stdout only
 pageqa --out report.txt ...     # write the report to a file
 ```
 
 - stdout holds only the final report; logs go to stderr (so `pageqa --json … > report.json` is clean).
 - Exit code: `0` all assertions passed; `1` any assertion failed / errored / could not execute — usable directly as a CI gate.
 - Before each scenario a connectivity probe runs; if the model is unreachable that scenario is recorded as FAIL and remaining pending items are cancelled, rather than wasting browser windows.
+
+**Scenario isolation** (see `docs/adr/0013-scenario-process-isolation.md`): in suite mode **each scenario runs in its own child process**, with the parent forking them serially and aggregating the results. So when a scenario takes the browser or the bsk daemon down with it (native crash, OOM kill), only that scenario is recorded as failed (`reason: "crash"` in the report) and the rest still run. Re-running just the failed one is `--only <index|title>` — the same code path the parent uses internally when it forks.
+
+A crash or a timeout is recorded as a failure and does not drag anyone else down; only environment-level failures (unreachable model endpoint, unusable bsk/browser) mark the remaining scenarios as "cancelled". Sessions and browser windows are owned by the parent, so a hard-killed child leaves no orphan windows.
+
+**Running scenarios in parallel**: by default they run **one at a time** (that order is what protects implicit sequences such as create → edit → delete). Once you know they are independent, `--concurrency <n>` (or `PAGEQA_CONCURRENCY` / the `concurrency` config field) runs up to n at once: each scenario still gets its own child process, its own session and its own **browser window** — so n is literally how many windows are open at the same time, hence the cap of 8 and an error (not a silent clamp) when exceeded. Result order is unchanged: the report and the replay script always follow the case's source order, no matter who finishes first. While parallel, every log line carries a `[scenario name]` prefix, otherwise the interleaved output is unreadable.
+
+**Interactive mode honours concurrency too**: `--concurrency` at startup is just the starting point for the session; inside, `/setting` > concurrency changes it at any time (levels 1/2/3/4/6/8). The change **takes effect immediately** — scenarios dispatched from then on use the new value, ones already running are left alone — and is written back to `~/.pageqa/config.json`. While parallel, the kanban band's "running" column holds several cards (each with its own live elapsed time), the status line swaps "k/n" for "N running · oldest … for …", and `Esc` aborts **all** running scenarios (once more than one can run, "the current scenario" is no longer a single thing). `--replay` never uses the scenario scheduler, so concurrency is inert there.
 
 ---
 
@@ -146,7 +165,7 @@ A case is natural-language text split into steps by non-empty lines (`#`/`>` com
 
 **Assertion lines must line up with assertion tool calls**: the report checks "how many lines contain 断言/assert" against "how many assertion results were actually produced" — they must match. Each `assert_text` yields one assertion, and `download` is itself one assertion (don't add a separate "assert downloaded" line). Comment lines never inflate the count.
 
-**Runtime placeholders** (expanded once, sharing one moment per run):
+**Runtime placeholders** (expanded once; because each scenario runs in its own child process the moment is taken **per scenario**, not once per run — see ADR-0013):
 
 | Placeholder | Expands to |
 | --- | --- |
@@ -163,7 +182,9 @@ Unrecognized placeholders (e.g. `${PATH}`) are kept as-is.
 
 ## Config & optional enhancements
 
-- **Config file**: `~/.pageqa/config.json` with fields `baseUrl`/`apiKey`/`model`/`locale`/`htmlReport`/`replayScript`/`downloadDir`/`downloadCleanup`. Precedence: `PAGEQA_*` env vars > config file > built-in defaults.
+- **Config file**: `~/.pageqa/config.json` with fields `baseUrl`/`apiKey`/`model`/`locale`/`htmlReport`/`replayScript`/`downloadDir`/`downloadCleanup`/`scenarioTimeoutMs`/`concurrency`. Precedence: `PAGEQA_*` env vars > config file > built-in defaults.
+- **Parallelism (optional)**: `concurrency` or `PAGEQA_CONCURRENCY` (**default 1** = one at a time, capped at 8). Parallelism is a claim that the scenarios are independent, hence off by default; the value is literally how many browser windows are open at once.
+- **Per-scenario execution limit (optional)**: `scenarioTimeoutMs` or `PAGEQA_SCENARIO_TIMEOUT` (milliseconds, **unlimited by default**). In suite mode a scenario that exceeds it has its child process killed, is recorded as failed (`reason: "timeout"` in the report), and **the following scenarios still run**. Off by default: ten-plus-minute flows are normal here, so an assumed default would just be a new source of failures — set it explicitly when CI needs a gate.
 - **Jev semantic assertion (optional)**: add a `jev` field to config (or `PAGEQA_JEV_*` env vars) for a semantic re-check when a literal match misses, correcting false FAILs from synonyms/near-synonyms/formatting; on API failure it degrades back to string match automatically.
 - **Language**: `--locale zh|en` or `PAGEQA_LOCALE`; default `zh`. The data contract (JSON fields, exit codes) is language-neutral.
 
@@ -177,8 +198,12 @@ Unrecognized placeholders (e.g. `${PATH}`) are kept as-is.
 | `--locale <zh\|en>` | UI / log / report language (default zh) |
 | `--json` | Output JSON report (excludes the TUI) |
 | `--suite` | Force multi-scenario suite mode |
+| `--only <index\|title>` | Run just one scenario (index from 1, or an exact title match); output stays suite-shaped. Mutually exclusive with `--suite`/`--tui`/`--replay` |
+| `--concurrency <n>` | Run up to n scenarios at once (**a limit**, default 1; `PAGEQA_CONCURRENCY` / the `concurrency` config field also work). Capped at 8, exceeding it errors; interactive mode honours it too (`/setting` > concurrency changes it live), `--replay` does not |
 | `--tui` / `--no-tui` | Force interactive on/off (`PAGEQA_NO_TUI=1` also works) |
 | `--emit-script [path]` | Freeze a replay script (on by default, next to the source case) |
+| `--no-side-outputs` | Write no side outputs (HTML report, default replay script); an explicit `--emit-script <path>` still wins |
+| `--usage-stream` | Print one structured LLM-usage record per call to stderr (prefix `[pageqa:usage]`); how the parent gets live usage from a child process |
 | `--replay <file>` | Replay an existing script with zero models |
 | `--semantic` | At replay, assertions use Jev semantic judgment |
 | `--fail-fast` | At replay, stop a scenario on first failure |
