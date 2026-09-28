@@ -91,7 +91,7 @@ export interface AgentRunResult {
   recordings: ScenarioRecording[];
 }
 
-interface Scenario {
+export interface Scenario {
   name: string;
   body: string;
 }
@@ -412,6 +412,35 @@ async function ensureModelReachable(
     return;
   }
   throw new ModelUnreachableError(choice.provider, model.id, probe.reason);
+}
+
+/**
+ * 父进程的回头查：子进程没交出报告时，模型还通不通？
+ *
+ * 用来把「模型挂了」和「子进程崩了」分开——两者的处置完全不同：前者要终止整个套件
+ * （继续跑只会得到 N 个假失败，且每个场景还白开一次浏览器窗口），后者只算这一个场景
+ * 失败、后续照跑（见 ADR-0013 决策七）。
+ *
+ * 刻意**不做**开跑前的统一探活：子进程自己本来就会探活，口径与「逐场景运行」一致；
+ * 父进程再加一次，只会让每个场景都多付一次探活等待。只在「子进程没交出报告」这个
+ * 异常路口上付一次，专门用来归因。
+ */
+export async function probeModelReachable(): Promise<void> {
+  const catalog = await createModelCatalog();
+  const choice = catalog.defaultChoice;
+  if (!hasProvider(catalog, choice.provider)) {
+    await loadBuiltinProviders(catalog);
+  }
+  const model = resolveModel(catalog, choice);
+  if (!model) {
+    throw new Error(
+      t("err.modelNotFound", {
+        provider: choice.provider,
+        model: choice.model,
+      }),
+    );
+  }
+  await ensureModelReachable(catalog, choice, model, {});
 }
 
 /**
@@ -877,6 +906,48 @@ export function splitScenarios(script: string): Scenario[] {
   return collected.length
     ? collected
     : [{ name: t("common.scenarioDefault"), body: script.trim() }];
+}
+
+/** `--only` 选中了哪一个场景。 */
+export interface ScenarioSelection {
+  /** 在被切分出的场景序列里的序号（1 起）。 */
+  index: number;
+  scenario: Scenario;
+}
+
+/**
+ * 按 `--only` 的标识挑出一个场景：纯数字按序号（1 起），否则按 `## 标题` **精确**匹配
+ * （大小写不敏感）。
+ *
+ * 刻意不做模糊匹配：模糊是 `/run <关键词>` 的职责，两个入口的语义不能混——
+ * 「本想跑场景 3、却因为标题里恰好含某个词而跑了场景 5」是最难查的那种错。
+ * 匹配不到就抛错（由 CLI 翻成可读报错并列出全部候选），调用方不做兜底选择。
+ */
+export function selectScenario(
+  scenarios: Scenario[],
+  selector: string,
+): ScenarioSelection {
+  const raw = selector.trim();
+  const names = scenarios.map((s) => "「" + s.name + "」").join("、");
+  const miss = () =>
+    new Error(
+      t("err.onlyNotFound", { selector: raw, n: scenarios.length, names }),
+    );
+  if (/^\d+$/.test(raw)) {
+    const index = Number(raw);
+    const scenario = scenarios[index - 1];
+    if (!scenario) throw miss();
+    return { index, scenario };
+  }
+  const lower = raw.toLowerCase();
+  const found = scenarios.findIndex((s) => s.name.toLowerCase() === lower);
+  if (found < 0) throw miss();
+  return { index: found + 1, scenario: scenarios[found] };
+}
+
+/** 把切分出的场景拼回一份用例文本（供 `--only` 只跑其中一个）。 */
+export function renderScenarios(scenarios: Scenario[]): string {
+  return scenarios.map((s) => "## " + s.name + "\n" + s.body).join("\n\n");
 }
 
 /** 批量运行多个场景并汇总报告。任一失败则整体失败。 */

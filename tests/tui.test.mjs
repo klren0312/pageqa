@@ -349,6 +349,141 @@ describe("运行队列", () => {
     assert.deepEqual(order, ["start:A", "end:A", "start:B", "end:B"]);
   });
 
+  test("并发上限 2：同时最多两个在跑，且一个场景都不丢", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const started = [];
+    const finished = [];
+    const q = new ScenarioQueue(
+      async (item) => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        started.push(item.name);
+        await sleep(25);
+        inFlight -= 1;
+        finished.push(item.name);
+        return "pass";
+      },
+      () => {},
+      () => 2,
+    );
+
+    for (const n of ["A", "B", "C", "D"]) q.add(n, n, FILE_ORIGIN);
+    q.pump();
+    await waitIdle(q);
+
+    assert.equal(peak, 2, "并发度应恰好被限制在 2");
+    assert.deepEqual([...started].sort(), ["A", "B", "C", "D"]);
+    assert.deepEqual([...finished].sort(), ["A", "B", "C", "D"]);
+    assert.equal(q.waiting().length, 0, "不该有漏派的场景");
+  });
+
+  test("并发量在跑的过程中调大：立刻补派发（不必等这一批结束）", async () => {
+    let limit = 1;
+    let inFlight = 0;
+    let peak = 0;
+    const q = new ScenarioQueue(
+      async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await sleep(40);
+        inFlight -= 1;
+        return "pass";
+      },
+      () => {},
+      () => limit,
+    );
+
+    // 5 个场景：起手串行只跑 A；调大之后，A 一结束就该一次补上 3 个（B/C/D），
+    // 因此峰值是 3 而不是 1（等价于 /setting 里把并发量从 1 改成 3）。
+    for (const n of ["A", "B", "C", "D", "E"]) q.add(n, n, FILE_ORIGIN);
+    q.pump();
+    await sleep(5);
+    assert.equal(inFlight, 1, "起手是串行");
+    limit = 3;
+    await waitIdle(q);
+    assert.equal(peak, 3, "改大之后下一轮就补上了");
+  });
+
+  test("并发量调小不掐掉已经在跑的：等它们结束，之后按新的来", async () => {
+    let limit = 3;
+    let inFlight = 0;
+    let peak = 0;
+    const q = new ScenarioQueue(
+      async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await sleep(30);
+        inFlight -= 1;
+        return "pass";
+      },
+      () => {},
+      () => limit,
+    );
+
+    for (const n of ["A", "B", "C", "D"]) q.add(n, n, FILE_ORIGIN);
+    q.pump();
+    await sleep(5);
+    assert.equal(inFlight, 3);
+    limit = 1;
+    await waitIdle(q);
+    assert.equal(peak, 3, "调小不该中止正在进行的那几个");
+    assert.equal(inFlight, 0);
+  });
+
+  test("Esc：一次中止全部在跑的（并发时「当前场景」不再唯一）", async () => {
+    const q = new ScenarioQueue(
+      async (item) => {
+        if (!item.abort.signal.aborted) await sleep(60);
+        return item.abort.signal.aborted ? "cancelled" : "pass";
+      },
+      () => {},
+      () => 2,
+    );
+
+    q.add("A", "a", FILE_ORIGIN);
+    q.add("B", "b", FILE_ORIGIN);
+    q.pump();
+    await sleep(5);
+    assert.equal(q.runningAll().length, 2);
+
+    const aborted = q.abortRunning();
+    assert.deepEqual(
+      aborted.map((i) => i.name),
+      ["A", "B"],
+      "一次 Esc 要把在跑的全部点上名",
+    );
+    await waitIdle(q);
+    assert.deepEqual(
+      q.all().map((i) => i.state),
+      ["cancelled", "cancelled"],
+    );
+  });
+
+  test("并发上限的兜底：坏值退回 1，超界夹到 8", async () => {
+    const peakFor = async (limit) => {
+      let inFlight = 0;
+      let peak = 0;
+      const q = new ScenarioQueue(
+        async () => {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          await sleep(5);
+          inFlight -= 1;
+          return "pass";
+        },
+        () => {},
+        limit,
+      );
+      for (let i = 0; i < 9; i++) q.add(`S${i}`, "b", FILE_ORIGIN);
+      q.pump();
+      await waitIdle(q);
+      return peak;
+    };
+    assert.equal(await peakFor(() => Number.NaN), 1, "坏值退回串行，而不是不跑");
+    assert.equal(await peakFor(() => 999), 8, "上限就是 8");
+  });
+
   test("跑到一半追加的场景会在当前场景结束后自动接上（无需再下指令）", async () => {
     const order = [];
     const q = new ScenarioQueue(async (item) => {
