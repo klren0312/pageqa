@@ -330,9 +330,9 @@ describe("Token 用量统计", () => {
     const line = formatUsage(
       addUsage(emptyUsage(), { input: 100, output: 20, totalTokens: 120 }),
     );
-    assert.ok(line.includes("输入 100"));
-    assert.ok(line.includes("合计 120"));
-    assert.ok(line.includes("LLM 调用 1 次"));
+    // 逐字对齐：这行的省字全靠**位置**当图例（⬇ 输入 · ⬆ 输出 · 读 · 写 · 总），
+    // 顺序一旦被改动，`读 0` 就可能被读成别的东西。所以钉死整行而不是抽查片段。
+    assert.equal(line, "Token: ⬇ 100 / ⬆ 20 / 读 0 / 写 0 / 总 120（LLM 调用 1 次）");
     assert.ok(!line.includes("未返回 usage"));
   });
 
