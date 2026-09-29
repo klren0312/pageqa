@@ -231,3 +231,65 @@ describe("同名折叠（超预算时的最后一档）", () => {
     assert.match(notice, /引用号全部保留、均可按 @eN 寻址/);
   });
 });
+
+/**
+ * `refs` 档位：只留可交互元素清单，用于「动作之后再确认一眼」。
+ *
+ * 守两件事：**一个 `@eN` 都不能少**（少了模型就点不到那个元素），以及纯文本要真的被丢掉
+ * （否则它跟 `full` 档位没有区别，也就省不出上下文）。
+ */
+describe("快照 refs 档位（动作后的可点击清单）", () => {
+  const smallPage = [
+    "@vom 1",
+    "@view 1406x834",
+    "L1 page",
+    '  RootWebArea "Example Domain"',
+    '    heading "Example Domain"',
+    '      StaticText "Example Domain"',
+    '    textblock "很长的一段说明文字，动作之后根本不需要看它。"',
+    "    paragraph",
+    '      @e1 link "Learn more" [→ iana.org]',
+  ].join("\n");
+
+  test("只保留可交互元素，纯文本全部丢掉", () => {
+    const full = slimSnapshot(smallPage);
+    const refs = slimSnapshot(smallPage, { mode: "refs" });
+    assert.equal(full.applied, false, "full 档位对小页面原样返回");
+    assert.equal(refs.applied, true, "refs 档位即使原文很短也裁剪");
+    assert.ok(refs.after < smallPage.length);
+    assert.match(refs.text, /@e1 link "Learn more"/);
+    assert.doesNotMatch(refs.text, /很长的一段说明文字/);
+    assert.match(refs.text, /只保留可交互元素清单/);
+  });
+
+  test("祖先链保留：同名元素仍能按区域消歧", () => {
+    const raw = [
+      "@vom 1",
+      "L1 page",
+      '  RootWebArea "x"',
+      '    region "工具栏"',
+      '      @e1 button "删除"',
+      '    region "列表"',
+      '      @e2 button "删除"',
+    ].join("\n");
+    const refs = slimSnapshot(raw, { mode: "refs" });
+    assert.match(refs.text, /region "工具栏"/);
+    assert.match(refs.text, /region "列表"/);
+    // 定位不受影响：解析出的 role/name/祖先路径与原文一致
+    assert.deepEqual(parseSnapshotRefs(refs.text), parseSnapshotRefs(raw));
+  });
+
+  test("元素极多时照常折叠，且每个引用都还能寻址", () => {
+    const refs = slimSnapshot(tableSnapshot(600), { mode: "refs" });
+    assert.ok(refs.foldedRefs > 0, "应触发折叠");
+    assert.equal(parseSnapshotRefs(refs.text).length, 600);
+  });
+
+  test("预算可调：收紧预算只会更短，不会丢引用", () => {
+    const raw = tableSnapshot(300);
+    const loose = slimSnapshot(raw, { mode: "refs", budgetChars: 20_000 });
+    const tight = slimSnapshot(raw, { mode: "refs", budgetChars: 4_000 });
+    assert.ok(tight.after <= loose.after, `${tight.after} 应不大于 ${loose.after}`);
+    assert.equal(parseSnapshotRefs(tight.text).length, 300);
+  });
+});
