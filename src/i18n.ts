@@ -114,12 +114,11 @@ const catalogs: Record<Locale, Catalog> = {
     "err.onlyWithSuite":
       "参数错误：--only 与 --suite 不能同时使用（--only 本身就是「只跑其中一个场景」）",
     "err.onlyWithTui":
-      "参数错误：--only 不能与 --tui 同时使用（--only 是批处理选项，交互模式下一次跑整份用例）",
+      "--only 不能与 --tui 同时使用（--only 是批处理选项，交互模式下一次跑整份用例）",
     "err.onlyWithReplay":
       "参数错误：--only 不能与 --replay 同时使用（回放按脚本里的场景顺序整体执行）",
     "err.concurrencyRequired": "--concurrency 需要一个正整数参数（同时跑几个场景）",
-    "err.concurrencyInvalid":
-      "参数错误：--concurrency 只收正整数，收到「{value}」",
+    "err.concurrencyInvalid": "--concurrency 只收正整数，收到「{value}」",
     "err.locateTimeoutRequired":
       "--locate-timeout 需要一个毫秒数（0 = 不等页面就绪，立刻判「元素未找到」）",
     "err.locateTimeoutInvalid":
@@ -136,6 +135,10 @@ const catalogs: Record<Locale, Catalog> = {
       "未知选项：{a}（用 --help 查看全部选项；若用例文本以 - 开头，请放在 -- 之后）",
     "err.extraPositional":
       "多余的位置参数：{a}（只接受一个用例输入；路径含空格请用引号包裹，输出路径请放在 --emit-script 之后）",
+    // 统一前缀：`args.error` 与 `detectInteractive().error` 两条路径都由它套一层。
+    // 因此**走这两条路径的文案自己不要再写「参数错误：」**，否则会打成
+    // 「参数错误：参数错误：…」（曾经真实发生过：err.concurrencyInvalid / err.onlyWithTui）。
+    // 直接写 stderr 的那些（如 err.concurrencyMax、err.onlyWithReplay）才自带前缀。
     "err.param": "参数错误：{msg}",
     "err.notFound":
       "找不到脚本文件：{path}\n  - 请确认路径存在且拼写正确\n  - 若路径含空格，请用引号包裹（如 \"C:\\dir\\my case.md\"）\n  - 若只想跑内联文本，请不要让文本以 .md/.txt 结尾",
@@ -883,13 +886,13 @@ const catalogs: Record<Locale, Catalog> = {
     "err.onlyWithSuite":
       "argument error: --only cannot be used with --suite (--only already means \"run just this one scenario\")",
     "err.onlyWithTui":
-      "argument error: --only cannot be used with --tui (--only is a batch-mode option; interactive mode runs the whole case file)",
+      "--only cannot be used with --tui (--only is a batch-mode option; interactive mode runs the whole case file)",
     "err.onlyWithReplay":
       "argument error: --only cannot be used with --replay (replay walks the script's scenarios in order)",
     "err.concurrencyRequired":
       "--concurrency needs a positive integer (how many scenarios to run at once)",
     "err.concurrencyInvalid":
-      "argument error: --concurrency accepts a positive integer only, got \"{value}\"",
+      "--concurrency accepts a positive integer only, got \"{value}\"",
     "err.locateTimeoutRequired":
       "--locate-timeout needs a millisecond value (0 = do not wait for the page, judge \"element not found\" at once)",
     "err.locateTimeoutInvalid":
@@ -906,6 +909,10 @@ const catalogs: Record<Locale, Catalog> = {
       "unknown option: {a} (see --help for all options; if the case text starts with -, put it after --)",
     "err.extraPositional":
       "extra positional argument: {a} (only one case input is accepted; quote paths with spaces, put the output path after --emit-script)",
+    // One prefix for two paths: `args.error` and `detectInteractive().error` both get wrapped here,
+    // so those messages must NOT carry "argument error:" themselves (it would print twice — that
+    // really happened for err.concurrencyInvalid / err.onlyWithTui). Messages written straight to
+    // stderr (err.concurrencyMax, err.onlyWithReplay, err.concurrencyWithSession, …) keep their own.
     "err.param": "argument error: {msg}",
     "err.notFound":
       "script file not found: {path}\n  - confirm the path exists and is spelled correctly\n  - if the path has spaces, quote it (e.g. \"C:\\dir\\my case.md\")\n  - if you only want to run inline text, do not let the text end with .md/.txt",

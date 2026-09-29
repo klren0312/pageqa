@@ -57,6 +57,41 @@ describe("并发量的文案两种语种都不缺", () => {
   });
 });
 
+/**
+ * 走 `err.param` 的报错文案不能自带前缀。
+ *
+ * 有两条路径会给消息套一层「参数错误：」：main 里的 `args.error` 与
+ * `detectInteractive().error`。文案自己再写一遍就打成「参数错误：参数错误：…」
+ * ——`err.concurrencyInvalid` 与 `err.onlyWithTui` 都真实发生过。
+ */
+describe("会被 err.param 套前缀的报错，自己不带前缀", () => {
+  // 只列走 args.error / detectInteractive().error 的键；直接写 stderr 的那些
+  // （err.concurrencyMax、err.onlyWithReplay、err.concurrencyWithSession…）自带前缀，不在列。
+  const WRAPPED = [
+    "err.concurrencyInvalid",
+    "err.locateTimeoutInvalid",
+    "err.onlyWithTui",
+  ];
+
+  test("zh 与 en 都不重复前缀", () => {
+    const previous = getLocale();
+    try {
+      for (const locale of ["zh", "en"]) {
+        setLocale(locale);
+        for (const key of WRAPPED) {
+          assert.doesNotMatch(
+            t(key, { value: "x", n: 1, max: 1 }),
+            /^(参数错误：|argument error:)/,
+            `${locale} 自带前缀：${key}`,
+          );
+        }
+      }
+    } finally {
+      setLocale(previous);
+    }
+  });
+});
+
 describe("CLI 参数解析", () => {
   test("未知选项直接报错，不静默忽略（拼错的 --emti-script 不能当没发生过）", () => {
     const args = parseArgs(["--emti-script", "examples/smoke.md"]);
