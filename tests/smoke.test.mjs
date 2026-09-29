@@ -67,10 +67,20 @@ describe("A2 元素交互与断言", () => {
   });
 });
 
-// A3：失败场景（断言不存在的文本），应失败且给出可读原因
-describe("A3 失败可读原因", () => {
-  test("断言不存在文本 -> fail", async () => {
-    const report = await txt("打开 https://example.com 并断言页面包含 'THIS_TEXT_SHOULD_NOT_EXIST_XYZ'");
+// A3：反向断言（断言页面**不包含**某文本）。它校验的正是「页面确实没有这段文字」，
+// 因此页面里没有它就该通过；而页面里真有它时必须失败——否则「不包含」永远成立。
+describe("A3 反向断言", () => {
+  test("断言页面不包含不存在的文本 -> pass", async () => {
+    const report = await txt("打开 https://example.com 并断言页面不包含 'THIS_TEXT_SHOULD_NOT_EXIST_XYZ'");
+    assert.equal(report.status, "pass");
+    assert.ok(
+      report.assertions.some((a) => a.expectation.includes("不包含")),
+      "报告里的断言应带上「不包含」的方向",
+    );
+  });
+
+  test("断言页面不包含实际存在的文本 -> fail", async () => {
+    const report = await txt("打开 https://example.com 并断言页面不包含 'Example Domain'");
     assert.equal(report.status, "fail");
   });
 });

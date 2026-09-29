@@ -62,6 +62,31 @@ describe("默认系统提示里的关键规则", () => {
     assert.match(prompt, /- wait\(ms\): 固定等待。只用于\*\*页面之外\*\*的事情/);
     assert.match(prompt, /- wait_for\(text \| selector \| gone, timeoutMs\?\)/);
   });
+
+  // 模型会把提示词里的示例数字当成事实：单步用例照抄成「步骤完成：1/7」，
+  // 续跑于是追着要根本不存在的第 2~7 步（实测它反问「请补充第 2 步至第 7 步」后罢工）。
+  test("进度声明的总数以用例条数为准，不留可照抄的示例总数", () => {
+    assert.match(prompt, /总步骤数 = 用例里 `### 步骤` 的条数/);
+    assert.ok(
+      !/步骤完成：\d+\/\d+/.test(prompt),
+      "提示词里不该出现带具体分母的进度示例，模型会照抄",
+    );
+  });
+
+  // 实测的另一种跑偏：模型把 navigate/assert_text 写成正文里的伪代码，
+  // 再「假设快照返回了 Example Domain」——整轮零工具调用却给出通过结论。
+  test("写进正文的工具调用不算执行，证据必须来自工具真实返回", () => {
+    assert.match(prompt, /只有\*\*真正发起工具调用\*\*才会动浏览器/);
+    assert.match(prompt, /严禁「假设快照返回了 X」/);
+  });
+
+  // examples/smoke.md 的 A3：用例写「断言页面不包含 X」。没有方向参数时，模型只能把
+  // X 当正向期望传进去，一条本该通过的断言必然返回「不成立」（现场就是这么判成 FAIL 的）。
+  test("反向断言必须走 assert_text 的 absent 参数，而不是把「不包含」写进期望文本", () => {
+    assert.match(prompt, /- assert_text\(expectation, absent\?\)/);
+    assert.match(prompt, /absent=true/);
+    assert.match(prompt, /不要把「不包含」这类否定字眼写进文本/);
+  });
 });
 
 describe("工具失败原因", () => {

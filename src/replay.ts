@@ -203,6 +203,13 @@ export interface ReplayAssertStep {
   expectation: string;
   /** 占位符被还原时，记录录制当次实际用的字面量。 */
   recordedExpectation?: string;
+  /**
+   * 反向断言：断言页面**不包含** `expectation`。
+   *
+   * 必须与录制时同向回放：字符串匹配默认是「页面里有这段文字」，方向丢了以后
+   * 「断言页面不包含 X」会被照着正向跑，一条本该通过的断言必然失败。
+   */
+  absent?: boolean;
   /** 录制时该断言由 Jev 语义判断得出（字符串匹配可能误报，回放失败时会给出提示）。 */
   semantic?: boolean;
 }
@@ -960,7 +967,9 @@ async function runStep(
       };
     case "assert_text": {
       const expectation = expand(step.expectation);
-      const out = await ops.assertText(expectation);
+      // 方向按脚本原样回放（缺省 = 正向），不在这里重新判断用例语义：
+      // 脚本就是录下来的事实，回放不该再猜一次。
+      const out = await ops.assertText(expectation, { absent: step.absent === true });
       // 结论以结构化结果为准：assertText 返回的文本是给人/模型看的，
       // 再对它做一次文本解析等于把报告准源绑死在那段文案的措辞上。
       const outcome = ops.lastAssert();

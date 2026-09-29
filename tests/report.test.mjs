@@ -2,6 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   addUsage,
+  alignProgress,
   buildReport,
   cacheHitRate,
   countAssertions,
@@ -141,6 +142,29 @@ describe("断言以 assert_text 工具结果为准", () => {
     assert.equal(r.assertions[0].expectation, "「冒烟测试页面」");
     // 只解析到 1 条（用例里有 3 条）→ 仍旧追加「断言全部执行」失败项
     assert.ok(r.assertions.some((a) => a.expectation.includes("全部执行")));
+  });
+
+  // 实测：模型把 assert_text 写成正文里的伪代码（浏览器一步没动），
+  // 结论文本里的「成立」刚好凑够条数 → 报告给了 PASS。
+  test("传了工具断言但一条都没有：文本凑够条数也不给通过", () => {
+    const r = buildReport(
+      "打开 https://example.com 并断言标题包含 Example",
+      "第 1 步完成：assert_text(expectation=\"Example\") 返回成立，证据「Example Domain」。步骤完成：1/1",
+      [],
+    );
+    assert.equal(r.status, "fail");
+    assert.ok(
+      r.assertions.some((a) => a.expectation.includes("工具记录 0 条")),
+      "应点明「断言没有真的由工具执行」",
+    );
+  });
+
+  test("没传工具断言参数（旧调用方）仍走文本回退，不受这道闸影响", () => {
+    const r = buildReport(
+      "打开 https://example.com 并断言标题包含 Example",
+      "断言标题包含 Example：成立。页面中标题为「Example Domain」",
+    );
+    assert.equal(r.status, "pass");
   });
 });
 
@@ -284,14 +308,52 @@ describe("步骤编号与卡点定位", () => {
     assert.ok(Array.isArray(r.trace) && r.trace.length > 0);
   });
 
-  test("步骤编号与自报总数不一致时，不硬套用例原文", () => {
+  test("自报总数大于用例条数时按用例条数对齐，并给出真实的下一步", () => {
     const r = buildReport(
       ["打开 A", "断言 A"].join("\n"),
       "步骤完成：1/9",
     );
     const a = r.assertions.find((x) => x.expectation.includes("全部步骤执行完成"));
     assert.ok(a);
-    assert.ok(!a.evidence.includes("未执行到的步骤"));
+    // 对齐后 1/9 就是 1/2：编号能映射回用例，就该指出卡在哪一行
+    assert.ok(a.expectation.includes("1/2"), "总数应夹到用例条数，不照抄模型报的 9");
+    assert.ok(a.evidence.includes("未执行到的步骤（第 2/2 步）：断言 A"));
+  });
+
+  // 模型会照抄提示词里的示例总数（单步用例自报「步骤完成：1/7」），
+  // 这不是「没跑满」，而是它编了一个不存在的分母——判成失败就是把跑对的用例记成挂。
+  test("单步用例自报「1/7」不再凭空判成步骤未跑满", () => {
+    const r = buildReport(
+      "打开 https://example.com 并断言标题包含 Example",
+      ["[tool] navigate", "第 1 步完成：标题为 Example Domain", "步骤完成：1/7"].join("\n"),
+      [{ expectation: "Example", verdict: "pass", evidence: "Example Domain" }],
+    );
+    assert.equal(r.status, "pass");
+    assert.ok(
+      !r.assertions.some((a) => a.expectation.includes("全部步骤执行完成")),
+      "不应追加「步骤未跑满」的失败项",
+    );
+  });
+});
+
+// 进度对齐：续跑循环与报告共用的同一条口径（只往下夹，不凭空制造失败）。
+describe("alignProgress", () => {
+  test("没有进度声明时原样返回", () => {
+    assert.equal(alignProgress(null, 3), null);
+  });
+
+  test("用例步骤数未知（0）时不做对齐", () => {
+    assert.deepEqual(alignProgress({ done: 1, total: 7 }, 0), { done: 1, total: 7 });
+  });
+
+  test("总数大于用例条数 → 夹到用例条数，跑满就算跑满", () => {
+    assert.deepEqual(alignProgress({ done: 1, total: 7 }, 1), { done: 1, total: 1 });
+    assert.deepEqual(alignProgress({ done: 3, total: 7 }, 1), { done: 1, total: 1 });
+  });
+
+  test("总数不超过用例条数 → 原样保留（不得凭行数判成未跑满）", () => {
+    assert.deepEqual(alignProgress({ done: 2, total: 2 }, 3), { done: 2, total: 2 });
+    assert.deepEqual(alignProgress({ done: 1, total: 4 }, 4), { done: 1, total: 4 });
   });
 });
 

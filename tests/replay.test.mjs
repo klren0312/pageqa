@@ -12,6 +12,7 @@ import {
   resolveLocator,
 } from "../dist/locator.js";
 import { Recorder } from "../dist/record.js";
+import { literalAssertion } from "../dist/bsk/tools.js";
 import {
   buildReplayScript,
   DEFAULT_LOCATE_TIMEOUT_MS,
@@ -405,9 +406,42 @@ describe("Recorder 录制", () => {
     });
     assert.equal(r.recorded[0].semantic, undefined);
   });
+
+  // 方向是断言的一部分：正向的 expectation 与反向的 expectation 是同一段文本，
+  // 丢掉 absent 就等于把「页面不包含 X」按「页面包含 X」回放，必然失败。
+  test("反向断言（absent）原样录进脚本", () => {
+    const r = new Recorder(vars);
+    r.noteTool({
+      name: "assert_text",
+      params: { expectation: "THIS_TEXT_SHOULD_NOT_EXIST_XYZ", absent: true },
+      ok: true,
+      lastSnapshot: "",
+    });
+    assert.equal(r.recorded[0].absent, true);
+    assert.equal(r.recorded[0].expectation, "THIS_TEXT_SHOULD_NOT_EXIST_XYZ");
+  });
+
+  test("正向断言不写 absent 字段（历史脚本形状不变）", () => {
+    const r = new Recorder(vars);
+    r.noteTool({
+      name: "assert_text",
+      params: { expectation: "Example" },
+      ok: true,
+      lastSnapshot: "",
+    });
+    assert.equal("absent" in r.recorded[0], false);
+  });
 });
 
 describe("回放失败语义（executeReplaySteps）", () => {
+  // 假操作层默认面对的一页：够长（越过「页面还没打开」的闸门）且含 OK，
+  // 这样既有的正向断言用例保持通过，反向断言的用例又能真的校验方向。
+  const DEFAULT_PAGE = [
+    'RootWebArea "Fake Page"',
+    '  StaticText "OK"',
+    '  paragraph "足够长的可见文本，用来通过快照长度闸门"',
+  ].join("\n");
+
   /** 构造一个假的操作层：记录调用、可注入失败，避免测试依赖真实浏览器。 */
   function makeOps(handlers = {}) {
     const calls = [];
@@ -458,14 +492,22 @@ describe("回放失败语义（executeReplaySteps）", () => {
         calls.push(["wait_for", cond, timeoutMs]);
         return "等待：已达成";
       },
-      assertText: async (expectation) => {
-        calls.push(["assert_text", expectation]);
-        assertOutcome = {
+      // 与真实实现同一条判定路径（literalAssertion）：方向（absent）真的会影响结论，
+      // 因此「回放是否按录制的方向跑」能被测出来，而不是靠断言调用参数。
+      assertText: async (expectation, opts = {}) => {
+        const absent = opts.absent === true;
+        calls.push(["assert_text", expectation, absent]);
+        const decision = literalAssertion(
+          handlers.page ?? DEFAULT_PAGE,
           expectation,
-          pass: true,
-          evidence: `页面中包含「${expectation}」`,
+          absent,
+        ) ?? { pass: false, evidence: `页面中未找到「${expectation}」` };
+        assertOutcome = {
+          expectation: absent ? `页面不包含「${expectation}」` : expectation,
+          pass: decision.pass,
+          evidence: decision.evidence,
         };
-        return `断言「${expectation}」：成立。页面中包含「${expectation}」`;
+        return `断言：${decision.pass ? "成立" : "不成立"}。${decision.evidence}`;
       },
       lastAssert: () => assertOutcome,
       lastAssertSemantic: () => false,
@@ -488,6 +530,48 @@ describe("回放失败语义（executeReplaySteps）", () => {
   };
   const nav = { kind: "navigate", step: 1, url: "http://localhost/" };
   const assertOk = { kind: "assert_text", step: 1, expectation: "OK" };
+
+  // A3 的形态：用例写「断言页面不包含 X」。脚本里 absent 丢了，回放就会照着正向跑，
+  // 一条本该通过的断言必然失败；方向也丢了才更糟——脚本跑的不是录制时那件事。
+  test("反向断言：页面确实没有这段文字 → 通过", async () => {
+    const ops = makeOps();
+    const out = await run(ops, [
+      nav,
+      {
+        kind: "assert_text",
+        step: 1,
+        expectation: "THIS_TEXT_SHOULD_NOT_EXIST_XYZ",
+        absent: true,
+      },
+    ]);
+    assert.equal(out.failed, 0);
+    assert.equal(out.assertions.length, 1);
+    assert.equal(out.assertions[0].verdict, "pass");
+    assert.match(out.assertions[0].expectation, /页面不包含「THIS_TEXT_SHOULD_NOT_EXIST_XYZ」/);
+    assert.deepEqual(ops.calls.at(-1), [
+      "assert_text",
+      "THIS_TEXT_SHOULD_NOT_EXIST_XYZ",
+      true,
+    ]);
+  });
+
+  test("反向断言：页面里有这段文字 → 不成立", async () => {
+    const ops = makeOps();
+    const out = await run(ops, [
+      nav,
+      { kind: "assert_text", step: 1, expectation: "OK", absent: true },
+    ]);
+    assert.equal(out.assertions[0].verdict, "fail");
+    assert.match(out.assertions[0].evidence, /断言要求不包含/);
+    assert.equal(replayScenarioStatus(out), "fail");
+  });
+
+  test("同一段文本，正向按正向回放（方向来自脚本，不重新猜）", async () => {
+    const ops = makeOps();
+    const out = await run(ops, [nav, assertOk]);
+    assert.equal(out.assertions[0].verdict, "pass");
+    assert.deepEqual(ops.calls.at(-1), ["assert_text", "OK", false]);
+  });
 
   test("元素未找到记为跳过并继续执行剩余步骤，不算失败", async () => {
     const ops = makeOps({ snapshot: '  @e1 button "确 定"' });

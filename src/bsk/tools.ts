@@ -665,8 +665,15 @@ export interface BskOps {
   ): Promise<string>;
   /**
    * 断言页面是否包含期望文本：字面包含优先，字面未命中时（Jev 可用）才做语义复核。
+   *
+   * `opts.absent` 为 true 时语义反转：断言页面**不包含**该文本（字面命中即不成立）。
+   * 反向断言不做语义复核，理由见 `literalAssertion`。
    */
-  assertText(expectation: string, signal?: AbortSignal): Promise<string>;
+  assertText(
+    expectation: string,
+    opts?: AssertTextOptions,
+    signal?: AbortSignal,
+  ): Promise<string>;
   /** 最近一次 assertText 是否**靠 Jev 语义判断才成立**（供录制标记语义断言）。 */
   lastAssertSemantic(): boolean;
   /**
@@ -687,6 +694,56 @@ export interface AssertOutcome {
   pass: boolean;
   /** 证据（页面里看到/没看到什么，或捕获到/没捕获到什么文件）。 */
   evidence: string;
+}
+
+/**
+ * `assert_text` 的方向参数。
+ *
+ * 为什么需要它：字符串包含匹配只能表达「页面**有**这段文字」。用例里的
+ * 「断言页面不包含 X / X 不存在」若照旧把 X 当正向期望传进来，一条本该通过的断言
+ * 必然返回「不成立」——实测就是这么把 A3 判成了假失败。
+ */
+export interface AssertTextOptions {
+  /** true = 断言页面**不包含** `expectation` 这段文本。 */
+  absent?: boolean;
+}
+
+/** 快照短于这个长度就当作「页面还没打开」——见 literalAssertion 的第一条规则。 */
+const MIN_ASSERT_SNAPSHOT_CHARS = 30;
+
+/**
+ * 断言判定的**字面部分**（纯函数）：给定快照与期望，得出不依赖语义复核的结论。
+ *
+ * 返回 `null` 表示「正向断言、字面未命中」——只有这一种情形才值得再请 Jev 复核
+ * （同义词/近义表达/格式差异造成的误报 FAIL）。抽成纯函数是因为这里有三条容易写错的规则：
+ *
+ * - **快照过短（页面没打开）时反向断言也不能算成立**：空页面上确实什么都不存在，但那是
+ *   「还没导航」而不是「页面确实没有这段文字」；判成成立就是一条最危险的假通过
+ *   （用例写错 URL 也会「通过」）。
+ * - **反向断言只做字面判断**：语义相似度回答不了「页面上有没有意思相近的文字」，
+ *   把它当成「不成立」的证据，正是 A3 被 Jev 以 3% 匹配度判 FAIL 的原因。
+ * - 证据要写清「看到/没看到什么」，否则反向断言的失败读起来与正向断言一模一样。
+ */
+export function literalAssertion(
+  snapshot: string,
+  expectation: string,
+  absent = false,
+): { pass: boolean; evidence: string } | null {
+  const snapLen = snapshot.trim().length;
+  if (snapLen < MIN_ASSERT_SNAPSHOT_CHARS) {
+    return {
+      pass: false,
+      evidence: `证据：页面快照为空或过短（${snapLen} 字符），页面可能尚未打开或未导航`,
+    };
+  }
+  const hit = snapshot.includes(expectation);
+  if (absent) {
+    return hit
+      ? { pass: false, evidence: `页面中包含「${expectation}」（断言要求不包含）` }
+      : { pass: true, evidence: `页面中未找到「${expectation}」` };
+  }
+  if (hit) return { pass: true, evidence: `页面中包含「${expectation}」` };
+  return null;
 }
 
 /** bsk 失败时打在 stdout 的结构化信封（用到哪几个就声明哪几个，其余忽略）。 */
@@ -1632,8 +1689,10 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
 
     async assertText(
       expectation: string,
+      opts: AssertTextOptions = {},
       signal?: AbortSignal,
     ): Promise<string> {
+      const absent = opts.absent === true;
       // 断言要的是「当下」+「完整」：只有在期间没有任何改页面动作、且间隔很短时才复用，
       // 并且字面匹配基于瘦身前的完整快照（ensureRawSnapshot 里有原因说明）。
       const snap = await ensureRawSnapshot(
@@ -1644,35 +1703,22 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       // 本次断言是否「靠语义判断才成立」，每次调用先重置：
       // 只有字面未命中、由 Jev 复核判定成立的断言才为 true。
       assertSemantic = false;
-      // 字面包含匹配即默认路径，也是 Jev 不可用时的回退；
-      // 结论与证据同时写进 assertOutcome，供报告直接取用（不依赖模型自述措辞）。
-      const literalHit = snap.includes(expectation);
+      // 展示形式：反向断言必须带上「页面不包含」，否则报告里那条
+      // 「[PASS] THIS_TEXT_…」会被读成一条正向断言——事实正好相反。
+      const label = absent ? `页面不包含「${expectation}」` : expectation;
+      const subject = absent ? label : `「${expectation}」`;
+      // 结论与证据一起写进 assertOutcome，供报告直接取用（不依赖模型自述措辞）。
       const verdict = (pass: boolean, why: string): string => {
-        assertOutcome = { expectation, pass, evidence: why };
-        return `断言「${expectation}」：${pass ? "成立" : "不成立"}。${why}`;
+        assertOutcome = { expectation: label, pass, evidence: why };
+        return `断言${subject}：${pass ? "成立" : "不成立"}。${why}`;
       };
-      const literalWhy = literalHit
-        ? `页面中包含「${expectation}」`
-        : `页面中未找到「${expectation}」`;
 
-      // 防御：快照为空或明显不是已加载页面 → 断言不成立。
-      // 浏览器页面还没打开时，bsk 返回的是空串/about:blank/错误信息，
-      // 此时不应信任 Jev 或直接判定「成立」（空页面不可能包含断言文本）。
-      const snapLen = snap.trim().length;
-      const SNAP_MIN_LEN = 30;
-      if (snapLen < SNAP_MIN_LEN) {
-        return verdict(
-          false,
-          `证据：页面快照为空或过短（${snapLen} 字符），页面可能尚未打开或未导航`,
-        );
-      }
+      // 字面判定：三条规则（快照过短一律不成立、反向断言只看字面、字面命中不做语义复核）
+      // 都在 literalAssertion 里，有单测钉住。返回 null = 正向断言、字面未命中。
+      const literal = literalAssertion(snap, expectation, absent);
+      if (literal) return verdict(literal.pass, literal.evidence);
 
-      // 1) 字面包含命中即成立：这是默认路径，也是绝大多数断言的真实情况。
-      //    命中时不再调用 Jev —— 省掉一次远端往返（超时上限 15s），
-      //    也避免引入「肉眼可见的文本被判成不成立」这类新的失败来源。
-      if (literalHit) return verdict(true, literalWhy);
-
-      // 2) 字面未命中才请 Jev 复核：这正是语义判断有价值的场景
+      // 字面未命中才请 Jev 复核：这正是语义判断有价值的场景
       //    （同义词/近义表达/格式差异导致的误报 FAIL）。
       if (jevClient?.enabled) {
         try {
@@ -1694,12 +1740,12 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
             "[bsk] Jev 断言失败，回退到字符串匹配：" +
               (err instanceof Error ? err.message : String(err)),
           );
-          return verdict(literalHit, `${literalWhy}（Jev 不可用，已回退）`);
+          return verdict(false, `页面中未找到「${expectation}」（Jev 不可用，已回退）`);
         }
       }
 
       // 默认：字符串包含匹配
-      return verdict(false, literalWhy);
+      return verdict(false, `页面中未找到「${expectation}」`);
     },
   };
 }
@@ -2174,19 +2220,31 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     name: "assert_text",
     label: "Assert Text",
     description:
-      "断言当前页面是否包含指定文本。返回「成立」或「不成立」并附上证据（命中片段）。用于校验测试结果。",
+      "断言当前页面是否包含指定文本；absent=true 时反过来，断言页面**不包含**该文本。" +
+      "返回「成立」或「不成立」并附上证据（看到/没看到什么）。用于校验测试结果。",
     parameters: paramsOf(
       {
-        expectation: { type: "string", description: "期望在页面中出现的文本" },
+        expectation: {
+          type: "string",
+          description:
+            "被断言的文本本身。不要把「不包含 / 不存在」这类否定字眼写进来——否定用 absent 表达。",
+        },
+        absent: {
+          type: "boolean",
+          description:
+            "可选。true = 断言页面**不包含** expectation 这段文本（用例里的「断言页面不包含 X」「页面不应出现 X」「看不到 X」都用它）；" +
+            "缺省或 false = 断言页面包含它。",
+        },
       },
       ["expectation"],
     ),
     execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as ExpectParams;
+      const absent = p.absent === true;
       return exec(
         "assert_text",
-        { expectation: p.expectation },
-        (s) => ops.assertText(p.expectation, s),
+        { expectation: p.expectation, ...(absent ? { absent: true } : {}) },
+        (s) => ops.assertText(p.expectation, { absent }, s),
         signal,
       );
     },
@@ -2256,6 +2314,8 @@ interface WaitForParams {
 }
 interface ExpectParams {
   expectation: string;
+  /** 反向断言：断言页面**不包含** `expectation` 这段文本（见 AssertTextOptions）。 */
+  absent?: boolean;
 }
 
 /** 创建一个 bsk session；若已提供且仍在活跃列表中则复用，否则新建。 */
