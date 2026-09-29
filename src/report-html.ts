@@ -4,8 +4,8 @@
  * 只负责「数据 → HTML 字符串」；写盘见 writeHtmlReport。所有动态文本必须经
  * escapeHtml——场景名/断言证据来自用例与页面，不能让它们把标签结构打破。
  */
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { getLocale, t } from "./i18n.js";
 import {
   formatUsage,
@@ -72,6 +72,48 @@ function traceDetails(trace: string[] | undefined): string {
   );
 }
 
+/**
+ * 单张截图内联进 HTML 的字节上限。
+ *
+ * 报告是**自包含单文件**（内联 CSS/JS、零依赖），截图照此办理：base64 内联后图随文件走，
+ * 不会因为「报告被挪到别处」而整片失效。但整页长图的 PNG 可能有几 MB，全塞进去会把报告
+ * 撑到打不开——超过上限就退化成一行路径，人自己去开。
+ */
+const MAX_INLINE_SCREENSHOT_BYTES = 4 * 1024 * 1024;
+
+/** 截图 → `data:` URL；读不到或超限返回 null（调用方退化成路径）。 */
+function screenshotDataUrl(path: string): string | null {
+  try {
+    const bytes = readFileSync(path);
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_INLINE_SCREENSHOT_BYTES) return null;
+    return `data:image/png;base64,${bytes.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+/** 截图区（没有截图时不渲染任何东西）。 */
+function screenshotsSection(paths: string[] | undefined): string {
+  if (!paths || paths.length === 0) return "";
+  const items = paths
+    .map((path) => {
+      const url = screenshotDataUrl(path);
+      const caption = escapeHtml(basename(path));
+      if (!url) {
+        return `<p class="muted">${escapeHtml(t("reportHtml.screenshotMissing", { path }))}</p>`;
+      }
+      return (
+        `<figure><img src="${url}" alt="${caption}">` +
+        `<figcaption>${caption}</figcaption></figure>`
+      );
+    })
+    .join("");
+  return (
+    `<h3>${escapeHtml(t("reportHtml.screenshots"))}` +
+    `（${paths.length}）</h3><div class="shots">${items}</div>`
+  );
+}
+
 /** 逐场景明细节（套件）；无 scenarios 时由调用方退回单场景视图。 */
 function scenarioSection(sc: ScenarioDetail, index: number, total: number): string {
   const parts: string[] = [];
@@ -103,6 +145,7 @@ function scenarioSection(sc: ScenarioDetail, index: number, total: number): stri
       `<p class="summary">${escapeHtml(t("report.summary", { text: sc.summary }))}</p>`,
     );
   }
+  parts.push(screenshotsSection(sc.screenshots));
   parts.push(traceDetails(sc.trace));
   parts.push(`</section>`);
   return parts.join("\n");
@@ -141,6 +184,7 @@ function singleSection(r: TestReport): string {
   if (r.script) {
     parts.push(`<p>${escapeHtml(t("report.script", { path: r.script }))}</p>`);
   }
+  parts.push(screenshotsSection(r.screenshots));
   parts.push(traceDetails(r.trace));
   parts.push(`</section>`);
   return parts.join("\n");
@@ -183,6 +227,10 @@ th { background: #f6f8fa; }
 th:nth-child(1), td:nth-child(1) { width: 30%; }
 th:nth-child(2), td:nth-child(2) { width: 72px; white-space: nowrap; }
 ol.steps, ul.skipped { font-size: 0.9rem; padding-left: 1.4em; }
+.shots { display: flex; flex-direction: column; gap: 12px; margin: 8px 0; }
+.shots figure { margin: 0; }
+.shots img { max-width: 100%; display: block; border: 1px solid #d0d7de; border-radius: 6px; }
+.shots figcaption { color: #59636e; font-size: 0.8rem; margin-top: 4px; overflow-wrap: anywhere; }
 ol.steps li, ul.skipped li { margin: 4px 0; }
 details.trace { margin-top: 12px; }
 details.trace summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; }

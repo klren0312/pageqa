@@ -416,6 +416,26 @@ describe("Recorder 录制", () => {
     });
   });
 
+  test("screenshot 录「截什么」，不录「截到哪」", () => {
+    const r = new Recorder(vars);
+    r.noteText("第 1 步完成：已交互");
+    r.noteTool({ name: "screenshot", params: { fullPage: true }, ok: true, lastSnapshot: "" });
+    r.noteTool({
+      name: "screenshot",
+      params: { target: "@e1", out: "D:/shots/x.png" },
+      ok: true,
+      lastSnapshot: SNAPSHOT_1,
+    });
+    const [whole, element] = r.recorded;
+    // 整页截图没有目标、也没有显式路径
+    assert.deepEqual(whole, { kind: "screenshot", step: 2, fullPage: true, locator: null });
+    // 元素截图带上语义定位符（回放时重新解析），显式 out 原样录下
+    assert.equal(element.target, "@e1");
+    assert.equal(element.out, "D:/shots/x.png");
+    assert.equal(element.locator.role, "link");
+    assert.equal(element.locator.name, "Learn more");
+  });
+
   test("press 没有键名（不该发生）不进脚本", () => {
     const r = new Recorder(vars);
     r.noteTool({ name: "press", params: { key: "  " }, ok: true, lastSnapshot: "" });
@@ -522,6 +542,10 @@ describe("回放失败语义（executeReplaySteps）", () => {
       press: (key, options) => {
         calls.push(["press", key, options ?? {}]);
         return `已按键 ${key}`;
+      },
+      screenshot: (options) => {
+        calls.push(["screenshot", options ?? {}]);
+        return "已截图";
       },
       wait: (ms) => {
         calls.push(["wait", ms]);
@@ -852,6 +876,38 @@ describe("回放失败语义（executeReplaySteps）", () => {
     const out = await run(ops, [{ kind: "assert_network", step: 1, url: "/api/x" }]);
     assert.equal(out.assertions[0].verdict, "fail");
     assert.equal(replayScenarioStatus(out), "fail");
+  });
+
+  test("screenshot 步骤：只留证据，不产生断言、也不改场景结论", async () => {
+    const ops = makeOps();
+    const out = await run(ops, [
+      { kind: "screenshot", step: 1, fullPage: true, locator: null },
+    ]);
+    assert.deepEqual(ops.calls, [["screenshot", { fullPage: true }]]);
+    assert.equal(out.assertions.length, 0);
+    assert.equal(out.failed, 0);
+    assert.equal(replayScenarioStatus(out), "pass");
+  });
+
+  test("screenshot 步骤：元素目标经定位符解析后传给工具，显式 out 走展开", async () => {
+    const ops = makeOps({ snapshot: '  @e7 textbox "搜索关键词"' });
+    await run(
+      ops,
+      [
+        {
+          kind: "screenshot",
+          step: 1,
+          target: "@e7",
+          locator: { role: "textbox", name: "搜索关键词", nth: 0, target: "@e7" },
+          out: "shots/${date}.png",
+        },
+      ],
+      { expand: (s) => s.replace("${date}", "20260929") },
+    );
+    assert.deepEqual(ops.calls.at(-1), [
+      "screenshot",
+      { target: "@e7", out: "shots/20260929.png" },
+    ]);
   });
 
   test("--settle-waits 只改 wait 步骤，其它步骤的执行路径不变", async () => {
@@ -1329,6 +1385,7 @@ describe("回放脚本文件", () => {
       "hover",
       "scroll",
       "press",
+      "screenshot",
       "wait",
       "wait_for",
       "assert_text",
@@ -1345,6 +1402,8 @@ describe("回放脚本文件", () => {
           return { kind, step: null, target: "@e1", locator: null };
         case "press":
           return { kind, step: null, key: "Enter", locator: null };
+        case "screenshot":
+          return { kind, step: null, fullPage: true, locator: null };
         case "assert_no_console_error":
           return { kind, step: null, ignore: ["favicon"], warnings: true };
         case "assert_network":

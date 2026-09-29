@@ -17,6 +17,11 @@ import {
   uniquePath,
 } from "../downloads.js";
 import { t } from "../i18n.js";
+import {
+  ensureScreenshotDirFor,
+  recordScreenshot,
+  screenshotPath,
+} from "../screenshots.js";
 import { JevClient } from "../jev.js";
 import {
   inspectRefTarget,
@@ -666,6 +671,17 @@ export interface BskOps {
     options?: { target?: string; modifiers?: string; holdMs?: number },
     signal?: AbortSignal,
   ): Promise<string>;
+  /**
+   * 截一张图并落盘（视口 / 整页 / 某个元素），返回落盘路径。
+   *
+   * 它是**只读**动作：不改变页面内容，因此不像 click/fill 那样让快照失效；它也不产生断言
+   * ——「截图」本身不是结论，结论仍由 assert_* 给。它的价值在于**证据**：报告会把这些图
+   * 内联出来，失败现场因此不用靠文字去脑补。
+   */
+  screenshot(
+    options?: { fullPage?: boolean; target?: string; out?: string },
+    signal?: AbortSignal,
+  ): Promise<string>;
   wait(ms: number, signal?: AbortSignal): Promise<string>;
   /**
    * 等页面稳定下来：没有正在播的动画、且 DOM 已经安静一小会儿；已经是稳定状态时立刻返回。
@@ -885,6 +901,18 @@ interface BskNetworkEntry {
 interface BskNetworkJson {
   entries?: BskNetworkEntry[];
   truncated?: boolean;
+}
+
+/** `bsk screenshot --json` 回传的字段（用到哪几个就声明哪几个）。 */
+interface BskScreenshotJson {
+  tab_id?: number;
+  width?: number;
+  height?: number;
+  format?: string;
+  path?: string;
+  byte_size?: number;
+  /** 截不到时的原因（如 `page_hidden`）；**有它说明这次截图没成**，不是一张空图。 */
+  capture_unavailable?: string;
 }
 
 /** console 的读取上限：与扩展侧的缓冲上限（`MAX_CONSOLE_BUFFER = 200`）一致，一次拿全。 */
@@ -1802,6 +1830,50 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       return `已按键 ${what}${landed}\n${out}`;
     },
 
+    async screenshot(
+      options?: { fullPage?: boolean; target?: string; out?: string },
+      signal?: AbortSignal,
+    ): Promise<string> {
+      const fullPage = options?.fullPage === true;
+      const target = options?.target?.trim();
+      // 协议侧这两种模式互斥（bsk 的 clap 也是 conflicts_with）：同时给只会拿到一条难懂的下层报错。
+      if (fullPage && target) throw new Error(t("bsk.screenshot.bothModes"));
+      // 元素截图在协议侧**只认 ref**（bsk 的 screenshot 没有 --selector）：是 CSS 选择器就
+      // 当场说清楚，硬试一次只会白跑一轮。
+      if (target && !looksLikeRef(target)) {
+        throw new Error(t("bsk.screenshot.refOnly", { target }));
+      }
+      const landed = target ? checkRef("screenshot", target) : "";
+      const label = fullPage ? "full-page" : target ? "element" : "viewport";
+      const dest = screenshotPath(new Date(), label, options?.out);
+      ensureScreenshotDirFor(dest);
+      const args = ["screenshot", "--out", dest, "--json", ...quiet];
+      if (fullPage) args.push("--full-page");
+      else if (target) args.push("--ref", target);
+      const out = await bsk(args, signal);
+      const meta = parseBskJson<BskScreenshotJson>(out);
+      // `capture_unavailable` = bsk 明确说「这次没截成」（页面隐藏、Canvas 读不到等）。
+      // 那意味着**没有证据**，不能给出一条看起来成功的回显——报告里会因此少一张图却无人知道。
+      const unavailable = meta?.capture_unavailable?.trim();
+      if (unavailable) {
+        throw new Error(t("bsk.screenshot.unavailable", { reason: unavailable }));
+      }
+      const path = meta?.path?.trim() || dest;
+      const size =
+        typeof meta?.width === "number" && typeof meta?.height === "number"
+          ? `${meta.width}x${meta.height}`
+          : "";
+      const bytes =
+        typeof meta?.byte_size === "number" ? meta.byte_size : fileSizeOrNull(path);
+      recordScreenshot(path);
+      return (
+        `已截图（${label}）：${path}` +
+        (size ? `，${size}` : "") +
+        (typeof bytes === "number" && bytes > 0 ? `，${bytes} 字节` : "") +
+        landed
+      );
+    },
+
     wait: doWait,
 
     settle: doSettle,
@@ -2246,6 +2318,13 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       // 断言型工具的结论（成立与否 + 证据）都落在同一条结构化结果上：报告直接取用，
       // 不去解析工具返回文案的措辞（见 ASSERTION_TOOLS）。
       const assertion = ASSERTION_TOOLS.has(name) ? ops.lastAssert() : null;
+      // 断言不成立是**确定性的失败信号**：当场截一张图——此刻页面正是「期望 vs 实际」的
+      // 现场。放到场景收尾再截就晚了：后面的步骤可能已经把页面带走，而失败往往就发生在
+      // 「点击 → 页面跳转 → 结果不对」这条链的中间。截图失败不影响结论（见该函数）。
+      const shot =
+        assertion && !assertion.pass
+          ? await captureSessionScreenshot(opts.session, { label: "failure", signal })
+          : null;
       opts.onExec?.({
         name,
         params,
@@ -2260,8 +2339,12 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         // 不再从模型自述里反推（见 report.ts 的 buildReport）。
         ...(assertion ? { assert: assertion } : {}),
       });
+      // 把截图路径告诉模型：它据此知道「现场已经留下来了」，不必再自己调一次 screenshot。
+      const shotNote = shot ? t("bsk.screenshot.onFailure", { path: shot }) : "";
       return ok(
-        options.snapshotAfter ? text + (await refsAfterAction(signal)) : text,
+        options.snapshotAfter
+          ? text + shotNote + (await refsAfterAction(signal))
+          : text + shotNote,
       );
     } catch (err) {
       opts.onExec?.({ name, params, ok: false, lastSnapshot: before });
@@ -2620,6 +2703,48 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     },
   };
 
+  const screenshot: AgentTool = {
+    name: "screenshot",
+    label: "Screenshot",
+    description:
+      "给当前页面截一张图并落盘（**留证据**）：默认截视口，fullPage=true 截整页，" +
+      "target 传 @eN 引用时只截那个元素。" +
+      "**什么时候用**：页面出现异常、断言对不上、或想给报告留一张现场图时。" +
+      "它产出的文件会**内联进 HTML 报告**，所以用例里的「截图留证」用这个工具，" +
+      "不要用 evaluate 去碰 canvas。" +
+      "注意两点：① 它是**只读**动作，不改变页面，也**不产生断言**（结论仍由 assert_* 决定）；" +
+      "② 元素截图只支持 @eN 引用（bsk 的 screenshot 没有 CSS 选择器入口），传 CSS 选择器会被拒绝。" +
+      "out 可选：显式指定落盘路径（默认写到 ~/.pageqa/screenshots）。",
+    parameters: paramsOf({
+      fullPage: {
+        type: "boolean",
+        description: "可选：true 时截整页（自动滚动拼接），默认只截当前视口",
+      },
+      target: {
+        type: "string",
+        description: "可选：只截这个元素（@eN 引用；**不能用 CSS 选择器**）",
+      },
+      out: {
+        type: "string",
+        description: "可选：显式落盘路径；默认写到 ~/.pageqa/screenshots 下带时间戳的 PNG",
+      },
+    }),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = (params as ScreenshotParams) ?? {};
+      const options = {
+        ...(p.fullPage === true ? { fullPage: true } : {}),
+        ...(p.target ? { target: p.target } : {}),
+        ...(p.out ? { out: p.out } : {}),
+      };
+      return exec(
+        "screenshot",
+        { ...options },
+        (s) => ops.screenshot(options, s),
+        signal,
+      );
+    },
+  };
+
   const wait: AgentTool = {
     name: "wait",
     label: "Wait",
@@ -2843,6 +2968,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     hover,
     scroll,
     press,
+    screenshot,
     wait,
     waitFor,
     assertText,
@@ -2874,6 +3000,14 @@ interface PressParams {
   /** 可选：按住多少毫秒再松开。 */
   holdMs?: number;
   showPage?: boolean;
+}
+interface ScreenshotParams {
+  /** 整页截图（与 `target` 互斥）。 */
+  fullPage?: boolean;
+  /** 只截这个元素（@eN 引用；bsk 侧没有 CSS 选择器入口）。 */
+  target?: string;
+  /** 显式落盘路径。 */
+  out?: string;
 }
 interface SelectOptionParams {
   target: string;
@@ -2925,6 +3059,46 @@ interface NetworkAssertParams {
   status?: string;
   /** HTTP 方法（可选）。 */
   method?: string;
+}
+
+/**
+ * 场景收尾自动截一张图（留证据），返回落盘路径；截不到返回 null。
+ *
+ * 与工具层的 `screenshot` 分开写而不是复用它，有两个理由：
+ * - 它拿不到 ops 实例（场景收尾发生在 `createBskTools` 的闭包之外），只有一个 session id；
+ * - 它的失败语义相反——**收尾截图失败绝不影响结论**。缺一张证据图不该把一条 PASS 变成 FAIL，
+ *   所以这里把失败整个吞掉、只留一行 debug（工具层的 screenshot 是模型主动要的，失败必须报）。
+ *
+ * 为什么要有它（2026-09-29 实测）：真实业务用例不会专门写一行「截图留证」，于是报告里
+ * 一张图都没有——而失败现场恰恰最需要它。用具意图表达的「截图」步骤仍然有效，两者不冲突。
+ */
+export async function captureSessionScreenshot(
+  session: string,
+  options: { fullPage?: boolean; signal?: AbortSignal; label?: string } = {},
+): Promise<string | null> {
+  const label = options.label ?? (options.fullPage ? "full-page" : "final");
+  const dest = screenshotPath(new Date(), label);
+  try {
+    ensureScreenshotDirFor(dest);
+    const args = ["screenshot", "--out", dest, "--json", "--session", session, "--quiet"];
+    if (options.fullPage) args.push("--full-page");
+    const out = await bsk(args, options.signal);
+    const meta = parseBskJson<BskScreenshotJson>(out);
+    // bsk 明确说「没截成」时不当成证据（与工具层同一条判定）。
+    if (meta?.capture_unavailable?.trim()) {
+      debugLog("[bsk] 收尾截图未成：" + meta.capture_unavailable);
+      return null;
+    }
+    const path = meta?.path?.trim() || dest;
+    recordScreenshot(path);
+    return path;
+  } catch (err) {
+    debugLog(
+      "[bsk] 收尾截图失败（不影响结论）：" +
+        (err instanceof Error ? err.message : String(err)),
+    );
+    return null;
+  }
 }
 
 /** 创建一个 bsk session；若已提供且仍在活跃列表中则复用，否则新建。 */

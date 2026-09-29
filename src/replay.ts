@@ -20,11 +20,12 @@ import { pollUntil } from "./bsk/condition.js";
 import {
   closeSession,
   createBskOps,
+  captureSessionScreenshot,
   ensureBskReady,
   ensureSession,
   type BskOps,
 } from "./bsk/tools.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, readAutoScreenshot } from "./config.js";
 import {
   DEFAULT_DOWNLOAD_TIMEOUT_MS,
   downloadExpectation,
@@ -52,6 +53,7 @@ import {
   type TestReport,
   type TokenUsage,
 } from "./report.js";
+import { resetScreenshots, screenshotsTaken } from "./screenshots.js";
 import { TimingCollector, renderTiming } from "./timing.js";
 import { expandVars } from "./vars.js";
 
@@ -77,6 +79,7 @@ export type ReplayStepKind =
   | "hover"
   | "scroll"
   | "press"
+  | "screenshot"
   | "wait"
   | "wait_for"
   | "assert_text"
@@ -174,6 +177,24 @@ export interface ReplayPressStep {
   modifiers?: string;
   /** 按住多少毫秒再松开；未给则不保持。 */
   holdMs?: number;
+}
+
+/**
+ * 截图步骤：给这一处留一张现场图（报告会内联出来）。
+ *
+ * 它**不产生断言**（截图不是结论），所以回放失败的处理与普通动作一致：元素找不到就按
+ * 「元素未找到」跳过，不改变场景结论。
+ */
+export interface ReplayScreenshotStep {
+  kind: "screenshot";
+  step: number | null;
+  /** 整页截图（与 `target` 互斥）。 */
+  fullPage?: boolean;
+  /** 只截这个元素（录制时的 @eN）。 */
+  target?: string;
+  locator: Locator | null;
+  /** 用例显式指定的落盘路径；未给则每次回放写到新的时间戳文件名（历史不会被覆盖）。 */
+  out?: string;
 }
 
 export interface ReplayDownloadStep {
@@ -278,6 +299,7 @@ export type ReplayStep =
   | ReplayPickDateStep
   | ReplayUploadStep
   | ReplayPressStep
+  | ReplayScreenshotStep
   | ReplayDownloadStep
   | ReplayNavigateStep
   | ReplayWaitStep
@@ -472,6 +494,7 @@ const REPLAY_STEP_KINDS: ReadonlySet<string> = new Set<ReplayStepKind>([
   "hover",
   "scroll",
   "press",
+  "screenshot",
   "wait",
   "wait_for",
   "assert_text",
@@ -606,6 +629,11 @@ export function normalizePlaceholderLiterals(script: ReplayScript): string[] {
           // 断言的目标地址里也可能带动态片段（如 /api/order/202609210905）：
           // 还原成占位符，回放时重新展开，否则下一次运行里那条路径根本不存在。
           st.url = apply(st.url);
+          break;
+        case "screenshot":
+          // 显式落盘路径里可能带 `${date}` 这类占位符，同样要在回放时重新展开。
+          if (st.out !== undefined) st.out = apply(st.out);
+          applyLocator(st);
           break;
         case "click":
         case "hover":
@@ -996,6 +1024,20 @@ async function runStep(
         }),
       };
     }
+    case "screenshot": {
+      // 元素截图同样先按语义定位符解析目标（与 click 同一条路径）。解析不到时按
+      // 「元素未找到」跳过——截图是留证据，不该把整条用例判死。
+      const target = step.target
+        ? await resolveStepTarget(ops, step.target, step.locator, expand, locate)
+        : undefined;
+      return {
+        text: await ops.screenshot({
+          ...(step.fullPage ? { fullPage: true } : {}),
+          ...(target ? { target } : {}),
+          ...(step.out ? { out: expand(step.out) } : {}),
+        }),
+      };
+    }
     case "fill":
       return {
         text: await ops.fill(
@@ -1184,6 +1226,12 @@ async function runStepWithRetry(
       debugLog(t("replay.retry.debug", { index, reason }));
       await ops.settle();
     }
+  }
+  // 重试耗尽仍未成功：**当场**截一张图再抛——此刻才是失败现场，等场景收尾时页面
+  // 可能已经被后续步骤带走（回放遇到失败就停在这一步，所以这里的图就是那一步的样子）。
+  // 截图失败不影响结论（见 captureSessionScreenshot）。
+  if (readAutoScreenshot()) {
+    await captureSessionScreenshot(ops.session, { label: "failure" });
   }
   throw lastError;
 }
@@ -1424,6 +1472,11 @@ async function replayScenario(
   } finally {
     // 回放同样在场景收尾统一清理下载产物（与带模型跑同一条规则，见 downloads.ts）。
     flushDownloadCleanup();
+    // 收尾自动截图（与带模型跑同一条规则）：放在 finally 里是为了**失败/中止时也有图**——
+    // 那正是最需要现场的时候。截图失败不影响结论（见 captureSessionScreenshot）。
+    if (session && readAutoScreenshot()) {
+      await captureSessionScreenshot(session);
+    }
     if (session) await closeSession(session);
   }
 
@@ -1433,12 +1486,16 @@ async function replayScenario(
   // 与录制路径一样只写日志，不写 stdout 报告（ADR-0002）。
   const wallMs = Date.now() - startedAt;
   for (const line of renderTiming(outcome.timing.summary(wallMs))) info(line);
+  // 本场景截下的图（报告据此嵌出证据）；取走即清空，同进程连续跑多个回放场景时不串场。
+  const screenshots = [...screenshotsTaken()];
+  resetScreenshots();
   const report: TestReport = {
     mode: "replay",
     script: opts.scriptPath,
     status,
     assertions,
     skipped,
+    screenshots,
     summary: [
       t("replay.summary.executed", {
         total: scenario.steps.length,

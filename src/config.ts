@@ -71,6 +71,11 @@ export interface PageQaConfig {
    */
   downloadCleanup?: boolean;
   /**
+   * 场景收尾是否自动截一张图并写进报告。**缺失视为开**，理由同 `downloadCleanup`：
+   * 真实用例不会写「截图留证」这一步，而失败现场恰恰最需要它。显式写 `false` 可关。
+   */
+  autoScreenshot?: boolean;
+  /**
    * 单个场景的执行时长上限（毫秒）。**缺失视为不限**（0），理由同 `htmlReport`：
    * 它是个默认应该关着、只有 CI 才需要的门禁。见 ADR-0013 决策八。
    */
@@ -237,6 +242,19 @@ export function readDownloadDir(): string {
 export function readDownloadCleanup(): boolean {
   const raw = readRawConfig();
   return typeof raw.downloadCleanup === "boolean" ? raw.downloadCleanup : true;
+}
+
+/**
+ * 只读地取「场景收尾是否自动截一张图」（**不会**创建文件）。
+ *
+ * **缺失视为开**：真实用例不会专门写一行「截图留证」，而失败现场恰恰最需要它——
+ * 实测（2026-09-29）用真实业务用例跑完，报告里一张图都没有，因为用例里根本没写「截图」。
+ * 要关掉（例如 CI 里不愿产出图片文件）就显式写 `false`。与 `downloadCleanup` 同一套口径：
+ * 只认布尔值，字符串 `"false"` 不当成关。
+ */
+export function readAutoScreenshot(): boolean {
+  const raw = readRawConfig();
+  return typeof raw.autoScreenshot === "boolean" ? raw.autoScreenshot : true;
 }
 
 /**

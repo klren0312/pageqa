@@ -48,6 +48,14 @@ export interface TestReport {
   script?: string;
   /** 回放中因「元素未找到」被跳过的步骤（不算失败，但必须让人看见）。 */
   skipped?: string[];
+  /**
+   * 本场景截下的图（绝对路径，按截图顺序）。
+   *
+   * 放在报告里而不是各进程的模块级清单里：套件模式下每个场景一个子进程，父进程汇总时
+   * 拿不到子进程内存里的清单，只有随报告传上来的路径才能让父进程生成的那份 HTML 报告
+   * 真的嵌出图（见 ADR-0013）。
+   */
+  screenshots?: string[];
   assertions: AssertionResult[];
   summary?: string;
   transcript: string;
@@ -80,6 +88,8 @@ export interface ScenarioDetail {
   reason?: ScenarioFailureReason;
   /** 回放中因「元素未找到」被跳过的步骤（非空才写）。 */
   skipped?: string[];
+  /** 该场景截下的图（绝对路径；非空才写），供套件 HTML 报告按场景嵌出。 */
+  screenshots?: string[];
 }
 
 /** 单次 LLM 调用的原始用量（pi-ai 的 `Usage`，字段允许缺失）。 */
@@ -562,6 +572,7 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
   const durationMs = durations.length > 0
     ? durations.reduce((a, b) => a + b, 0)
     : undefined;
+  const screenshots = members.flatMap((m) => m.report.screenshots ?? []);
   return {
     status: overall,
     ...(durationMs === undefined ? {} : { durationMs }),
@@ -595,9 +606,25 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
       // 异常归因同样只在成员报告有时才写：断言失败的场景不带这个字段。
       ...(m.report.reason ? { reason: m.report.reason } : {}),
       ...(m.report.skipped?.length ? { skipped: m.report.skipped } : {}),
+      ...(m.report.screenshots?.length ? { screenshots: m.report.screenshots } : {}),
     })),
+    // 顶层再展平一份：旁路产物清单、以及「整套的截图」这种整体渲染直接用它，
+    // 免得每个消费方各自去遍历 scenarios。
+    ...(screenshots.length > 0 ? { screenshots } : {}),
     usage,
   };
+}
+
+/**
+ * 一份报告里所有截图的路径（套件展平各场景，单场景看自身）。
+ *
+ * 旁路产物清单用它而不是各进程的模块级清单：套件模式下每个场景一个子进程，父进程
+ * 拿不到子进程的内存（见 TestReport.screenshots 的说明）。
+ */
+export function collectScreenshots(report: TestReport): string[] {
+  const own = report.screenshots ?? [];
+  const nested = (report.scenarios ?? []).flatMap((s) => s.screenshots ?? []);
+  return [...own, ...nested];
 }
 
 /** 渲染套件文本报告：逐场景断言 + 执行轨迹（末尾若干条）+ 最终汇总。 */
