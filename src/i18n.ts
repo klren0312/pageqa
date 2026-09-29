@@ -120,6 +120,10 @@ const catalogs: Record<Locale, Catalog> = {
     "err.concurrencyRequired": "--concurrency 需要一个正整数参数（同时跑几个场景）",
     "err.concurrencyInvalid":
       "参数错误：--concurrency 只收正整数，收到「{value}」",
+    "err.locateTimeoutRequired":
+      "--locate-timeout 需要一个毫秒数（0 = 不等页面就绪，立刻判「元素未找到」）",
+    "err.locateTimeoutInvalid":
+      "--locate-timeout 只收非负整数（毫秒），收到「{value}」",
     "err.concurrencyMax":
       "参数错误：--concurrency 最大 {max}，收到 {n}。并发的代价是同时开着同样多的浏览器窗口（一个场景一个 session 一个窗口），所以不做静默截断",
 
@@ -177,12 +181,20 @@ const catalogs: Record<Locale, Catalog> = {
       "源用例内容已变更（{path}）：脚本基于录制时的版本，建议重新用 LLM 跑一次并重新生成",
     "replay.drift.unreadable": "源用例读取失败（{path}）：{msg}",
     "replay.locate.similar": "；当前页面中名字相近的 {role} 元素：{items}",
+    // 后两条只说事实、不给猜测：旧文案在这里断言「多半是点到了另一个同名菜单/按钮」与
+    // 「说明该菜单/弹窗此刻并未打开」，而真实事故恰恰是「页面还没渲染出那个筛选表单」，
+    // 结论写在证据里（见下面的 region* 两条与 replay.locate.missWaiting）。
     "replay.locate.roleOnly":
-      "；当前页面有 {count} 个 role={role} 元素（{items}），但没有名字含「{prefix}」的——多半是点到了另一个同名菜单/按钮",
-    "replay.locate.noRole":
-      "；当前页面中没有 role={role} 的可见元素，说明该菜单/弹窗此刻并未打开",
+      "；当前页面有 {count} 个 role={role} 元素（{items}），但没有名字含「{prefix}」的",
+    "replay.locate.noRole": "；当前页面中没有 role={role} 的可见元素",
+    "replay.locate.regionPresent":
+      "；录制时它所在区域 {region} 在页面上存在（页面已渲染），问题多半出在这个元素本身：改名、被移除，或这次本就不该点它",
+    "replay.locate.regionOverlay":
+      "；录制时它位于浮层 {region} 之下，而该区域此刻不存在——很可能是那个面板/弹窗没有打开",
     "replay.locate.miss":
       "无法在当前页面重新定位元素：{desc}（录制时为 {target}）{detail}",
+    "replay.locate.missWaiting":
+      "无法在当前页面重新定位元素：{desc}（录制时为 {target}）；已等页面就绪 {waited}ms（{polls} 次快照，行数 {lines}），{region} 始终没有出现——页面可能一直在加载或被重定向；若只是启动慢，可调大 --locate-timeout（当前 {limit}ms）",
     "replay.locate.missRef":
       "无法在当前页面重新定位元素：{target}（引用已失效，且录制时未拿到语义定位符）",
     "replay.step.label": "回放第 {index} 步（{kind}）",
@@ -194,7 +206,12 @@ const catalogs: Record<Locale, Catalog> = {
     "replay.retry.trace":
       "[replay-retry] #{index} {kind}（第 {attempt}/{attempts} 次失败）：{reason}",
     "replay.retry.debug": "[replay] 第 {index} 步失败，准备重试：{reason}",
+    // 定位等待：这一步为什么慢，日志与轨迹里都要能看见（不能让人猜）
+    "replay.wait.trace":
+      "[replay-wait] {label} 等页面就绪 {waited}ms（{polls} 次快照，行数 {lines}）后解析到 {ref}",
     "replay.log.step": "[pageqa] ▶ {label} …",
+    "replay.log.waitReady":
+      "[pageqa] ⏳ {label} 所在区域还没出现（{region} 不在快照里），等页面就绪，上限 {limit}ms …",
     "replay.log.ok": "[pageqa] ✓ {label} {cost}ms{assert}",
     "replay.log.okAssertPass": "（断言成立）",
     "replay.log.okAssertFail": "（断言不成立）",
@@ -712,13 +729,16 @@ const catalogs: Record<Locale, Catalog> = {
   - 测试报告与回放脚本都是「旁路产物」：只落盘、不进 stdout，路径在收尾的产物清单里。
 
 回放脚本（零模型重跑同一用例）:
-  pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast] [--settle-waits]
-                   按脚本逐步驱动浏览器，**不调用任何大模型**，断言默认走字符串包含
-                   --semantic 可改用 Jev 语义判断（需已在配置里启用 Jev）
-                   元素定位用录制时的语义定位符在当次快照里重新解析，
-                   因此页面小幅调整后脚本仍可命中；源用例变更会在 stderr 提示
-                   --fail-fast 任一失败即停止该场景；默认会跑完剩余步骤，
-                   以便一次拿到整条用例的完整健康报告（失败仍会让退出码非零）
+  pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast] [--settle-waits] [--locate-timeout <ms>]
+                  按脚本逐步驱动浏览器，**不调用任何大模型**，断言默认走字符串包含
+                  --semantic 可改用 Jev 语义判断（需已在配置里启用 Jev）
+                  元素定位用录制时的语义定位符在当次快照里重新解析，
+                  因此页面小幅调整后脚本仍可命中；源用例变更会在 stderr 提示
+                  --fail-fast 任一失败即停止该场景；默认会跑完剩余步骤，
+                  以便一次拿到整条用例的完整健康报告（失败仍会让退出码非零）
+                  --locate-timeout <ms> 定位符**所在区域整体缺失**（页面还没渲染到那一步）时，
+                  等页面就绪的上限，默认 8000ms，0 = 不等。只在区域一起缺失时等：区域在、
+                  或区域是没打开的浮层时立刻判定，所以「元素真的不存在」不会被拖慢
                    --settle-waits 把 wait 步骤执行成「等页面稳定，上限为脚本记下的毫秒数」：
                    录制时的固定等待（如 wait 2000）只是模型当时的猜测，回放里却每次都照付；
                    打开后页面一稳定就继续，通常在跳转/弹窗类等待上明显更快。默认关闭，
@@ -870,6 +890,10 @@ const catalogs: Record<Locale, Catalog> = {
       "--concurrency needs a positive integer (how many scenarios to run at once)",
     "err.concurrencyInvalid":
       "argument error: --concurrency accepts a positive integer only, got \"{value}\"",
+    "err.locateTimeoutRequired":
+      "--locate-timeout needs a millisecond value (0 = do not wait for the page, judge \"element not found\" at once)",
+    "err.locateTimeoutInvalid":
+      "--locate-timeout accepts a non-negative integer (ms) only, got \"{value}\"",
     "err.concurrencyMax":
       "argument error: --concurrency is capped at {max}, got {n}. Concurrency costs the same number of simultaneously open browser windows (one scenario, one session, one window), so this is not silently clamped",
 
@@ -929,12 +953,20 @@ const catalogs: Record<Locale, Catalog> = {
       "source case content has changed ({path}): the script was recorded against an earlier version; re-run with the LLM and regenerate",
     "replay.drift.unreadable": "failed to read the source case file ({path}): {msg}",
     "replay.locate.similar": "; similarly named {role} elements on the current page: {items}",
+    // The last two state facts only — no guesses. The old wording asserted "you probably ended up
+    // on another menu/button with the same name" and "the menu/dialog is not open right now",
+    // while the real incident was "the page has not rendered that filter form yet".
     "replay.locate.roleOnly":
-      "; the page has {count} role={role} elements ({items}), but none named like \"{prefix}\" — you probably ended up on another menu/button with the same name",
-    "replay.locate.noRole":
-      "; no visible role={role} element on the current page — the menu/dialog is not open right now",
+      "; the page has {count} role={role} elements ({items}), but none named like \"{prefix}\"",
+    "replay.locate.noRole": "; no visible role={role} element on the current page",
+    "replay.locate.regionPresent":
+      "; the region it lived in ({region}) IS present on this page (the page has rendered), so the problem is the element itself: renamed, removed, or not meant to be clicked this time",
+    "replay.locate.regionOverlay":
+      "; it lived inside the overlay {region}, which does not exist right now — most likely that panel/dialog is not open",
     "replay.locate.miss":
       "cannot relocate the element on the current page: {desc} (recorded as {target}){detail}",
+    "replay.locate.missWaiting":
+      "cannot relocate the element on the current page: {desc} (recorded as {target}); waited {waited}ms for the page to become ready ({polls} snapshot(s), line counts {lines}) and {region} never appeared — the page may be stuck loading or redirecting; if it is merely slow, raise --locate-timeout (currently {limit}ms)",
     "replay.locate.missRef":
       "cannot relocate the element on the current page: {target} (the reference is stale and no semantic locator was recorded)",
     "replay.step.label": "replay step {index} ({kind})",
@@ -946,7 +978,11 @@ const catalogs: Record<Locale, Catalog> = {
     "replay.retry.trace":
       "[replay-retry] #{index} {kind} (attempt {attempt}/{attempts} failed): {reason}",
     "replay.retry.debug": "[replay] step {index} failed, about to retry: {reason}",
+    "replay.wait.trace":
+      "[replay-wait] {label} waited {waited}ms for the page to become ready ({polls} snapshot(s), line counts {lines}) and then resolved to {ref}",
     "replay.log.step": "[pageqa] ▶ {label} …",
+    "replay.log.waitReady":
+      "[pageqa] ⏳ {label}: the region it lives in is not there yet ({region} is not in the snapshot); waiting for the page to become ready, up to {limit}ms …",
     "replay.log.ok": "[pageqa] ✓ {label} {cost}ms{assert}",
     "replay.log.okAssertPass": " (assertion passed)",
     "replay.log.okAssertFail": " (assertion failed)",
@@ -1505,7 +1541,7 @@ Model switching & login:
     their paths appear in the exit side-outputs summary.
 
 Replay script (rerun the same case with zero models):
-  pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast] [--settle-waits]
+  pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast] [--settle-waits] [--locate-timeout <ms>]
                    drives the browser step by step per the script, **calling no LLM**, assertions default to string contains
                    --semantic switches to Jev semantic judgment (Jev must be enabled in config)
                    element location re-parses the recorded semantic locator in the current snapshot,
@@ -1518,6 +1554,11 @@ Replay script (rerun the same case with zero models):
                    navigation/dialog waits. Off by default, because a wait that was there for something outside
                    the page (a server-side export, a background queue) is then released early and the assertion/
                    download right after it can fail — the wait line in the trace reports the actual wait
+                   --locate-timeout <ms> caps how long a step waits for the page to become ready when the
+                   locator's whole region is missing (the page has not rendered that far yet): default 8000ms,
+                   0 = no wait at all. It waits only in that case — if the region is present, or is an overlay
+                   that is simply not open, the miss is judged immediately, so genuinely missing elements are
+                   not slowed down
 
 Progress log:
   - run progress is output to stderr in real time with timestamps (bsk daemon start, session, every tool call,

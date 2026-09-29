@@ -15,6 +15,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { pollUntil } from "./bsk/condition.js";
 import {
   closeSession,
   createBskOps,
@@ -32,10 +34,12 @@ import { t } from "./i18n.js";
 import { JevClient } from "./jev.js";
 import {
   describeLocator,
+  inspectRegion,
   isRef,
   locatorHint,
   resolveLocator,
   type Locator,
+  type RegionState,
 } from "./locator.js";
 import { debugLog, info } from "./log.js";
 import {
@@ -528,6 +532,18 @@ export interface ReplayOptions {
    * 一旦出现「wait 变快之后紧跟的断言挂了」，就能一眼看到是这个开关造成的。
    */
   settleWaits?: boolean;
+  /**
+   * `--locate-timeout <ms>`：定位符**所在区域整体缺失**时，等页面就绪的上限
+   * （默认 `DEFAULT_LOCATE_TIMEOUT_MS`，0 = 不等待）。
+   *
+   * 为什么默认要等：SPA 在 `load` 之后还要一两秒才渲染内容，而回放是**零思考时间**连着跑的
+   * （录制时模型每步之间的思考时间顺带给了页面喘息）。实测事故：navigate 返回时页面只有 5 行的
+   * 空壳，旧逻辑 1 秒内三次尝试全部落空，把「页面还没就绪」报成了「元素未找到 / 菜单点错了」。
+   *
+   * 边界很清楚：只在**区域也一起缺失**时等；区域在、或区域是没打开的浮层时立刻判定，
+   * 因此「元素真的不存在」的常见情形不会被拖慢（详见 DEFAULT_LOCATE_TIMEOUT_MS）。
+   */
+  locateTimeoutMs?: number;
 }
 
 export interface ReplayRunResult {
@@ -573,44 +589,196 @@ function stepContext(
 export class LocatorMissError extends Error {}
 
 /**
+ * 等过一轮「页面就绪」之后仍然找不到。
+ *
+ * 单独一类是为了**不再叠加重试**：那轮等待（默认 8s）已经把「等一等就会到」这件事做完了，
+ * 再重试三轮等于把同一个等待重复三遍（旧逻辑里 1 秒 × 3 次白等的正是这笔账）。
+ * 它依旧是 LocatorMissError，因此失败语义不变：记为跳过并继续。
+ */
+export class LocatorWaitTimeoutError extends LocatorMissError {}
+
+/**
+ * 定位不到时「等页面就绪」的默认上限（`--locate-timeout`）。
+ *
+ * 只在**定位符所在区域整体缺失**时才会用上（判据见 locator.inspectRegion）——那时页面多半
+ * 还在渲染：SPA 在 `load` 之后还要一两秒才画出内容（实测本机：navigate 1.7s 返回时快照只有
+ * 5 行（空壳），3.9s 才有 236 行的筛选表单）。区域在、或区域是没打开的浮层，一律立刻判定。
+ *
+ * 代价必须写明，否则就是在偷偷拖慢回放：当某元素**真的**不存在、而它所在区域也一起不存在时
+ * （例如整个表单都不在该页面上），这一步会等满上限才报「未找到」。觉得慢用 `--locate-timeout 0`
+ * 关掉等待，退回「立刻判定」的旧行为。
+ */
+export const DEFAULT_LOCATE_TIMEOUT_MS = 8_000;
+
+/** 轮询间隔：每次轮询是一次快照往返，250ms 够密到不错过就绪瞬间，也不至于把 daemon 打满。 */
+const LOCATE_POLL_MS = 250;
+
+/** 一次定位解析的等待参数。 */
+interface LocateOptions {
+  /** 结构未就绪时的轮询上限（毫秒）；0 表示不等待、立刻判定失败。 */
+  timeoutMs: number;
+  /** 轮询间隔（毫秒）；单测会调小。 */
+  pollMs: number;
+  /** 回放轨迹：等待过程写进去，报告里能看到这一步为什么贵。 */
+  trace: string[];
+  /** 步骤标签，如 `#2 click`。 */
+  label: string;
+}
+
+/** 快照行数（证据用：5 行的空壳与 236 行的完整页面一眼可辨）。 */
+const countSnapshotLines = (text: string): number =>
+  text.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
+
+/** 快照行数的变化写成一行可读证据，如 `5 → 5 → 236`（超过 6 次只留首尾各三次，中间用 `…`）。 */
+function describeLineTrajectory(lines: readonly number[]): string {
+  if (lines.length === 0) return "0";
+  // 行数不可能是负数，-1 只做「省略」的哨兵
+  const parts =
+    lines.length <= 6
+      ? [...lines]
+      : [...lines.slice(0, 3), -1, ...lines.slice(-3)];
+  return parts.map((n) => (n < 0 ? "…" : String(n))).join(" → ");
+}
+
+/**
+ * 定位失败的报错：先说**所在区域在不在**（最决定性的一条），再说「页面上现在有什么」。
+ *
+ * 旧的写法只给后半句，于是「页面还没渲染出筛选表单」被报成了「多半是点到了另一个同名菜单/按钮」
+ * 与「该菜单/弹窗此刻并未打开」——用户照着这句去查菜单，方向全错（事故经过见 inspectRegion）。
+ * 现在把区域判定放在前面：区域缺失就是「页面还没就绪」，区域在才轮到「元素本身变了」。
+ */
+function locateMissError(
+  wanted: Locator,
+  target: string,
+  snapshot: string,
+  region: RegionState,
+): LocatorMissError {
+  const role = wanted.role || "?";
+  const hint = locatorHint(wanted, snapshot);
+  const nearby =
+    hint.kind === "similar-name"
+      ? t("replay.locate.similar", { role, items: hint.items.join("、") })
+      : hint.kind === "role-only"
+        ? t("replay.locate.roleOnly", {
+            count: hint.roleCount,
+            role,
+            items: hint.items.join("、"),
+            prefix: wanted.name.slice(0, 2),
+          })
+        : t("replay.locate.noRole", { role });
+  const area =
+    region.kind === "present"
+      ? t("replay.locate.regionPresent", { region: region.label })
+      : region.kind === "missing-overlay"
+        ? t("replay.locate.regionOverlay", { region: region.label })
+        : "";
+  return new LocatorMissError(
+    t("replay.locate.miss", {
+      desc: describeLocator(wanted),
+      target,
+      detail: area + nearby,
+    }),
+  );
+}
+
+/**
+ * 等页面把定位符所在的区域渲染出来，再解析一次。
+ *
+ * 与 `wait_for` 同一条思路：等的是**真正需要的那件东西**，不是「页面稳定」这个代理指标，
+ * 因此不存在提前放行的风险——解析到才继续，解析不到就按上限报错。
+ * 每次轮询都用 `fresh` 强制取新快照，否则会连续几次拿到同一份旧快照（见 BskOps.snapshot）。
+ */
+async function resolveByWaiting(
+  ops: BskOps,
+  wanted: Locator,
+  target: string,
+  region: { label: string },
+  initialLines: number,
+  locate: LocateOptions,
+): Promise<string> {
+  info(
+    t("replay.log.waitReady", {
+      label: locate.label,
+      region: region.label,
+      limit: locate.timeoutMs,
+    }),
+  );
+  // 轨迹以「区域已缺失」的那次快照开头：它确实被观察到了，证据要完整
+  const lines: number[] = [initialLines];
+  const outcome = await pollUntil<{ ref: string | null }>({
+    timeoutMs: locate.timeoutMs,
+    intervalMs: locate.pollMs,
+    sleep,
+    now: Date.now,
+    sample: async () => {
+      const text = await ops.snapshot(undefined, { fresh: true });
+      lines.push(countSnapshotLines(text));
+      return { ref: resolveLocator(wanted, text) };
+    },
+    isHit: (sample) => sample.ref !== null,
+  });
+  const ref = outcome.hit ? (outcome.last?.ref ?? null) : null;
+  const linesText = describeLineTrajectory(lines);
+  if (ref) {
+    locate.trace.push(
+      t("replay.wait.trace", {
+        label: locate.label,
+        waited: outcome.waitedMs,
+        polls: outcome.polls,
+        lines: linesText,
+        ref,
+      }),
+    );
+    return ref;
+  }
+  throw new LocatorWaitTimeoutError(
+    t("replay.locate.missWaiting", {
+      desc: describeLocator(wanted),
+      target,
+      waited: outcome.waitedMs,
+      polls: outcome.polls,
+      lines: linesText,
+      region: region.label,
+      limit: locate.timeoutMs,
+    }),
+  );
+}
+
+/**
  * 解析这一步该操作哪个元素。
  *
- * 优先用语义定位符在当前快照里重新解析（页面微调也能命中）；
- * 解析不到时退回录制时的 target——它是 CSS 选择器就还能用，是 `@eN` 则已失效。
+ * 优先用语义定位符在当前快照里重新解析（页面微调也能命中）；解析不到时按**所在区域**分流：
+ * - 区域整体缺失（页面还没渲染到那一步）→ 等页面就绪（上限见 DEFAULT_LOCATE_TIMEOUT_MS）；
+ * - 区域在、或区域是没打开的浮层 → 立刻判定「找不到」，交给上层重试/跳过。
+ *
+ * 退回 target 的规则不变：CSS 选择器还能直接用，`@eN` 则已失效。
  */
 async function resolveStepTarget(
   ops: BskOps,
   target: string,
   locator: Locator | null,
   expand: (text: string) => string,
+  locate: LocateOptions,
 ): Promise<string> {
   if (locator && (locator.role || locator.name)) {
-    const snapshot = await ops.snapshot();
     const wanted: Locator = { ...locator, name: expand(locator.name) };
+    const snapshot = await ops.snapshot();
     const ref = resolveLocator(wanted, snapshot);
     if (ref) return ref;
-    // CSS target 还能直接试；否则只能报错——但要顺带说清「页面上现在有什么」
+    // CSS target 还能直接试（不依赖快照编号）
     if (!isRef(target)) return expand(target);
-    const role = wanted.role || "?";
-    const hint = locatorHint(wanted, snapshot);
-    const detail =
-      hint.kind === "similar-name"
-        ? t("replay.locate.similar", { role, items: hint.items.join("、") })
-        : hint.kind === "role-only"
-          ? t("replay.locate.roleOnly", {
-              count: hint.roleCount,
-              role,
-              items: hint.items.join("、"),
-              prefix: wanted.name.slice(0, 2),
-            })
-          : t("replay.locate.noRole", { role });
-    throw new LocatorMissError(
-      t("replay.locate.miss", {
-        desc: describeLocator(locator),
+    const region = inspectRegion(wanted, snapshot);
+    if (region.kind === "missing-structure" && locate.timeoutMs > 0) {
+      return await resolveByWaiting(
+        ops,
+        wanted,
         target,
-        detail,
-      }),
-    );
+        region,
+        countSnapshotLines(snapshot),
+        locate,
+      );
+    }
+    throw locateMissError(wanted, target, snapshot, region);
   }
   if (!isRef(target)) return expand(target);
   throw new LocatorMissError(t("replay.locate.missRef", { target }));
@@ -622,6 +790,7 @@ async function runStep(
   step: ReplayStep,
   expand: (text: string) => string,
   settleWaits: boolean,
+  locate: LocateOptions,
 ): Promise<{ text: string; assertion?: AssertionResult }> {
   switch (step.kind) {
     case "navigate":
@@ -629,31 +798,37 @@ async function runStep(
     case "click":
       return {
         text: await ops.click(
-          await resolveStepTarget(ops, step.target, step.locator, expand),
+          await resolveStepTarget(ops, step.target, step.locator, expand, locate),
         ),
       };
     case "hover":
       return {
         text: await ops.hover(
-          await resolveStepTarget(ops, step.target, step.locator, expand),
+          await resolveStepTarget(ops, step.target, step.locator, expand, locate),
         ),
       };
     case "scroll":
       return {
         text: await ops.scroll(
-          await resolveStepTarget(ops, step.target, step.locator, expand),
+          await resolveStepTarget(ops, step.target, step.locator, expand, locate),
         ),
       };
     case "fill":
       return {
         text: await ops.fill(
-          await resolveStepTarget(ops, step.target, step.locator, expand),
+          await resolveStepTarget(ops, step.target, step.locator, expand, locate),
           expand(step.value),
         ),
       };
     case "upload": {
       const target = step.target
-        ? await resolveStepTarget(ops, step.target, step.locator, expand)
+        ? await resolveStepTarget(
+            ops,
+            step.target,
+            step.locator,
+            expand,
+            locate,
+          )
         : undefined;
       return { text: await ops.upload(target, expand(step.file)) };
     }
@@ -661,7 +836,13 @@ async function runStep(
       const expectation = downloadExpectation(step.expectName);
       let target: string;
       try {
-        target = await resolveStepTarget(ops, step.target, step.locator, expand);
+        target = await resolveStepTarget(
+          ops,
+          step.target,
+          step.locator,
+          expand,
+          locate,
+        );
       } catch (err) {
         // 触发元素找不到**不按 skip 处理**：这一步承载断言，跳过等于把「该下载却没下载」
         // 洗成通过（普通动作的 skip 规则见 LocatorMissError，这里刻意不适用）。
@@ -748,6 +929,9 @@ async function runStep(
  *
  * navigate 不适用这套逻辑（调用方传 attempts=1）：目标不可达时重试是纯浪费——
  * 连接被拒绝/域名解析失败不会因为等一下再试就变得可达，诊断文本里也是这么说的。
+ *
+ * `LocatorWaitTimeoutError` 也不重试：它已经是**等过一轮页面就绪**之后的结果
+ * （见 resolveStepTarget 与 DEFAULT_LOCATE_TIMEOUT_MS），重复三轮只是把等待做三遍。
  */
 async function runStepWithRetry(
   ops: BskOps,
@@ -757,13 +941,15 @@ async function runStepWithRetry(
   index: number,
   attempts: number,
   settleWaits: boolean,
+  locate: LocateOptions,
 ): Promise<{ text: string; assertion?: AssertionResult }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      return await runStep(ops, step, expand, settleWaits);
+      return await runStep(ops, step, expand, settleWaits, locate);
     } catch (err) {
       lastError = err;
+      if (err instanceof LocatorWaitTimeoutError) break;
       if (attempt >= attempts) break;
       const reason = err instanceof Error ? err.message : String(err);
       trace.push(
@@ -828,6 +1014,13 @@ export interface ReplayStepOptions {
   attempts?: number;
   /** `wait` 步骤是否按「等页面稳定、上限为记下的毫秒数」执行（见 ReplayOptions.settleWaits）。 */
   settleWaits?: boolean;
+  /**
+   * 定位符所在区域整体缺失时，等页面就绪的上限（毫秒，默认 DEFAULT_LOCATE_TIMEOUT_MS）。
+   * `0` 表示不等待，立刻判定「元素未找到」（旧行为）。
+   */
+  locateTimeoutMs?: number;
+  /** 轮询间隔（毫秒，默认 250）。单测把它调小，免得测试真的等下去。 */
+  locatePollMs?: number;
 }
 
 /**
@@ -862,6 +1055,13 @@ export async function executeReplaySteps(
     const label = `#${index} ${step.kind}`;
     // navigate 不重试：目标不可达时 500ms 后再试一次也不会变得可达（理由见 runStepWithRetry）。
     const stepAttempts = step.kind === "navigate" ? 1 : attempts;
+    // 定位等待参数带步骤标签（轨迹与报错里要能指回具体哪一步），因此逐步骤构造
+    const locate: LocateOptions = {
+      timeoutMs: opts.locateTimeoutMs ?? DEFAULT_LOCATE_TIMEOUT_MS,
+      pollMs: opts.locatePollMs ?? LOCATE_POLL_MS,
+      trace: outcome.trace,
+      label,
+    };
     const startedAt = Date.now();
     info(t("replay.log.step", { label }));
     try {
@@ -873,6 +1073,7 @@ export async function executeReplaySteps(
         index,
         stepAttempts,
         opts.settleWaits ?? false,
+        locate,
       );
       outcome.executed = index;
       const cost = Date.now() - startedAt;
@@ -992,6 +1193,7 @@ async function replayScenario(
       jevActive: Boolean(jev?.enabled),
       failFast: opts.failFast ?? false,
       settleWaits: opts.settleWaits ?? false,
+      locateTimeoutMs: opts.locateTimeoutMs,
     });
   } finally {
     // 回放同样在场景收尾统一清理下载产物（与带模型跑同一条规则，见 downloads.ts）。

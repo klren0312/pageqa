@@ -31,6 +31,14 @@ describe("并发量的文案两种语种都不缺", () => {
     "err.concurrencyWithSession",
     // --settle-waits 的说明与起始提示
     "replay.log.settleWaits",
+    // --locate-timeout 的报错、等待提示与证据文案
+    "err.locateTimeoutRequired",
+    "err.locateTimeoutInvalid",
+    "replay.log.waitReady",
+    "replay.wait.trace",
+    "replay.locate.missWaiting",
+    "replay.locate.regionPresent",
+    "replay.locate.regionOverlay",
     "help.full",
   ];
 
@@ -80,6 +88,40 @@ describe("CLI 参数解析", () => {
     assert.equal(on.error, undefined);
     assert.equal(on.settleWaits, true);
     assert.equal(on.replay, "a.json");
+  });
+
+  test("--locate-timeout 收非负整数，不给就用回放里的默认值", () => {
+    assert.equal(parseArgs(["--replay", "a.json"]).locateTimeoutMs, undefined);
+    const zero = parseArgs(["--replay", "a.json", "--locate-timeout", "0"]);
+    assert.equal(zero.error, undefined);
+    assert.equal(zero.locateTimeoutMs, 0);
+    assert.equal(
+      parseArgs(["--replay", "a.json", "--locate-timeout", "1500"])
+        .locateTimeoutMs,
+      1500,
+    );
+  });
+
+  test("--locate-timeout 的坏值当场报错（静默回落会让人以为已经关掉了）", () => {
+    assert.match(parseArgs(["--locate-timeout"]).error ?? "", /--locate-timeout 需要/);
+    // 以 - 开头按「缺参」处理（与 --concurrency 同一条口径，不吞下一个 flag）
+    assert.match(
+      parseArgs(["--locate-timeout", "-1"]).error ?? "",
+      /--locate-timeout 需要/,
+    );
+    assert.match(
+      parseArgs(["--locate-timeout", "两秒"]).error ?? "",
+      /只收非负整数/,
+    );
+    assert.match(
+      parseArgs(["--locate-timeout", "1.5"]).error ?? "",
+      /只收非负整数/,
+    );
+    // 不再自带一遍「参数错误：」——main 会套 err.param，自带就成了「参数错误：参数错误：」
+    assert.match(
+      parseArgs(["--locate-timeout", "1.5"]).error ?? "",
+      /^--locate-timeout/,
+    );
   });
 });
 

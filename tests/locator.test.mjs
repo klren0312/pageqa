@@ -1,6 +1,11 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { inspectRefTarget, parseSnapshotRefs } from "../dist/locator.js";
+import {
+  inspectRefTarget,
+  inspectRegion,
+  parseSnapshotRefs,
+  snapshotNodeLabels,
+} from "../dist/locator.js";
 
 // 纯单元测试：只依赖 dist/locator.js，不需要 bsk / LLM。
 //
@@ -23,6 +28,87 @@ const SNAPSHOT = [
 ].join("\n");
 
 const refs = parseSnapshotRefs(SNAPSHOT);
+
+describe("定位符所在区域是否还在（inspectRegion）", () => {
+  // 这一组守的是真实事故（2026-09-28 钉钉日志用例）：回放刚 navigate 完就去点筛选表单里的
+  // 「创建时间」，而 SPA 在 load 之后还要 1~2 秒才渲染出那个表单。判定「它在不在」是
+  // 「该等一等」与「该报元素变了」的分岔口，判错就会把页面没就绪报成菜单点错。
+  const TITLE = 'RootWebArea "经路云-LTC管理平台 - 钉钉日志"';
+  const FORM =
+    'form "创建时间 - 发送渠道 请选择发送渠道 消息类型 请选择消息类型 接收人 用户编号 发送状态 请选择发送状态 发送时间 -"';
+  /** 只有外壳时（navigate 刚返回、实测 5 行的形态）。 */
+  const SHELL = ["L1 page", `  ${TITLE}`].join("\n");
+  const READY = [`  ${TITLE}`, `  ${FORM}`, '    @e29 combobox "创建时间 [has-submenu]"'].join(
+    "\n",
+  );
+
+  const locator = (path) => ({
+    role: "combobox",
+    name: "创建时间 [has-submenu]",
+    nth: 0,
+    target: "@e29",
+    path,
+  });
+
+  test("表单已渲染 → present（页面结构没问题，缺的是元素本身）", () => {
+    assert.deepEqual(inspectRegion(locator([TITLE, FORM]), READY), {
+      kind: "present",
+      label: FORM,
+    });
+  });
+
+  test("只有外壳 → missing-structure（页面还没就绪，值得等）", () => {
+    assert.deepEqual(inspectRegion(locator([TITLE, FORM]), SHELL), {
+      kind: "missing-structure",
+      label: FORM,
+    });
+  });
+
+  test("浮层（对话框/菜单）缺失 → missing-overlay（面板没打开，等也等不来）", () => {
+    const dialog = 'dialog "日 一 二 三 四 五 六 30 31 1 2 3 4 5 6 7"';
+    assert.equal(
+      inspectRegion(locator([TITLE, dialog]), READY).kind,
+      "missing-overlay",
+    );
+    assert.equal(
+      inspectRegion(locator([TITLE, 'menu "更多"']), READY).kind,
+      "missing-overlay",
+    );
+  });
+
+  test("区域名随填写内容变化（表单文本拼接）时仍算「在」：只比前 12 个字符", () => {
+    const afterFill = [
+      `  ${TITLE}`,
+      '  form "创建时间 - 发送渠道 机器人 消息类型 Markdown 接收人 用户编号 发送状态 跳过 发送时间 -"',
+    ].join("\n");
+    assert.equal(inspectRegion(locator([TITLE, FORM]), afterFill).kind, "present");
+  });
+
+  test("没记祖先 / 只记到页面本身 → unknown（没有判据就不猜）", () => {
+    assert.deepEqual(inspectRegion(null, READY), { kind: "unknown" });
+    assert.deepEqual(inspectRegion(locator([]), READY), { kind: "unknown" });
+    assert.deepEqual(inspectRegion(locator(undefined), READY), {
+      kind: "unknown",
+    });
+    assert.deepEqual(inspectRegion(locator([TITLE]), READY), {
+      kind: "unknown",
+    });
+  });
+
+  test("snapshotNodeLabels 收进没有 @eN 的容器行（form / RootWebArea），跳过元信息行", () => {
+    const labels = snapshotNodeLabels(READY);
+    assert.ok(labels.some((l) => l.role === "form"));
+    assert.ok(labels.some((l) => l.role === "RootWebArea"));
+    assert.ok(
+      labels.some(
+        (l) => l.role === "combobox" && l.name === "创建时间 [has-submenu]",
+      ),
+    );
+    // `L1 page` / `@vom` 这类元信息行不参与
+    assert.ok(!labels.some((l) => /^L\d+$/.test(l.role)));
+    assert.ok(!labels.some((l) => l.role === "vom" || l.role === "view"));
+  });
+});
 
 describe("引用闸门（inspectRefTarget）", () => {
   test("CSS 选择器与快照编号无关：任何情况下都放行", () => {

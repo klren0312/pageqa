@@ -360,6 +360,94 @@ export function locatorHint(
   };
 }
 
+// ── 定位失败时：这个定位符「所在区域」此刻在不在页面上 ──
+
+/**
+ * 浮层类角色：这类区域是**点一下才展开**的（对话框 / 菜单 / 悬浮面板）。
+ *
+ * 它们不在快照里时，合理结论是「面板/弹窗此刻没有打开」，而不是「页面还没渲染好」：
+ * 前者要人去改用例或脚本，后者等一等就会到，两者的处置完全相反（见 replay.ts 的
+ * resolveStepTarget）。
+ */
+const OVERLAY_ROLES = new Set([
+  "dialog",
+  "alertdialog",
+  "menu",
+  "menubar",
+  "tooltip",
+  "listbox",
+]);
+
+/**
+ * 区域名比较只取前 12 个字符。
+ *
+ * 区域名是页面文本的拼接，**会随填写内容变化**——同一份脚本里，同一个筛选表单先后被记成
+ * `form "创建时间 - 发送渠道 请选择发送渠道 消息类型 请选择消息类型 …"` 与
+ * `form "创建时间 - 发送渠道 机器人 消息类型 Markdown 接收人 用户编号 …"`。
+ * 只有前缀（`创建时间 - 发送渠道 `）是稳定的，全等比较会把「区域明明在」判成「不在」。
+ */
+const REGION_NAME_PREFIX = 12;
+
+const shortName = (name: string): string => name.slice(0, REGION_NAME_PREFIX);
+
+/**
+ * 快照里所有节点的「角色 + 可访问名」，**含没有 `@eN` 的容器行**。
+ *
+ * 与 parseSnapshotRefs 的差别正是这一点：`form "创建时间 - …"` / `dialog "日 一 二 …"`
+ * 这类区域本身没有引用编号，但它们恰恰是「这一步该不该等」的判据。
+ */
+export function snapshotNodeLabels(
+  snapshotText: string,
+): { role: string; name: string }[] {
+  const out: { role: string; name: string }[] = [];
+  for (const line of snapshotText.split(/\r?\n/)) {
+    const body = line.trim();
+    if (!body || isSnapshotMetaLine(body)) continue;
+    const { role, name } = parseRoleName(body.replace(/^@e\d+\b\s*/, ""));
+    if (role || name) out.push({ role, name });
+  }
+  return out;
+}
+
+/** 定位符所在区域此刻的状态（见 inspectRegion）。 */
+export type RegionState =
+  /** 定位符没记下祖先（CSS target / 手写脚本）：没有判据，按老办法处理。 */
+  | { kind: "unknown" }
+  /** 该区域在页面上存在：页面结构没问题，缺的是元素本身。 */
+  | { kind: "present"; label: string }
+  /** 该区域是浮层且不存在：多半是面板/弹窗没有打开。 */
+  | { kind: "missing-overlay"; label: string }
+  /** 该区域属页面结构且不存在：页面还没就绪（或根本不是录制的那个页面）。 */
+  | { kind: "missing-structure"; label: string };
+
+/**
+ * 判断**录制定位符所在的最深区域**在当前快照里还在不在。
+ *
+ * 为什么需要：元素找不到有两种原因，而快照里已经有足够线索区分它们——
+ * 「连它所在的表单/表格都没有」说明页面还没渲染到那一步（等一等就会到）；
+ * 「区域在、只有这个元素不在」说明页面已经就位（再等也不会到，多半是元素改名或被移除）。
+ * 本项目真实踩过前者：回放刚 `navigate` 完就去点筛选表单里的「创建时间」，而 SPA 在
+ * `load` 之后还要 1~2 秒才渲染出那个表单——旧逻辑 1 秒内三次尝试全部落空，
+ * 于是把「页面还没就绪」报成了「元素未找到」。
+ */
+export function inspectRegion(
+  locator: Locator | null,
+  snapshotText: string,
+): RegionState {
+  const deepest = locator?.path?.at(-1);
+  if (!deepest) return { kind: "unknown" };
+  const { role, name } = parseRoleName(deepest);
+  // 只记到页面本身（RootWebArea）：没有更细的区域信息可用，不猜
+  if (!name || role === "RootWebArea") return { kind: "unknown" };
+  const hit = snapshotNodeLabels(snapshotText).some(
+    (n) => n.role === role && shortName(n.name) === shortName(name),
+  );
+  if (hit) return { kind: "present", label: deepest };
+  return OVERLAY_ROLES.has(role)
+    ? { kind: "missing-overlay", label: deepest }
+    : { kind: "missing-structure", label: deepest };
+}
+
 /** 定位符的可读描述，用于报告与日志（说明「当时点的是什么、在哪个区域」）。 */
 export function describeLocator(locator: Locator | null): string {
   if (!locator) return "无定位符";
