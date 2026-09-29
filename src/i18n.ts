@@ -539,6 +539,10 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.running": "运行中 {i}/{n}（{duration}）",
     "tui.runningMany": "运行中 {n} 个 · 最早「{name}」已跑 {duration}",
     "tui.usage.cacheHit": "命中 {pct}%",
+    // 当前上下文长度：正在跑的场景**最近一轮**喂给模型的 token 数（input + 缓存读 + 缓存写），
+    // 对照当前模型的上下文窗口显示占比——快满时用户能提前看出「为什么模型开始忘事」。
+    "tui.usage.context": "上下文 {used}/{total}（{pct}%）",
+    "tui.usage.contextNoWindow": "上下文 {used}",
     "tui.notExecuted": "未执行",
     "tui.notRunSuffix": "（该场景未运行）",
     "tui.scenarioErrorExpectation": "场景正常执行完毕（未因错误中断）",
@@ -1435,6 +1439,8 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.running": "running {i}/{n} ({duration})",
     "tui.runningMany": "{n} running · oldest \"{name}\" for {duration}",
     "tui.usage.cacheHit": "hit {pct}%",
+    "tui.usage.context": "context {used}/{total} ({pct}%)",
+    "tui.usage.contextNoWindow": "context {used}",
     "tui.notExecuted": "not executed",
     "tui.notRunSuffix": " (this scenario did not run)",
     "tui.scenarioErrorExpectation":

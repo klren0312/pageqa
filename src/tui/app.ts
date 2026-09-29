@@ -25,6 +25,9 @@
  * - **输入框下方**常驻一行本次会话的累计用量（含正在跑的场景的实时值，每轮 LLM 调用后刷新）——
  *   长流程跑到一半就能看出已经烧了多少；文案与报告末行**同源**（同一个 `formatUsage`），
  *   端点没返回 usage 时它会自己说明，不会拿 0 冒充；
+ * - 同一行还显示**当前上下文长度**（仅当有场景在跑）：正在跑的场景最近一轮喂给模型的
+ *   token 数，对照模型窗口显示占比——上下文快满时用户能提前看出端倪，而不是等模型
+ *   开始丢步骤才发现。并发时取各场景中最大的一条。
  * - 每个场景结束再在日志里补一行该场景的明细，退出时的汇总报告口径不变。
  *
  * 模型探活（见 `../agent.ts` 的 `ensureModelReachable`）：
@@ -474,6 +477,32 @@ export async function runInteractive(
    * 否则状态栏的「已经烧了多少」会漏掉除第一条以外的所有场景。
    */
   const runningUsages = new Map<number, TokenUsage>();
+
+  /**
+   * 正在跑的每个场景的**当前上下文长度**（最近一轮 LLM 调用喂给模型的 token 数）与
+   * 该场景所用模型的上下文窗口。
+   *
+   * 子进程逐次上报的是**累计**用量，上下文得自己算：相邻两次上报的增量就是最近一次
+   * 调用的用量，其中 input + 缓存读 + 缓存写 才是「这一轮模型看到了多少」——输出与
+   * reasoning 是生成的东西，不占下一轮的上下文。窗口取场景开跑那一刻的模型（与
+   * `model` 参数同源，`/model` 换模型不影响跑到一半的场景）。
+   */
+  const runningContexts = new Map<
+    number,
+    { used: number; window: number | undefined }
+  >();
+  /** 上一次上报的累计用量：算增量用。场景结束时随实时值一起清掉。 */
+  const prevRunningUsages = new Map<number, TokenUsage>();
+
+  /** token 数 → 紧凑文本：千以下原样，之后用 k/m（和模型目录的 ctx 写法对齐）。 */
+  function fmtTokens(n: number): string {
+    if (n < 1000) return String(n);
+    if (n < 1_000_000) {
+      const k = n / 1000;
+      return `${k >= 100 ? Math.round(k) : Math.round(k * 10) / 10}k`;
+    }
+    return `${Math.round((n / 1_000_000) * 10) / 10}m`;
+  }
 
   /**
    * 本次会话累计 token 用量 = 已结束场景的结算值 + 正在跑的场景的实时值。
@@ -1207,12 +1236,31 @@ export async function runInteractive(
    * 一个 0%——那会被读成「完全没命中」。缓存读/写的绝对值本来就在同一行里，不重复。
    */
   function tuiUsageLine(usage: TokenUsage): string {
-    const line = formatUsage(usage);
+    const parts: string[] = [formatUsage(usage)];
     const hit = cacheHitRate(usage);
-    if (hit === null) return line;
-    return (
-      line + "  ·  " + t("tui.usage.cacheHit", { pct: Math.round(hit * 100) })
-    );
+    if (hit !== null) {
+      parts.push(t("tui.usage.cacheHit", { pct: Math.round(hit * 100) }));
+    }
+    // 当前上下文长度：只对**正在跑**的场景有意义（会话累计不是上下文）。并发时各场景
+    // 各有一条对话，取最大那条——最先撞到窗口上限的就是它。没在跑就不显示，
+    // 而不是把上一条场景的残影挂在那里。
+    let ctx: { used: number; window: number | undefined } | undefined;
+    for (const c of runningContexts.values()) {
+      if (c.used <= 0) continue;
+      if (!ctx || c.used > ctx.used) ctx = c;
+    }
+    if (ctx) {
+      parts.push(
+        ctx.window && ctx.window > 0
+          ? t("tui.usage.context", {
+              used: fmtTokens(ctx.used),
+              total: fmtTokens(ctx.window),
+              pct: Math.min(100, Math.round((ctx.used / ctx.window) * 100)),
+            })
+          : t("tui.usage.contextNoWindow", { used: fmtTokens(ctx.used) }),
+      );
+    }
+    return parts.join("  ·  ");
   }
 
   function updateStatus(): void {
@@ -1315,6 +1363,11 @@ export async function runInteractive(
       ),
     );
     let result: AgentRunResult;
+    // 上下文窗口取「开跑那一刻」的模型，与传给子进程的 model 参数同源。
+    runningContexts.set(item.id, {
+      used: 0,
+      window: resolveModel(catalog, currentChoice)?.contextWindow,
+    });
     try {
       // 场景交给独立子进程跑（ADR-0013）：本进程只负责把「日志往哪写、用量往哪报、
       // 会话选了哪个模型」接进去，执行本身与批处理共用同一个执行器。
@@ -1334,7 +1387,16 @@ export async function runInteractive(
         // 子进程的进度日志直接进日志视口：它自带时间戳，与 log.ts 的输出同形。
         onChildLog: append,
         // 每轮 LLM 调用后刷新状态栏里的 token 累计：长流程跑到一半就能看出已经烧了多少。
+        // 上报的是累计值，上下文取相邻两次的增量（即最近一轮喂给模型的 token 数）。
         onUsage: (usage) => {
+          const prev = prevRunningUsages.get(item.id);
+          prevRunningUsages.set(item.id, usage);
+          const ctx = runningContexts.get(item.id);
+          if (ctx) {
+            const d = (k: "input" | "cacheRead" | "cacheWrite") =>
+              Math.max(0, usage[k] - (prev?.[k] ?? 0));
+            ctx.used = d("input") + d("cacheRead") + d("cacheWrite");
+          }
           runningUsages.set(item.id, usage);
           updateStatus();
         },
@@ -1378,6 +1440,8 @@ export async function runInteractive(
       // 结算值已进 results，实时值必须清掉，否则这份消耗会在状态栏里被算两遍。
       // 放在 finally 里：中间任何一步抛错都不能让这条实时值永远挂着。
       runningUsages.delete(item.id);
+      runningContexts.delete(item.id);
+      prevRunningUsages.delete(item.id);
     }
   };
 
@@ -1655,6 +1719,8 @@ export async function runInteractive(
     document.setText("");
     results.clear();
     runningUsages.clear();
+    runningContexts.clear();
+    prevRunningUsages.clear();
     queue = new ScenarioQueue(runScenario, updateStatus, () => concurrency);
     append(
       title(
