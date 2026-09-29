@@ -16,10 +16,10 @@
 1. **bsk 有相当一批现成能力 pageqa 完全没接**，其中 `press`（键盘）、`console`/`network`（诊断读）、`screenshot`/`get-html`（证据读）属于明显缺口，接上即为纯收益。
 2. **有一项是「数据已经拿到却被丢弃」**：bsk 每次交互的结果都带原生对话框信息（`dialogs[]`），pageqa 走 human 模式、成功路径只读 stdout，而 dialogs 打在 stderr，导致 `alert`/`confirm`/`prompt` 在报告里毫无痕迹（全仓搜索 `dialogs` 零匹配）。
 3. **不建议**用 bsk 命令替换 pageqa 自建的 `picker.ts` / `condition.ts` / `settle.ts`。这三者不是「重复实现 bsk 已有能力」，而是「把多个 bsk 原子操作收敛成一次调用」，替换反而会丢掉性能与防错收益。
-4. **值得向上游提的需求只有一条**：元素级条件等待（`wait-for-selector` / `wait-for-function`）。这是 pageqa 不得不在页面侧用 `evaluate` 轮询自建 `wait_for` / 页面稳定检测的根因，且 bsk 在扩展侧实现能绕开后台标签页定时器节流。
+4. **值得向上游提的需求只有一条**：元素级条件等待（调研时拟名 `wait-for-selector` / `wait-for-function`，最终定名 `wait-for-element`）。这是 pageqa 不得不在页面侧用 `evaluate` 轮询自建 `wait_for` / 页面稳定检测的根因，且 bsk 在扩展侧实现能绕开后台标签页定时器节流。
 5. **结构性效率优化**集中在 `--json` 与 IPC 快路径两处：前者是透传 dialogs 的卡点，后者只覆盖 7 个命令，其余每条都要付 13–20ms 的子进程开销。
 
-> 落地进展：第 1 条（`press`）与第 2 条（`dialogs` 透传）已完成；第 1 条里点名的 `console` / `network` 缺口也已补上（阶段 2）。实施记录见第八节。
+> 落地进展：第 1 条（`press`）与第 2 条（`dialogs` 透传）已完成；第 1 条里点名的 `console` / `network` 缺口也已补上（阶段 2）。第 4 条（元素级条件等待）已在**上游 bsk 仓库**实现为 `bsk wait-for-element`（阶段 5）——但尚未合入上游发布，因此 pageqa 目前仍不能使用它。实施记录见第八节。
 
 ---
 
@@ -155,7 +155,7 @@ pageqa 只有 `scroll-to`，它把元素滚进视口但**不产生滚动事件**
 
 只有第一条值得提 PR，其余两条优先级低。
 
-### 5.1 元素级条件等待（推荐）
+### 5.1 元素级条件等待（推荐 → 已实现为 `bsk wait-for-element`，见第八节阶段 5）
 
 bsk 的等待能力只有：
 
@@ -212,7 +212,7 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 | 2 | `assert_no_console_error` / `assert_network` | 需按 `download` 的模式产出 `AssertOutcome` 才会进报告 | 已完成（2026-09-29） |
 | 3 | `screenshot` + HTML 报告嵌图 | 失败现场证据 | 已完成（2026-09-29） |
 | 4 | `wheel` / `focus` / `blur` / `get-html` + 扩展 IPC 快路径 | 覆盖面扩展 | 已完成（2026-09-29）<br/>`select` 未接（按 value 匹配，与用例的可见文本对不上，理由见第八节） |
-| 5 | 向上游提 `wait-for` 条件等待 PR | 落地后可回收 `condition.ts` / `settle.ts` 的轮询逻辑 | 待办 |
+| 5 | 向上游提 `wait-for-element` 条件等待 PR | 落地后可回收 `condition.ts` / `settle.ts` 的轮询逻辑 | 已在上游实现（2026-09-29），**未合入上游**；pageqa 待其发布后才可接入（见第八节） |
 
 ---
 
@@ -361,9 +361,66 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 
 本次改动后全量单测 592 项通过。
 
+### 阶段 5：向上游新增 `bsk wait-for-element` 元素级条件等待（2026-09-29，**已实现待提 PR**）
+
+改动落在上游仓库 `D:\1project\BrowserSkill`，不是本仓库。**尚未合入上游**，所以 pageqa 现在还用不上——本节的目的是把设计决策与验证边界记清楚，避免将来重复推导。
+
+#### a) 命令形状
+
+```
+bsk wait-for-element [TARGET] [--ref @eN | --selector CSS] --state <visible|hidden|attached|detached>
+             [--timeout 10s] [--poll-ms 100] [--session <id>] [--tab-id N]
+```
+
+线上方法 `tool.wait_for_element`；结果 `{tab_id, used_ref?, used_selector?, satisfied, attached, visible, elapsed_ms, dialogs?}`。
+
+四个状态里 `hidden` 与 `detached` 是**刻意分开**的：`hidden` = 在 DOM 里但不可见，`detached` = 不在 DOM 里。不合并的理由是超时报告的价值全在「为什么没等到」——「还在树里但没显形」和「压根没出现过」是两种不同的 bug。可见性判定复用 bsk 自己的口径（`isConnected` + `checkVisibility({checkOpacity, checkVisibilityCSS, contentVisibilityAuto})` + 非零盒子），与 `scroll-to` 的可见区域判定同源。
+
+#### b) 三条设计决策
+
+1. **超时是「回答」而不是「错误」**：退出码保持 0（与 `wait-for-navigation` 的 `reached: "timeout"` 一致），结果里带 `attached` / `visible` 作为证据。这符合 pageqa 的一贯做法——用例要的是「页面是否满足了条件」这个事实，不是「命令有没有报错」。
+2. **轮询在扩展侧，不在页面里**：pageqa 现在的 `condition.ts` / `settle.ts` 是在页面内探测、外层轮询，原因是后台标签页的定时器被节流到 1s 以上。放进扩展后，10 秒等待是**一次 RPC**（而不是每次探测一次往返），且完全不依赖页面定时器。
+3. **探测复用 bsk 现成的目标解析**（`resolveBackendNode`），因此 ref / selector / 跨 frame 的行为与其它工具完全一致，不需要为等待单独维护一套解析。选择器每次探测都重新查询——这正是「等到它出现」能成立的原因。
+
+一个实现上的细节值得记：**「没找到」是观测结果而不是错误**（`attached: false`），但**其余 CDP 故障一律上抛**。把真故障折成 `attached: false` 会让一次坏掉的探测伪装成「元素确实消失了」，而调用方正是靠这个区分来决定用例该失败还是该重试。
+
+#### c) 改动面（上游）
+
+| 层 | 文件 |
+| --- | --- |
+| 协议 | `crates/bsk-protocol/src/tools/waits.rs`（`WaitForParams` / `WaitForResult` / `WaitForState` + 测试）、`src/method.rs`（`ToolWaitFor` 变体、`effect()` 归 `PassiveRead`）、`src/bin/dump-schema.rs` |
+| CLI | `crates/bsk-cli/src/cli/waits.rs`（**并入**，与 `wait-for-navigation` / `wait-ms` 同文件）、`src/cli/mod.rs`、`src/main.rs` |
+| daemon | `crates/bsk-cli/src/daemon/ipc.rs`（方法分发白名单 + 「扩展会耗满超时」的宽限名单，两处都必须加，漏第一处只会得到 `unknown_method`） |
+| 扩展 | `apps/extension/src/tools/waits.ts`（**并入**）、`transport/types.ts`、`tools/dispatcher.ts`、`tools/background-execution.ts` |
+| 测试 | `__tests__/waits.test.ts`（**并入**）、`schema/tool_wait_for_element_*.json`（dump-schema 生成）。**CHANGELOG / docs/ / skill/SKILL.md 都不动**（理由见下） |
+
+一条评审后修正：最初为这条命令（当时拟名 `wait-for`）各开了独立文件（`cli/wait_for.rs`、`tools/wait_for.ts`、`__tests__/wait_for.test.ts`），后按上游的分组惯例**全部并入 `waits`**——时序类命令（`wait-for-navigation` / `wait-for-element` / `wait-ms`）在 CLI 与扩展两侧本来就同属一个模块，单独开文件只会让「同一家族的三条命令」散在三处。协议层的类型本就放在 `waits.rs`，无需改动。
+
+又一条评审后修正：`wait-for` 与 `wait-for-navigation` 有歧义（前者读起来像后者的泛化形式，容易误用），而拟定的 `wait-for-selector` 也不准确——这条命令同样接受 `--ref @eN`，「selector」只描述了寻址方式且只说对一半。最终定名 **`wait-for-element`**：家族句式是 `wait-for-<等待的对象>`（等导航 → `wait-for-navigation`，等元素 → `wait-for-element`），而 ref 与 CSS selector 在 bsk 的模型里都只是元素的地址，状态语义交给 `--state` 表达。
+
+未接入 DSH 插件：该插件只覆盖交互类动作，连 `wait_for_navigation` / `wait_ms` 都没有暴露，所以 `wait-for-element` 保持一致。
+
+三处「周边」刻意没动：`CHANGELOG.md` 由上游维护者随版本发布撰写；`docs/` 下的工具文档与 `skill/SKILL.md` 的命令表里，waits 家族（`wait-for-navigation` / `wait-ms`）本就没有条目，单给 `wait-for-element` 加反而不一致。顺带发现一个硬约束：`SKILL.md` 有 CI 强制的 **7000 字节入口预算**（`scripts/check-skill-bundles.mjs`），当前 6996、只剩 4 字节余量——最初给它加的 5 行正是把它顶爆的原因（~7430），撤掉后校验恢复通过。将来谁想往 skill 里加命令，都得先给别处瘦身。
+
+#### d) 验证边界（重要）
+
+| 项 | 结果 |
+| --- | --- |
+| `cargo check --workspace` | 通过 |
+| `cargo test -p bsk-protocol` | 168 项通过（含新增的 4 项：状态满足矩阵、字段省略与 `ref` 别名、未知状态拒绝、超时证据往返） |
+| `cargo test -p bsk --lib` | 369 项通过（含新增的 `--state` / 时长解析与用法错误本地拦截） |
+| 扩展 vitest（`wait_for.test.ts`） | 8 项通过 |
+| 扩展全量 vitest | 2348 通过 / 2 失败，两个失败在 `human-loop.test.ts` 与 `long-screenshot/exports.test.ts`，**单独跑该两文件全通过**——是全量并行下的子进程超时抖动，与本次改动无关 |
+| 起 daemon 的 Rust 集成测试 | **本机跑不了**：`create first named-pipe instance \\.\pipe\bsk-daemon-…` 返回「拒绝访问 (os error 5)」，是这台机器对命名管道的限制。所以 `wait-for-element` 的**真机端到端路径未验证**，需要上游 CI（Linux/macOS）或解除该限制的机器 |
+| `tsc --noEmit`（扩展 compile） | **仓库既有环境问题**：`tsconfig.json` 继承 `./.wxt/tsconfig.json`，需先跑 `wxt prepare` 生成；生成后仍有一批来自 `node_modules` 与 `packages/i18n` 的 lib/moduleResolution 报错，与本次改动无关（报错列表里没有本次新增/修改的文件） |
+
+结论：**Rust 侧与扩展侧的单元/协议层验证充分，端到端（经真实 daemon + 浏览器）未验证**。提 PR 时应说明这一点。
+
 ### 待办
 
-阶段 5（向上游提 `wait-for` 条件等待 PR）见 7.2。
+无。7.2 的五个阶段均已完成（阶段 5 为上游实现，待提 PR）。
+
+若后续要回收 pageqa 的轮询逻辑，前置条件是：上游接纳并发布该命令 → 在 `pageqa` 的 `bsk/tools.ts` 增加 `wait_for` 工具（可走 IPC 快路径）→ 逐步用 bsk 原生等待替换 `condition.ts` / `settle.ts` 里的外层轮询。`settle.ts` 的「页面稳定检测」语义比单个元素状态复杂（要等网络与渲染都静下来），短时间内仍建议保留自研实现。
 
 ---
 

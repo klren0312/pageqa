@@ -1,7 +1,7 @@
 {
   "format": "pageqa-replay",
   "version": 1,
-  "recordedAt": "2026-09-29T07:06:03.635Z",
+  "recordedAt": "2026-09-29T07:33:13.855Z",
   "source": {
     "path": ".\\examples/smoke.md",
     "hash": "4eef45f9c15430f0"
@@ -24,11 +24,6 @@
           "text": "Example Domain"
         },
         {
-          "kind": "wait_for",
-          "step": 1,
-          "text": "permission"
-        },
-        {
           "kind": "assert_text",
           "step": 1,
           "expectation": "Example"
@@ -49,7 +44,7 @@
         {
           "kind": "wait_for",
           "step": 1,
-          "text": "Learn more"
+          "text": "This domain is for use in documentation examples without needing permission."
         },
         {
           "kind": "click",
@@ -64,6 +59,11 @@
               "RootWebArea \"Example Domain\""
             ]
           }
+        },
+        {
+          "kind": "wait_for",
+          "step": 1,
+          "text": "Example Domains A number of domains such as example.com and example.org are maintained for documentation purposes."
         },
         {
           "kind": "assert_text",
@@ -82,11 +82,6 @@
           "kind": "navigate",
           "step": 1,
           "url": "https://example.com"
-        },
-        {
-          "kind": "wait_for",
-          "step": 1,
-          "text": "Example Domain"
         },
         {
           "kind": "assert_text",

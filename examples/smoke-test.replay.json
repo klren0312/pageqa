@@ -1,94 +1,21 @@
 {
   "format": "pageqa-replay",
   "version": 1,
-  "recordedAt": "2026-09-28T08:33:00.964Z",
+  "recordedAt": "2026-09-29T07:52:23.152Z",
   "source": {
-    "path": ".\\examples\\smoke-test.md",
-    "hash": "53689cd4507a1e9a"
+    "path": "examples/smoke-test.md",
+    "hash": "455b65c9bb7c7601"
   },
   "scenarios": [
     {
-      "name": "路由切换测试",
-      "caseSteps": [
-        "打开 `http://localhost:18888/smoke-test-page.html` 并断言页面标题包含 冒烟测试页面",
-        "点击页面上的「表单页面 1」链接，等待页面路由切换",
-        "断言页面中已出现表单内容",
-        "点击页面上的「文件上传」链接，等待页面路由切换",
-        "断言页面中已出现文件上传相关内容"
-      ],
-      "steps": [
-        {
-          "kind": "navigate",
-          "step": 1,
-          "url": "http://localhost:18888/smoke-test-page.html"
-        },
-        {
-          "kind": "assert_text",
-          "step": 2,
-          "expectation": "冒烟测试页面"
-        },
-        {
-          "kind": "click",
-          "step": 2,
-          "target": "@e2",
-          "locator": {
-            "role": "link",
-            "name": "表单页面 1",
-            "nth": 0,
-            "target": "@e2",
-            "path": [
-              "RootWebArea \"冒烟测试页面\""
-            ]
-          }
-        },
-        {
-          "kind": "wait",
-          "step": 2,
-          "ms": 1000
-        },
-        {
-          "kind": "assert_text",
-          "step": 4,
-          "expectation": "表单页面 1"
-        },
-        {
-          "kind": "click",
-          "step": 4,
-          "target": "@e4",
-          "locator": {
-            "role": "link",
-            "name": "文件上传",
-            "nth": 0,
-            "target": "@e4",
-            "path": [
-              "RootWebArea \"冒烟测试页面\""
-            ]
-          }
-        },
-        {
-          "kind": "wait",
-          "step": 4,
-          "ms": 1000
-        },
-        {
-          "kind": "assert_text",
-          "step": 6,
-          "expectation": "文件上传"
-        }
-      ]
-    },
-    {
-      "name": "表单填写测试",
+      "name": "控制台与网络断言测试",
       "caseSteps": [
         "打开 `http://localhost:18888/smoke-test-page.html`",
-        "点击「表单页面 1」链接",
-        "在「姓名」输入框填写 `张三`",
-        "点击「城市」下拉框，在展开的选项中点击选择 `北京`",
-        "在「性别」中选择 `男`",
-        "在「出生日期」输入框填写 `1990-01-01`",
-        "点击「提交表单」按钮",
-        "等待 1 秒，让表单提交完成",
-        "断言页面中已出现成功消息"
+        "点击页面上的「接口请求」链接，等待页面路由切换",
+        "点击「请求接口」按钮，等到页面出现 `接口返回 200`",
+        "断言页面出现 `接口返回 200`",
+        "断言请求 `download-sample.txt` 返回 200，方法是 GET",
+        "断言页面没有控制台报错；把 `favicon` 交给 ignore 放行（浏览器去要 favicon 时会记一条静态资源 404，那属于已知噪音，不该让这条用例变红）"
       ],
       "steps": [
         {
@@ -99,430 +26,55 @@
         {
           "kind": "click",
           "step": 2,
-          "target": "@e2",
+          "target": "@e6",
           "locator": {
             "role": "link",
-            "name": "表单页面 1",
-            "nth": 0,
-            "target": "@e2",
-            "path": [
-              "RootWebArea \"冒烟测试页面\""
-            ]
-          }
-        },
-        {
-          "kind": "fill",
-          "step": 3,
-          "target": "@e6",
-          "value": "张三",
-          "locator": {
-            "role": "textbox",
-            "name": "姓名 *",
+            "name": "接口请求",
             "nth": 0,
             "target": "@e6",
             "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 1 姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\"",
-              "form \"姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\""
+              "RootWebArea \"冒烟测试页面\""
             ]
           }
         },
         {
+          "kind": "wait_for",
+          "step": 3,
+          "text": "请求接口"
+        },
+        {
           "kind": "click",
-          "step": 4,
+          "step": 3,
           "target": "@e7",
           "locator": {
             "role": "button",
-            "name": "请选择城市",
+            "name": "请求接口",
             "nth": 0,
             "target": "@e7",
             "path": [
               "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 1 姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\"",
-              "form \"姓名 * 城市 * 请选择城市 兴趣爱好 性别 * 出生日期 *\""
+              "main \"接口请求 发起一次真实请求（用于测试网络断言：断言「请求发生了」以及「状态码对不对」）\""
             ]
           }
         },
         {
-          "kind": "click",
+          "kind": "assert_text",
           "step": 4,
-          "target": "@e8",
-          "locator": {
-            "role": "button",
-            "name": "北京",
-            "nth": 0,
-            "target": "@e8",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 1 姓名 * 城市 * 请选择城市 北京 上海 广州 深圳 兴趣爱好 性别 * 出生日期 *\"",
-              "form \"姓名 * 城市 * 请选择城市 北京 上海 广州 深圳 兴趣爱好 性别 * 出生日期 *\""
-            ]
-          }
+          "expectation": "接口返回 200"
         },
         {
-          "kind": "click",
+          "kind": "assert_network",
           "step": 5,
-          "target": "@e12",
-          "locator": {
-            "role": "radio",
-            "name": "男",
-            "nth": 0,
-            "target": "@e12",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 1 姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\"",
-              "form \"姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\""
-            ]
-          }
+          "url": "download-sample.txt",
+          "status": "200",
+          "method": "GET"
         },
         {
-          "kind": "fill",
+          "kind": "assert_no_console_error",
           "step": 6,
-          "target": "@e14",
-          "value": "1990-01-01",
-          "locator": {
-            "role": "textbox",
-            "name": "出生日期 *",
-            "nth": 0,
-            "target": "@e14",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 1 姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\"",
-              "form \"姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\""
-            ]
-          }
-        },
-        {
-          "kind": "click",
-          "step": 7,
-          "target": "@e15",
-          "locator": {
-            "role": "button",
-            "name": "提交表单",
-            "nth": 0,
-            "target": "@e15",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 1 姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\"",
-              "form \"姓名 * 城市 * 北京 兴趣爱好 性别 * 出生日期 *\""
-            ]
-          }
-        },
-        {
-          "kind": "wait",
-          "step": 8,
-          "ms": 1000
-        },
-        {
-          "kind": "assert_text",
-          "step": 9,
-          "expectation": "表单提交成功！"
-        }
-      ]
-    },
-    {
-      "name": "表单页面 2 测试",
-      "caseSteps": [
-        "打开 `http://localhost:18888/smoke-test-page.html`",
-        "点击「表单页面 2」链接",
-        "在「邮箱」输入框填写 `test@example.com`",
-        "点击「职业」下拉框，在展开的选项中点击选择 `工程师`",
-        "点击「提交表单」按钮",
-        "等待 1 秒，让表单提交完成",
-        "断言页面中已出现成功消息"
-      ],
-      "steps": [
-        {
-          "kind": "navigate",
-          "step": 1,
-          "url": "http://localhost:18888/smoke-test-page.html"
-        },
-        {
-          "kind": "click",
-          "step": 2,
-          "target": "@e3",
-          "locator": {
-            "role": "link",
-            "name": "表单页面 2",
-            "nth": 0,
-            "target": "@e3",
-            "path": [
-              "RootWebArea \"冒烟测试页面\""
-            ]
-          }
-        },
-        {
-          "kind": "fill",
-          "step": 3,
-          "target": "@e6",
-          "value": "test@example.com",
-          "locator": {
-            "role": "textbox",
-            "name": "邮箱 *",
-            "nth": 0,
-            "target": "@e6",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 2 邮箱 * 职业 * 请选择职业\"",
-              "form \"邮箱 * 职业 * 请选择职业\""
-            ]
-          }
-        },
-        {
-          "kind": "hover",
-          "step": 4,
-          "target": "@e7",
-          "locator": {
-            "role": "button",
-            "name": "请选择职业",
-            "nth": 0,
-            "target": "@e7",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 2 邮箱 * 职业 * 请选择职业\"",
-              "form \"邮箱 * 职业 * 请选择职业\""
-            ]
-          }
-        },
-        {
-          "kind": "click",
-          "step": 4,
-          "target": "@e7",
-          "locator": {
-            "role": "button",
-            "name": "请选择职业",
-            "nth": 0,
-            "target": "@e7",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 2 邮箱 * 职业 * 请选择职业\"",
-              "form \"邮箱 * 职业 * 请选择职业\""
-            ]
-          }
-        },
-        {
-          "kind": "click",
-          "step": 5,
-          "target": "@e9",
-          "locator": {
-            "role": "button",
-            "name": "工程师",
-            "nth": 0,
-            "target": "@e9",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"表单页面 2 邮箱 * 职业 * 请选择职业 学生 工程师 设计师 产品经理\"",
-              "form \"邮箱 * 职业 * 请选择职业 学生 工程师 设计师 产品经理\""
-            ]
-          }
-        },
-        {
-          "kind": "wait",
-          "step": 6,
-          "ms": 1000
-        },
-        {
-          "kind": "assert_text",
-          "step": 7,
-          "expectation": "提交成功"
-        }
-      ]
-    },
-    {
-      "name": "文件上传测试",
-      "caseSteps": [
-        "打开 `http://localhost:18888/smoke-test-page.html`",
-        "点击「文件上传」链接",
-        "点击「选择文件」按钮并上传本地文件 `D:\\1project\\page-test-agent\\examples\\smoke-test.md`",
-        "等待 1 秒，让文件列表完成渲染",
-        "断言页面中已出现上传的文件名"
-      ],
-      "steps": [
-        {
-          "kind": "navigate",
-          "step": 1,
-          "url": "http://localhost:18888/smoke-test-page.html"
-        },
-        {
-          "kind": "click",
-          "step": 2,
-          "target": "@e4",
-          "locator": {
-            "role": "link",
-            "name": "文件上传",
-            "nth": 0,
-            "target": "@e4",
-            "path": [
-              "RootWebArea \"冒烟测试页面\""
-            ]
-          }
-        },
-        {
-          "kind": "upload",
-          "step": 3,
-          "file": "D:\\1project\\page-test-agent\\examples\\smoke-test.md",
-          "target": "@e6",
-          "locator": {
-            "role": "button",
-            "name": "选择文件",
-            "nth": 0,
-            "target": "@e6",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"文件上传 选择文件 尚未选择文件\""
-            ]
-          }
-        },
-        {
-          "kind": "wait",
-          "step": 4,
-          "ms": 1000
-        },
-        {
-          "kind": "assert_text",
-          "step": 5,
-          "expectation": "smoke-test.md (3.7 KB)"
-        }
-      ]
-    },
-    {
-      "name": "文件下载测试（直接下载）",
-      "caseSteps": [
-        "打开 `http://localhost:18888/smoke-test-page.html`",
-        "点击「文件下载」链接，等待页面路由切换",
-        "断言页面中已出现文件下载相关内容",
-        "等待 2 秒，让页面彻底就绪（与真实业务用例一致：先看清楚页面再动手）",
-        "用 download 工具把「下载示例文件」链接作为下载触发元素，捕获下载的示例文件并断言磁盘上已经拿到该文件；文件名以 .txt 结尾，把 `*.txt` 作为 expectName 传给 download（这是一个链接，也不要先 click 它——点击引发的下载只能由 download 工具自己接住）"
-      ],
-      "steps": [
-        {
-          "kind": "navigate",
-          "step": 1,
-          "url": "http://localhost:18888/smoke-test-page.html"
-        },
-        {
-          "kind": "click",
-          "step": 2,
-          "target": "@e5",
-          "locator": {
-            "role": "link",
-            "name": "文件下载",
-            "nth": 0,
-            "target": "@e5",
-            "path": [
-              "RootWebArea \"冒烟测试页面\""
-            ]
-          }
-        },
-        {
-          "kind": "wait",
-          "step": 2,
-          "ms": 1000
-        },
-        {
-          "kind": "assert_text",
-          "step": 3,
-          "expectation": "文件下载"
-        },
-        {
-          "kind": "wait",
-          "step": 4,
-          "ms": 2000
-        },
-        {
-          "kind": "download",
-          "step": 5,
-          "target": "@e6",
-          "locator": {
-            "role": "link",
-            "name": "下载示例文件",
-            "nth": 0,
-            "target": "@e6",
-            "path": [
-              "RootWebArea \"冒烟测试页面\"",
-              "main \"文件下载 直接下载 导出（需要在确认弹框里点「确定」才会开始下载）\""
-            ]
-          },
-          "expectName": "*.txt"
-        }
-      ]
-    },
-    {
-      "name": "文件下载测试（确认弹框后下载）",
-      "caseSteps": [
-        "打开 `http://localhost:18888/smoke-test-page.html`",
-        "点击「文件下载」链接，等待页面路由切换",
-        "等待 2 秒，让页面彻底就绪（理由同上）",
-        "点击「导出数据」按钮，只点它，等待确认弹框出现（不要接着点弹框里的按钮）",
-        "用 download 工具把确认弹框中的「确定」按钮作为下载触发元素，捕获导出的文件并断言磁盘上已经拿到该文件；文件名以 .txt 结尾，把 `*.txt` 作为 expectName 传给 download",
-        "等待 1 秒，确认页面出现了「导出成功」提示"
-      ],
-      "steps": [
-        {
-          "kind": "navigate",
-          "step": 1,
-          "url": "http://localhost:18888/smoke-test-page.html"
-        },
-        {
-          "kind": "click",
-          "step": 2,
-          "target": "@e5",
-          "locator": {
-            "role": "link",
-            "name": "文件下载",
-            "nth": 0,
-            "target": "@e5",
-            "path": [
-              "RootWebArea \"冒烟测试页面\""
-            ]
-          }
-        },
-        {
-          "kind": "wait",
-          "step": 3,
-          "ms": 2000
-        },
-        {
-          "kind": "wait",
-          "step": 4,
-          "ms": 1000
-        },
-        {
-          "kind": "navigate",
-          "step": 4,
-          "url": "http://localhost:18888/smoke-test-page.html#/file-download"
-        },
-        {
-          "kind": "click",
-          "step": 4,
-          "target": "@e5",
-          "locator": {
-            "role": "link",
-            "name": "文件下载",
-            "nth": 0,
-            "target": "@e5",
-            "path": [
-              "RootWebArea \"冒烟测试页面\""
-            ]
-          }
-        },
-        {
-          "kind": "wait",
-          "step": 6,
-          "ms": 1000
-        },
-        {
-          "kind": "download",
-          "step": 7,
-          "target": "button:has-text(\"确定\")",
-          "locator": {
-            "role": "",
-            "name": "",
-            "nth": -1,
-            "target": "button:has-text(\"确定\")",
-            "path": []
-          },
-          "expectName": "*.txt"
+          "ignore": [
+            "favicon"
+          ]
         }
       ]
     }
