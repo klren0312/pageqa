@@ -220,11 +220,14 @@ function renderLines(lines: Line[], fold: FoldPlan): { items: Rendered[]; trunca
 }
 
 /** 预算兜底：先收紧非关键长行，再从最长的非关键行开始整行省略。 */
-function fitBudget(items: Rendered[]): { tightened: number; dropped: number } {
+function fitBudget(
+  items: Rendered[],
+  budgetChars: number,
+): { tightened: number; dropped: number } {
   let tightened = 0;
   let dropped = 0;
   let total = totalChars(items);
-  if (total > SLIM_BUDGET_CHARS) {
+  if (total > budgetChars) {
     for (const item of items) {
       if (item.line.keep || item.text.length <= TEXT_LINE_TIGHT) continue;
       item.text = item.text.slice(0, TEXT_LINE_TIGHT) + "…";
@@ -232,12 +235,12 @@ function fitBudget(items: Rendered[]): { tightened: number; dropped: number } {
     }
     total = totalChars(items);
   }
-  if (total > SLIM_BUDGET_CHARS) {
+  if (total > budgetChars) {
     const droppable = items
       .filter((i) => !i.line.keep)
       .sort((a, b) => b.text.length - a.text.length);
     for (const item of droppable) {
-      if (total <= SLIM_BUDGET_CHARS) break;
+      if (total <= budgetChars) break;
       total -= item.text.length + 1;
       item.text = "";
       dropped += 1;
@@ -247,16 +250,43 @@ function fitBudget(items: Rendered[]): { tightened: number; dropped: number } {
 }
 
 /** 跑一遍完整瘦身规则（折叠是其中唯一可选的一档）。 */
-function slimPass(lines: Line[], fold: FoldPlan) {
+function slimPass(lines: Line[], fold: FoldPlan, budgetChars: number) {
   const { items, truncated } = renderLines(lines, fold);
-  const budget = fitBudget(items);
+  const budget = fitBudget(items, budgetChars);
   return { items, truncated: truncated + budget.tightened, dropped: budget.dropped };
 }
 
 /**
- * 瘦身快照。纯函数：不依赖 bsk、不触碰网络，便于单测。
+ * 瘦身档位。
+ *
+ * - `full`：常规瘦身（关键行 + 精简后的文本行），用于「模型第一次看页面」；
+ * - `refs`：**只留可交互元素、它们的祖先链与元信息行**，丢掉全部纯文本。
+ *
+ * `refs` 是为了「动作之后再看一眼」这个场景存在的：模型点开一个下拉之后要知道的
+ * 只有「现在能点哪些东西、编号是多少」，而纯文本（段落、说明、表格文字）在
+ * Element Plus 那种页面上能占掉九成预算。同一份快照走 `refs` 档位，体积常常是
+ * `full` 的几分之一，且**一个 `@eN` 都不少**。
  */
-export function slimSnapshot(text: string): SlimSnapshotResult {
+export type SlimMode = "full" | "refs";
+
+export interface SlimSnapshotOptions {
+  mode?: SlimMode;
+  /** 字符预算（默认 `SLIM_BUDGET_CHARS`）。 */
+  budgetChars?: number;
+}
+
+/**
+ * 瘦身快照。纯函数：不依赖 bsk、不触碰网络，便于单测。
+ *
+ * `refs` 档位**总是**裁剪（哪怕原文很短）：它的语义就是「只给可点击清单」，
+ * 交回一份带着大段文本的快照会让调用方以为「这里没什么可点的」。
+ */
+export function slimSnapshot(
+  text: string,
+  options: SlimSnapshotOptions = {},
+): SlimSnapshotResult {
+  const mode = options.mode ?? "full";
+  const budgetChars = options.budgetChars ?? SLIM_BUDGET_CHARS;
   const before = text.length;
   const untouched: SlimSnapshotResult = {
     text,
@@ -268,14 +298,16 @@ export function slimSnapshot(text: string): SlimSnapshotResult {
     foldedGroups: 0,
     foldedRefs: 0,
   };
-  if (before <= SLIM_TRIGGER_CHARS) return untouched;
+  // 小页面不折腾（`full` 档位）：原文不长时任何改写都只是让行为变得难以解释。
+  if (mode === "full" && before <= SLIM_TRIGGER_CHARS) return untouched;
 
-  const lines = text.split(/\r?\n/).map(classify);
+  const all = text.split(/\r?\n/).map(classify);
 
   // 标记关键行：ref 行本身保留，并把它所在的祖先链一并保留。
   // 祖先链是「这个元素在哪个区域下」的唯一来源，丢了它，同名元素只能靠序号猜。
+  // 这一步必须在档位过滤**之前**做：`refs` 要留下的正是这批行。
   const stack: Line[] = [];
-  for (const line of lines) {
+  for (const line of all) {
     if (line.kind === "empty") continue;
     while (stack.length > 0 && stack[stack.length - 1].indent >= line.indent) {
       stack.pop();
@@ -284,20 +316,31 @@ export function slimSnapshot(text: string): SlimSnapshotResult {
     stack.push(line);
   }
 
-  let { items, truncated, dropped } = slimPass(lines, NO_FOLD);
+  const lines =
+    mode === "refs"
+      ? all.filter((line) => line.kind !== "empty" && line.keep)
+      : all;
+
+  let { items, truncated, dropped } = slimPass(lines, NO_FOLD, budgetChars);
   let foldedGroups = 0;
   let foldedRefs = 0;
 
   // 常规瘦身仍然超预算 —— 说明剩下的全是不可再削的关键行，只能对 `@eN` 行下手
-  if (totalChars(items) > SLIM_BUDGET_CHARS) {
+  if (totalChars(items) > budgetChars) {
     const fold = planFolding(lines);
     if (fold.hosts.size > 0) {
-      // 从原文重跑一遍：折叠与截断/省略是同一套规则，只是多了一份折叠计划
-      ({ items, truncated, dropped } = slimPass(lines, fold));
+      // 从过滤后的行重跑一遍：折叠与截断/省略是同一套规则，只是多了一份折叠计划
+      ({ items, truncated, dropped } = slimPass(lines, fold, budgetChars));
       foldedGroups = fold.hosts.size;
       foldedRefs = fold.drop.size;
     }
   }
+
+  // 档位过滤丢掉的行（`refs` 丢掉的纯文本）也要计进总量并写进结果。
+  // 漏了这一步，`refs` 在「预算本来就用不完」的小页面上会走进下面那个
+  // 「没有任何实质裁剪就返回原文」的守卫——于是它把整页文本原样交了回去，
+  // 而调用方以为拿到的是一份可点击清单。
+  dropped += all.length - lines.length;
 
   // 没有任何实质裁剪时保持原文（含空行），不做无意义的改写
   if (truncated === 0 && dropped === 0 && foldedGroups === 0) return untouched;
@@ -308,9 +351,12 @@ export function slimSnapshot(text: string): SlimSnapshotResult {
     .join("\n");
   const after = body.length;
   // 末尾写明做了什么：模型据此知道「哪些内容没看到」，而不是以为页面就这么点内容
+  const detail =
+    mode === "refs"
+      ? `只保留可交互元素清单、省略 ${dropped} 行纯文本`
+      : `截断 ${truncated} 处长文本、省略 ${dropped} 行非关键文本`;
   const notice =
-    `[pageqa] 快照已瘦身：${before} → ${after} 字符` +
-    `（截断 ${truncated} 处长文本、省略 ${dropped} 行非关键文本` +
+    `[pageqa] 快照已瘦身：${before} → ${after} 字符（${detail}` +
     (foldedRefs
       ? `、${foldedRefs} 个同名元素折进所在组首行的 [xN: @eA @eB …] 标记`
       : "") +
