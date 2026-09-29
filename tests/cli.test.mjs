@@ -160,6 +160,46 @@ describe("CLI 参数解析", () => {
   });
 });
 
+describe("sessions 子命令的参数解析", () => {
+  test("不带选项时给出默认行为（自动打开浏览器）", () => {
+    const args = parseArgs(["sessions"]);
+    assert.equal(args.error, undefined);
+    assert.equal(args.sessions?.noOpen, false);
+    assert.equal(args.sessions?.port, undefined);
+    assert.equal(args.sessions?.dir, undefined);
+    // 不能被当成「跑一条叫 sessions 的用例」。
+    assert.equal(args.input, undefined);
+  });
+
+  test("--port / --dir / --no-open 都能解析", () => {
+    const args = parseArgs(["sessions", "--port", "8080", "--dir", "./x", "--no-open"]);
+    assert.equal(args.error, undefined);
+    assert.equal(args.sessions.port, 8080);
+    assert.equal(args.sessions.dir, "./x");
+    assert.equal(args.sessions.noOpen, true);
+  });
+
+  test("端口坏值当场报错（静默回落会让人以为设置在生效）", () => {
+    assert.match(parseArgs(["sessions", "--port"]).error ?? "", /--port 需要/);
+    assert.match(parseArgs(["sessions", "--port", "-1"]).error ?? "", /--port 需要/);
+    assert.match(parseArgs(["sessions", "--port", "0"]).error ?? "", /1-65535/);
+    assert.match(parseArgs(["sessions", "--port", "70000"]).error ?? "", /1-65535/);
+    assert.match(parseArgs(["sessions", "--port", "abc"]).error ?? "", /1-65535/);
+  });
+
+  test("--dir 缺参、未知选项、多余位置参数都报错", () => {
+    assert.match(parseArgs(["sessions", "--dir"]).error ?? "", /--dir 需要/);
+    assert.match(parseArgs(["sessions", "--nope"]).error ?? "", /未知选项/);
+    assert.match(parseArgs(["sessions", "extra"]).error ?? "", /多余的位置参数/);
+  });
+
+  test("普通用例输入不会被误判成子命令", () => {
+    const args = parseArgs(["sessions.md"]);
+    assert.equal(args.sessions, undefined);
+    assert.equal(args.input, "sessions.md");
+  });
+});
+
 describe("parseLocale", () => {
   test("en 前缀都算英文（en / en-US / EN）", () => {
     assert.equal(parseLocale("en"), "en");

@@ -43,6 +43,12 @@ import {
 } from "./report.js";
 import { Recorder } from "./record.js";
 import type { ScenarioRecording } from "./replay.js";
+import {
+  pruneArchives,
+  SessionCollector,
+  writeArchive,
+  type SessionParams,
+} from "./session-archive.js";
 import { TimingCollector, renderTiming } from "./timing.js";
 import { restorePlaceholders, type RunVarValue } from "./vars.js";
 import { t } from "./i18n.js";
@@ -110,7 +116,11 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "可用工具：",
   "- navigate(url): 打开网页",
   "- snapshot(): 读取页面 aria 树与可见文本（标题、段落、链接、按钮等），并定位元素",
-  "- click(target) / fill(target, value) / hover(target): 元素交互，target 用 @eN 引用或 CSS 选择器",
+  "- click(target, showPage?): 点击元素，target 用 @eN 引用或 CSS 选择器；展开下拉/菜单/弹窗、切换路由这类**会改页面**的点击带上 showPage=true，结果里会直接附一份新的可交互元素清单（含新编号），省掉紧接着的那次 snapshot",
+  "- fill(target, value): 在**文本输入框**里填入文本；下拉框、日期选择器不是文本框（见下方「选择类控件」）",
+  "- select_option(target, option): **下拉框/级联选择器一律用它**——自动点开、等浮层、按可见文本选中，一次调用完成（通用路径要三轮）",
+  "- pick_date(target, date, endDate?): **日期一律用它**——自动点开面板、翻到目标年月、点中那一天；date 支持 2026-09-29 / today / +3 / -7。**范围控件**（「开始~结束」两个输入框，如「发送时间」那类）要把结束日期一并传进 endDate，工具会按「选开始 → 选结束 → 确定」走；只传一个而面板其实是范围类型时它会明确报错（不会在页面上留下半截范围）",
+  "- hover(target, showPage?): 悬停触发菜单/提示；展开后同样可以带 showPage=true 拿新编号",
   "- upload(target, file): 上传本地文件到文件输入框/上传区域，target 传触发上传的元素（或省略由工具自动查找）",
   "- download(target, expectName?): 捕获一次浏览器下载并落盘，target 传**触发下载的元素**（导出按钮，或确认弹框里的「确定」按钮）；expectName 可传文件名通配（如 *.xlsx）。它本身就是一条断言：捕获到且文件名符合即「成立」，捕获不到（超时）或文件名不符即「不成立」",
   "- scroll(target): 滚动到元素",
@@ -142,6 +152,15 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "- 若某步骤确实无法完成（元素找不到、操作被拒绝等），明确说明该步骤失败及原因，然后继续或终止，但仍要如实输出进度声明。",
   "- 只要还有未执行的步骤，就继续调用工具执行下一步，不要中途停下等待用户输入；只有全部步骤都执行（或已明确失败）后才输出进度声明并收尾。",
   "- 工具调用失败（如 click 找不到元素、超时）不等于该步骤失败：必须先重新 snapshot 定位元素后重试；同一操作连续两次失败才可判定该步骤失败。",
+  "",
+  "选择类控件（下拉框 / 日期 / 级联，关键）：",
+  "- 下拉框（el-select、el-cascader）与日期选择器（el-date-picker）**不是文本输入框**：它们的输入框是只读的，fill 填不进去、只会白费一步。前者用 select_option、后者用 pick_date，**一次调用**完成选择。",
+  "- 这两个工具快在「中间态不交给模型」：通用路径「click 点开 → snapshot 拿编号 → click 选项」要三轮往返（每轮几秒），而选日期要翻月份时更是一次点击一轮 snapshot。压成一轮，一次选日期就从十几秒变成几秒。",
+  "- select_option 的 option 传**页面上印出来的选项文本**（不是 value、不是序号）；pick_date 的 date 能写相对就写相对（today / +3 / -7），写死绝对日期会让用例过几天就变成假失败。",
+  "- 它们找不到浮层/面板/选项时会报错并列出当前可选项——那不是故障，而是在说「这条捷径在这页面上不适用」；此时退回「click 展开 → snapshot → click」的通用路径。",
+  "- 普通点击**展开浮层**（不属于上面两类控件）之后，用 click 的 showPage=true 一次拿到动作后的编号清单，**不要紧接着再发一次 snapshot**——那一轮正是要省掉的。同理：navigate 之后那条「先 wait_for 一个地标」也带上 showPage=true，可以省掉紧随其后的一次 snapshot。",
+  "- **日期范围控件必须给两个日期**：只给 date 而面板是范围类型（左右两张日历表）会被工具拒绝——半截的筛选条件会让后面的断言按错误的筛出来结果去判，得到一条查不出原因的假失败。",
+  "- **日期没设对就不要继续往下走**：如果面板关掉时显示的日期不是用例要求的那一天（跨月选错、只选到一端、被禁用没点上），这一步就是失败的——如实报告失败并说明实际选到了什么，**不要**带着错值继续点搜索、再拿正确的期望值去断言结果：那样只会得到一条「断言不成立」，把真正的原因（日期选错了）埋掉。",
   "",
   "下拉菜单（关键）：",
   "- 很多组件库（如 element-plus 的 el-dropdown）的下拉菜单是**悬停触发**的：必须先用 hover 悬停在触发按钮上，**用 wait_for 等到菜单项出现**（如 wait_for(text=\"上传文档\")），再重新 snapshot，用菜单项的新编号 click。直接 click 触发按钮常常点不开菜单；展开之后沿用展开前的编号则必然点到别处。",
@@ -314,9 +333,40 @@ function trimOldToolResults(
   });
 }
 
-/** 本次运行使用的 session 持有者：让最外层的 finally 能兜底关闭它。 */
+/**
+ * 本次运行的收尾持有者：让最外层的 finally 能兜底关闭 bsk session、并兜底落盘存档。
+ */
 interface SessionHolder {
   id?: string;
+  /** session 存档采集器（`runAgent` 建立，供 finally 在异常路径上也能留下现场）。 */
+  collector?: SessionCollector;
+  /** 存档是否已落盘（成功路径在 finalizeResult 里写，避免 finally 重复写）。 */
+  saved?: boolean;
+}
+
+/**
+ * 落盘本次运行的 session 存档（旁路产物）。
+ *
+ * 迟到一步也总比没有好：异常路径上没有 report 才最需要现场，因此这里不要求 status，
+ * 有什么写什么。**绝不抛错**——存档写失败不该改掉测试结论（与 side-outputs 同一条口径）。
+ */
+async function saveSessionArchive(holder: SessionHolder): Promise<void> {
+  const collector = holder.collector;
+  if (!collector || holder.saved) return;
+  holder.saved = true;
+  try {
+    const file = await writeArchive(collector.data);
+    await pruneArchives();
+    // 返回的是容器路径（所有运行共用一个 .sqlite），档案本身靠 id 定位。
+    debugLog(`[runAgent] session 存档已写入 ${file}（id=${collector.data.id}）`);
+    info(t("log.sessionArchived", { id: collector.data.id }));
+  } catch (err) {
+    info(
+      t("log.sessionArchiveFailed", {
+        msg: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
 }
 
 /**
@@ -339,6 +389,9 @@ export async function runAgent(
     return await runAgentCore(input, opts, holder);
   } finally {
     if (holder.id) await closeSession(holder.id);
+    // 异常路径（工具抛错、模型报错打断了编排）不会走到 finalizeResult：
+    // 那正是最需要现场的时刻，所以在这里兜底写一次。
+    await saveSessionArchive(holder);
   }
 }
 
@@ -358,6 +411,11 @@ interface AgentSession {
    * 运行结束渲染进日志（见 timing.ts 里为什么需要它）。
    */
   timing: TimingCollector;
+  /**
+   * session 存档采集器：把「传给 agent 的参数」与运行中的每轮上下文、每次工具调用
+   * 记成可事后翻查的现场（见 session-archive.ts，`pageqa sessions` 读的就是它）。
+   */
+  collector: SessionCollector;
   /**
    * 本次运行中 `assert_text` 工具返回的断言结果（按执行顺序）。
    *
@@ -565,10 +623,38 @@ async function initializeAgent(
   );
   info(t("log.toolsReady", { n: tools.length, steps: steps.length }));
 
+  // ── session 存档：把这次交给 agent 的参数先如实记下来 ──
+  // 采集点放在这里（而不是更早）是因为存档要回答的是「模型真正拿到了什么」：
+  // 工具声明、编号后的 prompt、模型选择、bsk session 都得先就绪。
+  const systemPrompt = opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+  const collector = new SessionCollector({
+    systemPrompt,
+    model: { provider: choice.provider, id: model.id },
+    tools: tools.map((tool) => ({
+      name: tool.name,
+      label: tool.label,
+      description: tool.description,
+      parameters: tool.parameters,
+    })),
+    prompt: numbered,
+    caseText: input,
+    steps,
+    bskSession: session,
+    scenarioName: opts.scenarioName,
+    vars: (opts.vars ?? []).map((v) => ({
+      name: v.name,
+      placeholder: v.placeholder,
+      value: v.value,
+    })),
+    debug,
+  });
+  holder.collector = collector;
+  log("[runAgent] session 存档 id=" + collector.data.id);
+
   const events: string[] = [];
   const agent = new Agent({
     initialState: {
-      systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+      systemPrompt,
       model,
       tools,
     },
@@ -576,7 +662,10 @@ async function initializeAgent(
     // 上下文超限前，先把较早的页面快照裁剪掉，保住最近的上下文与用例步骤。
     transformContext: async (messages) => {
       const before = estimateChars(messages);
-      if (before <= CONTEXT_CHAR_LIMIT) return messages;
+      if (before <= CONTEXT_CHAR_LIMIT) {
+        collector.noteTurnContext(messages, before);
+        return messages;
+      }
       const trimmed = trimOldToolResults(
         messages,
         KEEP_RECENT_MESSAGES,
@@ -591,12 +680,15 @@ async function initializeAgent(
           messages.length +
           " 条）",
       );
+      // 存档记的是**真正发出去**的那一份（裁剪后）：「模型为什么忘了前面的步骤」
+      // 这类问题，只有看它实际收到的上下文才答得出来。
+      collector.noteTurnContext(trimmed, before);
       return trimmed;
     },
   });
 
   const timing = new TimingCollector();
-  subscribeProgress(agent, events, recorder, opts.onUsage, timing);
+  subscribeProgress(agent, events, recorder, opts.onUsage, timing, collector);
 
   // 用户在交互模式里按 Esc → 中止本轮运行。
   // `Agent.abort()` 是 pi-agent-core 唯一的中断入口：它 abort 内部那个 AbortController，
@@ -615,6 +707,7 @@ async function initializeAgent(
     steps,
     recorder,
     timing,
+    collector,
     assertions,
     startedAt,
     abortSignal: opts.abortSignal,
@@ -668,6 +761,7 @@ function subscribeProgress(
   recorder: Recorder,
   onUsage: ((usage: TokenUsage) => void) | undefined,
   timing: TimingCollector,
+  collector: SessionCollector,
 ): void {
   const log = debugLog;
   let toolCount = 0;
@@ -685,11 +779,16 @@ function subscribeProgress(
     // 这里只记时间点，判断与汇总都在 timing.ts（纯逻辑，可单测）。
     if (e.type === "turn_start") {
       timing.noteTurnStart();
+      collector.noteTurnStart();
     } else if (e.type === "turn_end") {
       timing.noteTurnEnd();
+      collector.noteTurnEnd(turn);
     }
     if (e.type === "tool_execution_start") {
       timing.noteToolStart(e.toolCallId);
+      // 存档要的是**模型给出的入参原文**：点错了哪个元素、URL 写成了什么，
+      // 都在这一个字段里，而进度日志里只剩工具名。
+      collector.noteToolStart(e.toolCallId, e.toolName, e.args);
       events.push("[tool] " + e.toolName);
       log("[agent] 工具调用开始: " + e.toolName);
       toolCount += 1;
@@ -697,6 +796,7 @@ function subscribeProgress(
       info(t("log.toolStart", { n: toolCount, tool: e.toolName }));
     } else if (e.type === "tool_execution_end") {
       timing.noteToolEnd(e.toolCallId, e.toolName, e.isError);
+      collector.noteToolEnd(e.toolCallId, !e.isError, toolResultText(e.result));
       const cost = toolStartedAt ? Date.now() - toolStartedAt : 0;
       // 失败原因必须落进日志与执行轨迹。
       // 只写「失败，将重试或报告」的话，交互模式下盯着视口也分不清是
@@ -915,7 +1015,21 @@ async function runAgentCore(
   setDebug(opts.debug ?? false);
   const session = await initializeAgent(input, opts, holder);
   await executeWithContinuations(session, input);
-  return finalizeResult(session, input, opts);
+  const result = finalizeResult(session, input, opts);
+  // 收尾：把结论、总用量与归因补进存档再落盘。走不到这里（编排中途抛错）的路径
+  // 由 runAgent 的 finally 兜底写一次——半截现场同样值得留下。
+  const agentError = session.agent.state.errorMessage;
+  session.collector.finish({
+    status: result.report.status,
+    ...(agentError
+      ? { note: agentError }
+      : result.report.cancelReason
+        ? { note: result.report.cancelReason }
+        : {}),
+    usage: result.usage,
+  });
+  await saveSessionArchive(holder);
+  return result;
 }
 
 /** 把一个脚本拆分为多个场景（按 `## ` 二级标题分隔）。无标题则整体作为一个场景。 */

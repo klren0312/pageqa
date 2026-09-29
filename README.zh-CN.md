@@ -208,7 +208,27 @@ pageqa --replay examples/smoke.replay.json --semantic  # 断言改用 Jev 语义
 | `--init-config` | 创建/重置配置文件 |
 | `--out <file>` | 报告另存文件 |
 | `--debug` | 调试日志（bsk 命令与耗时、快照瘦身、Jev 请求等） |
+| `sessions`（子命令） | `pageqa sessions`：起本地存档查询服务，回看每次运行交给模型的参数与完整交互（`--port <n>` / `--dir <path>` / `--no-open`） |
 | `-v, --version` · `-h, --help` | 版本 / 帮助 |
+
+---
+
+## 查看运行存档（`pageqa sessions`）
+
+出问题时能看到多少现场，决定了能不能查下去。每次运行都会把「交给 agent 的参数」与「运行中的完整交互」写进 `~/.pageqa/sessions/sessions.sqlite`（**SQLite 单容器**，走 pi 的 session 后端 `@earendil-works/pi-session-backend-sqlite-node`：一次运行 = 一个 Session，参数/摘要/终态存 `Value`、每轮上下文与工具调用存 `ValueList`，整条档案一次事务落库），`pageqa sessions` 起一个本地服务把它们摆出来：
+
+- **传给 agent 的参数**：系统提示词、模型、工具声明（含 JSON Schema）、编号后的用例与占位符取值；
+- **每轮 LLM 的上下文**：这一轮**实际发出去**的消息（含上下文裁剪的结果）——回答「模型到底看到了什么、是不是把前面的步骤挤掉了」；
+- **每次工具调用**：模型给的入参、工具返回的结果或失败原因、耗时与成败。
+
+```bash
+pageqa sessions                  # 默认 http://127.0.0.1:7331/（端口被占用会自动顺延）
+pageqa sessions --port 8080      # 指定端口
+pageqa sessions --dir ./archives # 换一个存档目录
+pageqa sessions --no-open        # 不自动打开浏览器
+```
+
+存档由每次运行自动写入，无需额外开关；套件模式下逐场景各一条。它落在**用户目录**而不是工作目录，也不受 `--no-side-outputs` 影响——它是排查工具，不是测试产物；默认只保留最近 200 次运行。存档里含系统提示词、用例文本与页面快照，因此服务只监听回环地址（`127.0.0.1`）。
 
 ---
 
@@ -235,7 +255,7 @@ flowchart TD
   end
 
   subgraph BSK["bsk 工具层 · src/bsk"]
-    TOOLS["tools.ts 10 个工具<br/>navigate·snapshot·click·fill·upload·download·hover·scroll·wait·assert_text<br/>异步 · 可中止 · 全局串行"]
+    TOOLS["tools.ts 13 个工具<br/>navigate·snapshot·click·fill·select_option·pick_date·upload·download·hover·scroll·wait·wait_for·assert_text<br/>异步 · 可中止 · 全局串行"]
     DIAG["navigate-diagnosis.ts 把导航失败翻译成大白话"]
     SNAP["snapshot.ts 快照瘦身"]
   end
@@ -312,7 +332,7 @@ flowchart TD
 ```
 自然语言意图
    └─> pi-agent-core agent（LLM：可配置 OpenAI 兼容端点）
-          └─> bsk 工具：navigate / snapshot / click / fill / upload / download / hover / scroll / wait / assert_text
+          └─> bsk 工具：navigate / snapshot / click / fill / select_option / pick_date / upload / download / hover / scroll / wait / wait_for / assert_text
                  └─> 真实浏览器（由 bsk 连接）
           └─> 结论与证据 → 报告（文本/JSON）+ 退出码
           └─> 默认：把成功操作录制为回放脚本（*.replay.json；可在 /setting 关）
@@ -325,7 +345,9 @@ flowchart TD
    └─> 退出 → 还原主屏 → 汇总报告（stdout/--out）+ 退出码（已取消不计入）
 ```
 
-可用工具（`src/bsk/tools.ts`）：`navigate` 打开页面；`snapshot` 读取页面 aria 树与可见文本（含瘦身与复用）；`click`/`fill`/`hover` 元素交互；`upload` 上传本地文件；`download` 捕获浏览器下载（本身即一项断言）；`scroll`/`wait` 滚动与等待；`assert_text` 断言页面含指定文本。
+可用工具（`src/bsk/tools.ts`）：`navigate` 打开页面；`snapshot` 读取页面 aria 树与可见文本（含瘦身与复用，`refs` 档位只留可交互元素清单）；`click`/`fill`/`hover` 元素交互（带 `showPage: true` 时在结果里附一份动作后的元素清单，省掉紧接着的那次 snapshot）；`select_option` 一步完成下拉框/级联选择（点开 → 等浮层 → 按可见文本选中）；`pick_date` 一步完成日期选择（点开面板 → 翻到目标年月 → 点中那一天，支持 `2026-09-29` / `today` / `+3` / `-7`；**日期范围**控件把结束日期传进 `endDate`，工具按「选开始 → 选结束 → 确定」走，类型与参数不一致时明确报错而不是留下半截范围）；`upload` 上传本地文件；`download` 捕获浏览器下载（本身即一项断言）；`scroll`/`wait`/`wait_for` 滚动与等待；`assert_text` 断言页面含指定文本。
+
+选择类控件（Element Plus 等）走**混合策略**：优先用 `.el-*` 类名契约（比 aria 树稳），命不中时退回 `[role=listbox]` 等通用 ARIA 选择器；都找不到就如实报错并列出当前可选项，让模型退回「看快照自己点」的通用路径——**绝不猜元素**。这类控件为什么单独做一层：通用路径下「点开 → 看快照 → 点选项」是三轮 LLM 往返，选日期翻月份时更是一次点击一轮快照；压成一次调用后，一次选日期的墙钟从十几秒降到几秒。
 
 长流程保护（自动续跑）：一轮对话后若 agent 自报进度未满（`steps done: k/n` 且 `k < n`）或用例有断言但报告只解析到部分，pageqa 自动追加「继续剩余步骤」提示，最多 5 轮；续跑后进度与断言数仍无推进则停止。
 
