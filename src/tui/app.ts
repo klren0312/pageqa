@@ -307,6 +307,7 @@ export async function runInteractive(
     Text,
     Editor,
     SelectList,
+    Input,
     CombinedAutocompleteProvider,
     KeybindingsManager,
     TUI_KEYBINDINGS,
@@ -342,16 +343,76 @@ export async function runInteractive(
    */
   // 动态 import 拿到的 `SelectList` 是值而非类型，类里要引用实例类型只能这样推导。
   type SelectListInstance = InstanceType<typeof SelectList>;
+  type InputInstance = InstanceType<typeof Input>;
 
+  /**
+   * 按「可见文本」过滤的选择列表。
+   *
+   * pi-tui 自带的 `SelectList.setFilter` 只拿 `item.value` 做 `startsWith`，
+   * 而这里 `value` 是编码后的选择（如 `provider\0model`），用户根本看不到，
+   * 拿它过滤毫无意义。覆写 `setFilter` 改为对 `label` + `description` 做不区分大小写的
+   * 子串匹配——这才是用户眼睛盯着的那行字。
+   */
+  /**
+   * 把 SelectList 的私有可变字段借出来用：pi-tui 的 `.d.ts` 把它们标成 `private`，
+   * 但运行时其实是公开字段（`setFilter`/`render`/`handleInput` 都直接读写）。这里只是
+   * 在不改 node_modules 的前提下，给「按可见文本过滤」的实现一个类型上合法的出口。
+   */
+  interface MutableSelectList {
+    items: SelectItem[];
+    filteredItems: SelectItem[];
+    selectedIndex: number;
+  }
+
+  class LabelFilterSelectList extends SelectList {
+    setFilter(filter: string): void {
+      const q = filter.trim().toLowerCase();
+      const self = this as unknown as MutableSelectList;
+      self.filteredItems = q.length === 0
+        ? self.items
+        : self.items.filter((it) =>
+            (it.label + " " + (it.description ?? ""))
+              .toLowerCase()
+              .includes(q),
+          );
+      self.selectedIndex = 0;
+    }
+  }
+
+  /**
+   * 浮层根组件：负责「标题 + （搜索框）+ 列表 + 提示」的布局，加一圈边框，并把按键转交内部。
+   *
+   * `searchInput` 存在时进入「可搜索」模式：方向键 / Enter / Esc / Ctrl+S 交给列表
+   * （导航、确认、取消、设为默认），其余按键（打字、退格、左右移光标）交给搜索框，
+   * 每敲一下就重算过滤。这样上百条模型 / provider 也能即时筛出想要的。
+   */
   class SelectorOverlay extends OverlayFrame {
     constructor(
       private readonly list: SelectListInstance,
       children: StackChild[],
+      private readonly searchInput?: InputInstance,
     ) {
       super(new VStack(children));
+      if (searchInput) searchInput.focused = true;
     }
 
     handleInput(data: string): void {
+      if (this.searchInput) {
+        if (
+          matchesKey(data, "up") ||
+          matchesKey(data, "down") ||
+          matchesKey(data, "enter") ||
+          matchesKey(data, "escape") ||
+          matchesKey(data, "ctrl+s")
+        ) {
+          this.list.handleInput(data);
+          return;
+        }
+        // 其余按键（打字、退格、左右移光标）交给搜索框，并实时重算过滤。
+        this.searchInput.handleInput(data);
+        this.list.setFilter(this.searchInput.getValue());
+        return;
+      }
       this.list.handleInput(data);
     }
   }
@@ -539,32 +600,61 @@ export async function runInteractive(
   function openSelector(
     titleText: string,
     items: SelectItem[],
-    opts: { allowSaveDefault?: boolean; hint?: string } = {},
+    opts: {
+      allowSaveDefault?: boolean;
+      hint?: string;
+      searchable?: boolean;
+    } = {},
   ): Promise<SelectorPick | undefined> {
     return new Promise((resolve) => {
-      const list = new SelectList(
-        items,
-        Math.min(14, Math.max(3, items.length)),
-        editorTheme.selectList,
-      );
-      const overlay = new SelectorOverlay(list, [
+      const searchable = opts.searchable ?? false;
+      // 可搜索时换成「按可见文本过滤」的列表，并给无匹配提示换成本地化文案。
+      const listTheme = searchable
+        ? {
+            ...editorTheme.selectList,
+            noMatch: (): string => dim(t("tui.select.noMatch")),
+          }
+        : editorTheme.selectList;
+      const list = searchable
+        ? new LabelFilterSelectList(
+            items,
+            Math.min(14, Math.max(3, items.length)),
+            listTheme,
+          )
+        : new SelectList(
+            items,
+            Math.min(14, Math.max(3, items.length)),
+            editorTheme.selectList,
+          );
+
+      const searchInput = searchable
+        ? new Input({
+            prompt: "> ",
+            placeholder: t("tui.select.searchPlaceholder"),
+          })
+        : undefined;
+
+      const baseHint =
+        opts.hint ??
+        (opts.allowSaveDefault ? t("tui.model.hint") : t("tui.select.hint"));
+      const hint = searchable
+        ? baseHint + "  ·  " + t("tui.select.searchHint")
+        : baseHint;
+
+      const children: StackChild[] = [
         { component: new Text(title(titleText), 1, 1), shrink: 1, minSize: 1 },
-        { component: list, basis: "auto", shrink: 1, minSize: 1 },
-        {
-          component: new Text(
-            dim(
-              opts.hint ??
-                (opts.allowSaveDefault
-                  ? t("tui.model.hint")
-                  : t("tui.select.hint")),
-            ),
-            1,
-            1,
-          ),
-          shrink: 1,
-          minSize: 1,
-        },
-      ]);
+      ];
+      if (searchInput) {
+        children.push({ component: searchInput, shrink: 1, minSize: 1 });
+      }
+      children.push({ component: list, basis: "auto", shrink: 1, minSize: 1 });
+      children.push({
+        component: new Text(dim(hint), 1, 1),
+        shrink: 1,
+        minSize: 1,
+      });
+
+      const overlay = new SelectorOverlay(list, children, searchInput);
       const handle = tui.showOverlay(overlay, {
         width: "90%",
         minWidth: 40,
@@ -948,7 +1038,7 @@ export async function runInteractive(
     const pick = await openSelector(
       t("tui.model.title", { current: modelLabel(currentChoice) }),
       items,
-      { allowSaveDefault: true },
+      { allowSaveDefault: true, searchable: true },
     );
     if (!pick) return;
     const [provider, model] = decodeValue(pick.value);
@@ -985,7 +1075,9 @@ export async function runInteractive(
       description:
         o.provider + (o.configured ? " · " + t("tui.login.loggedIn") : ""),
     }));
-    const pick = await openSelector(t("tui.login.title"), items);
+    const pick = await openSelector(t("tui.login.title"), items, {
+      searchable: true,
+    });
     if (!pick) return;
     const [provider, type] = decodeValue(pick.value);
     await runLogin(provider, type === "oauth" ? "oauth" : "api_key");
@@ -1014,7 +1106,9 @@ export async function runInteractive(
       label: o.providerName,
       description: o.provider,
     }));
-    const pick = await openSelector(t("tui.logout.title"), items);
+    const pick = await openSelector(t("tui.logout.title"), items, {
+      searchable: true,
+    });
     if (!pick) return;
     const [provider] = decodeValue(pick.value);
     try {
