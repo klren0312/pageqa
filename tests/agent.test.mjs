@@ -2,6 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   continuePrompt,
+  DEFAULT_SYSTEM_PROMPT,
   needsContinuation,
   toolResultText,
   turnUsage,
@@ -14,6 +15,54 @@ import { extractTrace } from "../dist/report.js";
 // pi-agent-core 把 `error.message` 放进 tool_execution_end 事件的 result.content[0].text，
 // 若不去读它，日志里只剩一句「失败，将重试或报告」——交互模式下盯着视口也分不清是
 // 「本地服务没起」「URL 写错」还是「选择器匹配不上」，而这三者的处理方式完全不同。
+
+/**
+ * 提示词里这几条规则是用真实事故换来的：被删掉时**不会报错、也不会让别的测试失败**，
+ * 只会让模型悄悄退回旧行为（例如「navigate 完立刻去点筛选表单」——回放时页面还没渲染，
+ * 那一步与它后面几步连带失败）。所以这里钉住它们的**存在**，不钉具体措辞。
+ */
+describe("默认系统提示里的关键规则", () => {
+  const prompt = DEFAULT_SYSTEM_PROMPT;
+
+  test("navigate 后先 snapshot 看清页面，再在首次操作前 wait_for 地标", () => {
+    // 为什么是这个顺序：模型在 snapshot 之前并不知道该等什么文本（实测把「先 wait_for 再
+    // snapshot」写进提示词时它干脆不写 wait_for）；而地标又必须取自「接下来要操作的那个区域」。
+    assert.match(
+      prompt,
+      /navigate 之后先 snapshot\(\) 看清页面；\*\*在开始逐步交互之前，先 wait_for 一个地标\*\*/,
+    );
+  });
+
+  test("有「等待与页面就绪」一节，覆盖进新页面 / 展开面板 / 提交后 / 遮罩消失", () => {
+    assert.match(prompt, /等待与页面就绪（关键）：/);
+    assert.match(prompt, /进入新页面后的第一次操作之前必须有 wait_for/);
+    for (const when of ["进入新页面", "弹窗", "提交", "loading"]) {
+      assert.ok(prompt.includes(when), `缺少「${when}」这类等待时机`);
+    }
+    // 地标必须只在该状态出现、且属于接下来要操作的区域（菜单/导航/标题里的字到处都是）
+    assert.match(prompt, /只在该状态出现/);
+    assert.match(prompt, /属于你接下来要操作的那个区域/);
+  });
+
+  test("地标必须是页面可见文本：aria-label / placeholder 不算（实测会等到超时）", () => {
+    assert.match(prompt, /地标必须是\*\*页面上真的印出来的文字\*\*/);
+    assert.match(prompt, /aria-label \/ placeholder/);
+  });
+
+  test("wait(ms) 只留给页面之外的事情，并写明回放会把秒数当事实照付", () => {
+    assert.match(prompt, /wait\(ms\) 只留给页面之外的事情/);
+    assert.match(prompt, /照付/);
+  });
+
+  test("wait_for 未达成时不得当作步骤完成", () => {
+    assert.match(prompt, /未达成」说明页面确实没到那个状态/);
+  });
+
+  test("工具清单里 wait_for 是页面内等待的首选，wait 被明确收窄", () => {
+    assert.match(prompt, /- wait\(ms\): 固定等待。只用于\*\*页面之外\*\*的事情/);
+    assert.match(prompt, /- wait_for\(text \| selector \| gone, timeoutMs\?\)/);
+  });
+});
 
 describe("工具失败原因", () => {
   test("从 tool_execution_end 的 result 里取出错误文本", () => {

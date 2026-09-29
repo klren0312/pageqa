@@ -1491,7 +1491,10 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
   const wait: AgentTool = {
     name: "wait",
     label: "Wait",
-    description: "等待一段时间（毫秒）或等待页面导航完成。",
+    description:
+      "固定等待一段时间（毫秒）。**页面内的等待一律用 wait_for**：只有当要等的事情发生在页面之外" +
+      "（服务端正在生成导出文件、后台排队）且用例明确要求等待时才用它——写死的秒数会被回放脚本当成" +
+      "事实照付，而「给页面一点时间」这种猜测几乎总是错的那一个。",
     parameters: paramsOf({ ms: { type: "number", description: "等待毫秒数" } }),
     execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = (params as WaitParams) ?? {};
@@ -1508,10 +1511,20 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       "三者**只能给一个**。已知在等什么时用它，不要用 wait 猜秒数：条件达成会立刻返回，" +
       "因此比盲等更快也更稳；到了 timeoutMs（默认 3000）仍未达成会如实返回「未达成」并附上" +
       "页面当前可见文本，那时应当 snapshot 看清页面，而不是再等一遍。" +
+      "**必用它的时机**：navigate 进入新页面后、点击展开下拉/弹窗/抽屉后、点搜索或提交后——" +
+      "都等一个**只在该状态出现**的地标（标题区的文字、表头、面板里的字段标签或菜单项；" +
+      "菜单与导航里的字到处都是，不能当地标）。" +
+      "记下的是**条件本身**：回放会重新等同一个条件，页面没到那个状态时会如实报「等它没出现」。" +
       "典型用法：等列表刷新出现新行（text/selector）、等弹窗出现（selector）、等遮罩消失（gone）。",
     parameters: paramsOf(
       {
-        text: { type: "string", description: "等到页面**可见文本**中出现该文本" },
+        text: {
+          type: "string",
+          description:
+            "等到页面**可见文本**中出现该文本。必须是页面上真的印出来的字——" +
+            "快照里的名字可能来自 aria-label / placeholder / title（如 `combobox \"创建时间 [has-submenu]\"`、" +
+            "带 placeholder 的输入框），那类名字用 text 永远等不到，要等它们请改用 selector",
+        },
         selector: { type: "string", description: "等到该 CSS 选择器命中元素" },
         gone: { type: "string", description: "等到该 CSS 选择器不再命中元素（如 loading 消失）" },
         timeoutMs: {
