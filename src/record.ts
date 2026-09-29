@@ -183,6 +183,26 @@ export class Recorder {
         });
         return;
       }
+      case "press": {
+        // 键名是这一步的主体；target 只是「先聚焦到哪」（可选，多数时候按当前焦点）。
+        const key = restore(text("key")).trim();
+        if (!key) return;
+        const { target, locator } = targetOf();
+        const modifiers = text("modifiers").trim();
+        const ms = Number(p["holdMs"]);
+        this.steps.push({
+          kind: "press",
+          step,
+          key,
+          ...(target ? { target } : {}),
+          locator: target ? locator : null,
+          ...(modifiers ? { modifiers } : {}),
+          // 与 download / wait_for 同一条规则：只有模型明确给过才写进脚本，
+          // 写死一个默认值会让将来改默认值失效。
+          ...(Number.isFinite(ms) && ms > 0 ? { holdMs: ms } : {}),
+        });
+        return;
+      }
       case "wait": {
         const ms = Number(p["ms"]);
         this.steps.push({
@@ -228,6 +248,40 @@ export class Recorder {
           // 靠 Jev 语义复核才成立的断言，回放的字符串匹配必然不成立，
           // 标记出来供回放给出提示（字面命中的断言则无需标记）。
           ...(event.semantic ? { semantic: true } : {}),
+        });
+        return;
+      }
+      case "assert_no_console_error": {
+        // 录的是**断言条件本身**（要看哪一级、放行哪些噪音），不是这次的结果：
+        // 回放时要重新读一遍当时的 console 缓冲，把这次恰好没有报错写成「通过」，
+        // 等于把一个会变的判据冻结成一个常数。
+        const rawIgnore = p["ignore"];
+        const ignore = Array.isArray(rawIgnore)
+          ? rawIgnore
+              .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+              .map((s) => restore(s.trim()))
+          : [];
+        this.steps.push({
+          kind: "assert_no_console_error",
+          step,
+          ...(ignore.length > 0 ? { ignore } : {}),
+          ...(p["warnings"] === true ? { warnings: true } : {}),
+        });
+        return;
+      }
+      case "assert_network": {
+        const url = restore(text("url")).trim();
+        // 没有 url 这一步就没有判定依据（工具层已拦过，这里再兜一次，避免把空条件写进脚本）。
+        if (!url) return;
+        const status = text("status").trim();
+        // 方法统一大写：协议与工具层都是这么比的，脚本里留小写会让同一个条件看起来不一样。
+        const method = text("method").trim().toUpperCase();
+        this.steps.push({
+          kind: "assert_network",
+          step,
+          url,
+          ...(status ? { status } : {}),
+          ...(method ? { method } : {}),
         });
         return;
       }

@@ -163,7 +163,7 @@ Notes: the script stores **semantic locators** (role + accessible name + same-na
 
 A case is natural-language text split into steps by non-empty lines (`#`/`>` comment lines don't count). Use `## title` to separate independent scenarios (each gets its own bsk session and browser window).
 
-**Assertion lines must line up with assertion tool calls**: the report checks "how many lines contain 断言/assert" against "how many assertion results were actually produced" — they must match. Each `assert_text` yields one assertion, and `download` is itself one assertion (don't add a separate "assert downloaded" line). Comment lines never inflate the count.
+**Assertion lines must line up with assertion tool calls**: the report checks "how many lines contain 断言/assert" against "how many assertion results were actually produced" — they must match. Each `assert_text` yields one assertion, and so do `download`, `assert_no_console_error` and `assert_network` (don't add a separate "assert downloaded" line for `download`). Comment lines never inflate the count.
 
 **Runtime placeholders** (expanded once; because each scenario runs in its own child process the moment is taken **per scenario**, not once per run — see ADR-0013):
 
@@ -257,7 +257,7 @@ flowchart TD
   end
 
   subgraph BSK["bsk tool layer · src/bsk"]
-    TOOLS["tools.ts 13 tools<br/>navigate·snapshot·click·fill·select_option·pick_date·upload·download·hover·scroll·wait·wait_for·assert_text<br/>async · abortable · globally serial"]
+    TOOLS["tools.ts 16 tools<br/>navigate·snapshot·click·fill·select_option·pick_date·upload·download·hover·scroll·press·wait·wait_for·assert_text·assert_no_console_error·assert_network<br/>async · abortable · globally serial"]
     DIAG["navigate-diagnosis.ts turn navigation failures into plain language"]
     SNAP["snapshot.ts snapshot slimming"]
   end
@@ -334,7 +334,7 @@ flowchart TD
 ```
 Natural-language intent
    └─> pi-agent-core agent (LLM: configurable OpenAI-compatible endpoint)
-          └─> bsk tools: navigate / snapshot / click / fill / select_option / pick_date / upload / download / hover / scroll / wait / wait_for / assert_text
+          └─> bsk tools: navigate / snapshot / click / fill / select_option / pick_date / upload / download / hover / scroll / press / wait / wait_for / assert_text / assert_no_console_error / assert_network
                  └─> real browser (connected by bsk)
           └─> conclusion & evidence -> report (text/JSON) + exit code
           └─> by default: record successful operations -> replay script (*.replay.json; off in /setting)
@@ -347,7 +347,7 @@ Interactive mode (pageqa --tui <case file>)
    └─> exit -> restore main screen -> summary report (stdout/--out) + exit code (cancelled not counted)
 ```
 
-Available tools (`src/bsk/tools.ts`): `navigate` opens a page; `snapshot` reads the page's aria tree and visible text (with slimming and reuse; the `refs` mode keeps only the interactive-element list); `click`/`fill`/`hover` element interactions (pass `showPage: true` to get a post-action element list appended, saving the follow-up snapshot); `select_option` picks a dropdown/cascader option in one call (open -> wait for the overlay -> match by visible text); `pick_date` picks a date in one call (open the panel -> navigate to the target month -> click the day; accepts `2026-09-29` / `today` / `+3` / `-7`; for **date ranges** pass the end date as `endDate` and it walks "pick start -> pick end -> confirm", failing loudly when the panel type and the arguments disagree instead of leaving a half-finished range); `upload` uploads a local file; `download` captures a browser download (itself an assertion); `scroll`/`wait`/`wait_for` scroll and wait; `assert_text` asserts the page contains the specified text.
+Available tools (`src/bsk/tools.ts`): `navigate` opens a page; `snapshot` reads the page's aria tree and visible text (with slimming and reuse; the `refs` mode keeps only the interactive-element list); `click`/`fill`/`hover` element interactions (pass `showPage: true` to get a post-action element list appended, saving the follow-up snapshot); `select_option` picks a dropdown/cascader option in one call (open -> wait for the overlay -> match by visible text); `pick_date` picks a date in one call (open the panel -> navigate to the target month -> click the day; accepts `2026-09-29` / `today` / `+3` / `-7`; for **date ranges** pass the end date as `endDate` and it walks "pick start -> pick end -> confirm", failing loudly when the panel type and the arguments disagree instead of leaving a half-finished range); `upload` uploads a local file; `download` captures a browser download (itself an assertion); `scroll` scrolls to an element; `press` sends a **real** keyboard key (Enter to submit in an input, `Escape` to close a dialog, `Tab` through focus order; pass `target` to focus an element first, otherwise the key goes to the current focus, i.e. wherever the previous `fill` left it); `wait`/`wait_for` wait; `assert_text` asserts the page contains the specified text; `assert_no_console_error` asserts the page raised no JavaScript errors (uncaught exceptions plus `console.error` / browser error logs — **these never surface as page text**, so `assert_text` can never see them; `ignore` whitelists known noise and `warnings: true` counts warnings too); `assert_network` asserts a request happened and its status matches (`url` is matched as a substring, `status` takes `200` or `2xx`, and omitting `status` means "the request completed successfully").
 
 Picker widgets (Element Plus and friends) use a **mixed strategy**: `.el-*` class contracts first (steadier than the aria tree), then generic ARIA selectors such as `[role=listbox]`; when neither hits, the tool fails honestly and lists the currently selectable options so the model can fall back to the generic "look at the snapshot and click" path — it **never guesses** at an element. Why a dedicated layer: on the generic path "open -> snapshot -> click the option" costs three LLM round trips, and stepping through calendar months costs one snapshot per click; collapsing that into a single call takes picking a date from over ten seconds down to a few.
 

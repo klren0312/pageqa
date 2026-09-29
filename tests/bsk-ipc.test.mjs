@@ -13,6 +13,7 @@ import {
   resetIpcPool,
 } from "../dist/bsk/ipc.js";
 import {
+  extractDialogs,
   ipcErrorToCliError,
   ipcTimeoutToCliError,
   isProtocolDrift,
@@ -20,6 +21,7 @@ import {
   parseDurationMs,
   planIpcCall,
   renderCliErrorText,
+  renderDialogs,
   withCliTrailingNewline,
 } from "../dist/bsk/ipc-commands.js";
 
@@ -196,6 +198,67 @@ describe("planIpcCall：argv → RPC", () => {
     assert.equal(planIpcCall(["evaluate", "1"]), null); // 缺 --session
   });
 
+  test("press：键名走位置参数，聚焦目标走 --ref/--selector", () => {
+    const plan = planIpcCall(["press", "Enter", "--session", "s1", "--quiet"]);
+    assert.equal(plan.method, "tool.press");
+    assert.deepEqual(plan.params, { session_id: "s1", key: "Enter" });
+    assert.equal(plan.mutating, true);
+
+    // 修饰键与 CLI 的 parse_modifiers 同义：大小写无关、保序、别名归一
+    const focused = planIpcCall([
+      "press",
+      "Escape",
+      "--ref",
+      "@e3",
+      "--modifiers",
+      "Ctrl,shift",
+      "--hold-ms",
+      "800",
+      "--session",
+      "s1",
+    ]);
+    assert.deepEqual(focused.params, {
+      session_id: "s1",
+      key: "Escape",
+      ref: "@e3",
+      modifiers: ["ctrl", "shift"],
+      hold_ms: 800,
+    });
+
+    const bySelector = planIpcCall(["press", "Tab", "--selector", "#kw", "--session", "s1"]);
+    assert.deepEqual(bySelector.params, { session_id: "s1", key: "Tab", selector: "#kw" });
+  });
+
+  test("press 的行格式与 CLI 一致（含修饰键）", () => {
+    const plan = planIpcCall(["press", "Enter", "--session", "s1"]);
+    assert.equal(
+      plan.render({ tab_id: 4, key: "Enter", code: "Enter" }),
+      "press ok tab=4 key=Enter code=Enter",
+    );
+    assert.equal(
+      plan.render({ tab_id: 4, key: "a", code: "KeyA", modifiers: ["ctrl"] }),
+      "press ok tab=4 key=a code=KeyA modifiers=[ctrl]",
+    );
+  });
+
+  test("press 认不出的形状一律退回 CLI（不改写、不猜）", () => {
+    assert.equal(planIpcCall(["press", "--session", "s1"]), null); // 缺键名
+    assert.equal(planIpcCall(["press", "Enter"]), null); // 缺 --session
+    assert.equal(planIpcCall(["press", "Enter", "Extra", "--session", "s1"]), null); // 多给位置参数
+    assert.equal(
+      planIpcCall(["press", "Enter", "--modifiers", "garbage", "--session", "s1"]),
+      null,
+    );
+    assert.equal(
+      planIpcCall(["press", "Enter", "--ref", "@e1", "--selector", "#a", "--session", "s1"]),
+      null,
+    );
+    assert.equal(
+      planIpcCall(["press", "Enter", "--hold-ms", "1s", "--session", "s1"]),
+      null,
+    );
+  });
+
   test("不认识的形状一律拒绝（退回 CLI），绝不猜", () => {
     assert.equal(planIpcCall(["navigate", "https://example.com", "--session", "s1"]), null);
     assert.equal(planIpcCall(["snapshot", "--session", "s1", "--json"]), null);
@@ -336,6 +399,61 @@ describe("错误文本与 CLI 对齐", () => {
     assert.equal(parseDurationMs("1500ms"), 1500);
     assert.equal(parseDurationMs("250"), 250);
     assert.equal(parseDurationMs("nope"), null);
+  });
+});
+
+describe("原生对话框透传", () => {
+  test("结果里的 dialogs → 追加文本块；没有对话框时给空串", () => {
+    assert.equal(renderDialogs(undefined), "");
+    assert.equal(renderDialogs([]), "");
+    const text = renderDialogs([
+      {
+        type: "confirm",
+        handled: "accepted",
+        message: "确定要删除吗？",
+        url: "https://example.com/list",
+      },
+      { type: "prompt", handled: "dismissed", message: "输入名称", default_prompt: "" },
+    ]);
+    assert.match(text, /\ndialog: type=confirm handled=accepted message=确定要删除吗？/);
+    assert.match(text, /\n {2}url=https:\/\/example\.com\/list/);
+    assert.match(text, /\ndialog: type=prompt handled=dismissed message=输入名称/);
+    // default_prompt 为空串时不出那一行（与 bsk 的 write_dialog_summaries 同规则）
+    assert.doesNotMatch(text, /default_prompt/);
+  });
+
+  test("CLI stderr 里的摘要被提取出来，别的行不受影响", () => {
+    const stderr = [
+      "warning: observation truncated (refs=12, tab=3).",
+      "dialog: type=alert handled=accepted message=保存成功",
+      "  url=https://example.com/form",
+      "some other noise",
+    ].join("\n");
+    const block = extractDialogs(stderr);
+    assert.match(block, /dialog: type=alert handled=accepted message=保存成功/);
+    assert.match(block, /\n {2}url=https:\/\/example\.com\/form/);
+    // 截断告警、以及对话框块之后的无关行，都不该被卷进来
+    assert.doesNotMatch(block, /truncated/);
+    assert.doesNotMatch(block, /other noise/);
+  });
+
+  test("没有对话框时提取结果为空（不给成功输出添空白）", () => {
+    assert.equal(extractDialogs(""), "");
+    assert.equal(extractDialogs("click ok tab=3 target=@e1 at=(1, 2)\n"), "");
+  });
+
+  test("两条路径形状一致：result.dialogs 与 CLI stderr 得到同一段文本", () => {
+    const dialogs = [
+      { type: "confirm", handled: "accepted", message: "确定要删除吗？" },
+      { type: "prompt", handled: "dismissed", message: "输入名称", default_prompt: "默认值" },
+    ];
+    // bsk 的 write_dialog_summaries 打出来的就是这三行（cli/dialogs.rs）
+    const stderr = [
+      "dialog: type=confirm handled=accepted message=确定要删除吗？",
+      "dialog: type=prompt handled=dismissed message=输入名称",
+      "  default_prompt=默认值",
+    ].join("\n");
+    assert.equal(extractDialogs(stderr), renderDialogs(dialogs));
   });
 });
 

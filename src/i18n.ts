@@ -224,6 +224,9 @@ const catalogs: Record<Locale, Catalog> = {
       "回放脚本含不支持的步骤类型（{kind}）：{path}\n  - 若是 pageqa 升级后生成的新脚本，请把 pageqa 一起升级到同一版本",
     "replay.err.badWaitFor":
       "回放脚本里的 wait_for 步骤必须**恰好**带一个条件（text / selector / gone 三选一）：{path}",
+    "replay.err.pressNoKey": "回放脚本里的 press 步骤缺少键名（key）：{path}",
+    "replay.err.networkNoUrl":
+      "回放脚本里的 assert_network 步骤缺少 url：空 url 会匹配上任何请求，这条断言将永远通过：{path}",
     "replay.normalized":
       "[pageqa] 已把脚本里写死的录制取值还原为占位符（回放时重新展开）：{items}",
     "replay.drift.missing": "源用例已不存在：{path}",
@@ -317,6 +320,37 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.err.refUnknown":
       "最近一次快照里没有 {target} 这个引用：{action} 用的 @eN 必须来自最近一次 snapshot。请先 snapshot 取当前编号，不要沿用更早快照的编号或凭记忆写编号。",
     "bsk.ref.landed": "（落点：{who}）",
+    // 原生对话框透传（src/bsk/ipc-commands.ts 的 renderDialogs / extractDialogs）
+    "bsk.dialog.notice":
+      "注意：这次操作期间页面弹出了原生对话框，bsk 已按默认策略处理（确认框点确定、提示框点关闭），页面不会卡住：",
+    // console / network 断言（src/bsk/tools.ts 的 assert_no_console_error / assert_network）
+    "bsk.console.unreadable":
+      "读不到 console 记录：bsk 返回的内容无法解析。请确认当前 bsk 版本支持 console 命令（`bsk console --help`）。",
+    "bsk.console.truncated":
+      "（bsk 的 console 缓冲只保留最近 200 条，更早的记录已被丢弃：这里看到的不是全部）",
+    "bsk.console.scopeErrors": "报错",
+    "bsk.console.scopeWarnings": "错误或警告",
+    "bsk.console.expectation": "页面没有 JavaScript {scope}",
+    "bsk.console.clean": "最近 {count} 条 console 记录里没有{scope}条目{note}",
+    "bsk.console.dirty": "发现 {count} 条{scope}：{sample}{note}",
+    "bsk.network.unreadable":
+      "读不到网络记录：bsk 返回的内容无法解析。请确认当前 bsk 版本支持 network 命令（`bsk network --help`）。",
+    "bsk.network.urlRequired":
+      "assert_network 需要给出 url（要断言的那个请求的地址片段，按子串匹配）。",
+    "bsk.network.badStatus":
+      "无法理解状态码期望「{spec}」。支持的写法：200（精确）、2xx / 4xx / 5xx（区间）。",
+    "bsk.network.truncated":
+      "（bsk 的网络缓冲只保留最近 200 条，更早的记录已被丢弃：这里看到的不是全部）",
+    "bsk.network.expectationStatus": "请求 {url} 返回 {status}",
+    "bsk.network.expectationAny": "请求 {url} 成功完成",
+    "bsk.network.expectedResponse": "收到成功响应（不是请求失败）",
+    "bsk.network.noTraffic":
+      "（这一页还没有产生任何网络记录：要么它真的没有发请求，要么 bsk 的网络采集没能为它开启）",
+    "bsk.network.noMatch":
+      "最近 {count} 条网络记录里没有匹配「{url}」的请求{note}。最近的请求：{recent}",
+    "bsk.network.hit": "匹配「{url}」的请求 {count} 条，最近一条：{latest}{note}",
+    "bsk.network.miss":
+      "匹配「{url}」的请求 {count} 条，实际：{actual}（期望 {expected}）{note}",
     // 选择类控件（src/bsk/picker.ts + src/bsk/tools.ts 的 select_option / pick_date）
     "bsk.picker.noOverlay":
       "点开 {target} 之后没有等到可见的下拉浮层（它可能不是「点开出现浮层」型的下拉）。若它其实是普通输入框，请改用 fill；否则用 snapshot 看清页面后手动点选。",
@@ -1105,6 +1139,10 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "replay script contains an unsupported step kind ({kind}): {path}\n  - if the script was written by a newer pageqa, upgrade pageqa to the same version",
     "replay.err.badWaitFor":
       "a wait_for step in the replay script must carry exactly one condition (text / selector / gone): {path}",
+    "replay.err.pressNoKey":
+      "a press step in the replay script is missing its key name (key): {path}",
+    "replay.err.networkNoUrl":
+      "an assert_network step in the replay script is missing its url: an empty url matches any request, so the assertion would always pass: {path}",
     "replay.normalized":
       "[pageqa] restored recorded literal values in the script back to placeholders (re-expanded at replay time): {items}",
     "replay.drift.missing": "source case file no longer exists: {path}",
@@ -1200,6 +1238,38 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "bsk.err.refUnknown":
       "the latest snapshot has no ref {target}: {action} must use a ref from the most recent snapshot. Call snapshot for current refs instead of reusing numbers from an earlier snapshot or writing them from memory.",
     "bsk.ref.landed": "(landed on: {who})",
+    // native dialog passthrough (renderDialogs / extractDialogs in src/bsk/ipc-commands.ts)
+    "bsk.dialog.notice":
+      "Note: the page raised a native dialog during this action; bsk handled it with the default policy (accepted confirms, dismissed alerts) so the page is not blocked:",
+    // console / network assertions (assert_no_console_error / assert_network in src/bsk/tools.ts)
+    "bsk.console.unreadable":
+      "could not read console records: bsk returned an unrecognised payload. Check that this bsk version supports the console command (`bsk console --help`).",
+    "bsk.console.truncated":
+      " (bsk keeps only the last 200 console entries; older ones were dropped, so this is not the full picture)",
+    "bsk.console.scopeErrors": "errors",
+    "bsk.console.scopeWarnings": "errors or warnings",
+    "bsk.console.expectation": "the page has no JavaScript {scope}",
+    "bsk.console.clean":
+      "no {scope} among the last {count} console records{note}",
+    "bsk.console.dirty": "found {count} {scope}: {sample}{note}",
+    "bsk.network.unreadable":
+      "could not read network records: bsk returned an unrecognised payload. Check that this bsk version supports the network command (`bsk network --help`).",
+    "bsk.network.urlRequired":
+      "assert_network needs a url (a substring of the request address to assert on).",
+    "bsk.network.badStatus":
+      'cannot understand the status expectation "{spec}". Supported: 200 (exact), 2xx / 4xx / 5xx (ranges).',
+    "bsk.network.truncated":
+      " (bsk keeps only the last 200 network entries; older ones were dropped, so this is not the full picture)",
+    "bsk.network.expectationStatus": "request {url} returns {status}",
+    "bsk.network.expectationAny": "request {url} completes successfully",
+    "bsk.network.expectedResponse": "a successful response (not a failure)",
+    "bsk.network.noTraffic":
+      "(this page has produced no network records: either it really made no requests, or bsk could not enable network capture for it)",
+    "bsk.network.noMatch":
+      'no request matching "{url}" among the last {count} network records{note}. Recent requests: {recent}',
+    "bsk.network.hit": '{count} request(s) matching "{url}"; latest: {latest}{note}',
+    "bsk.network.miss":
+      '{count} request(s) matching "{url}"; actual: {actual} (expected {expected}){note}',
     // picker widgets (src/bsk/picker.ts + select_option / pick_date in src/bsk/tools.ts)
     "bsk.picker.noOverlay":
       "no visible dropdown overlay appeared after opening {target} (it may not be an open-on-click dropdown). If it is really a plain text input, use fill instead; otherwise call snapshot and pick the option by hand.",
