@@ -1,6 +1,6 @@
 # bsk 能力复用评估（可优化项与缺口）
 
-- 状态：调研结论（2026-09）；阶段 1（`press` + `dialogs` 透传）、阶段 2（`console` / `network` 断言）与阶段 3（`screenshot` + 报告嵌图）**已落地**，其余待办（见第八节）
+- 状态：调研结论（2026-09）；阶段 1（`press` + `dialogs` 透传）、阶段 2（`console` / `network` 断言）、阶段 3（`screenshot` + 报告嵌图）与阶段 4（`wheel` / `focus` / `blur` / `get_html` + IPC 快路径）**已落地**，其余待办（见第八节）
 - 目的：清点 browserskill（`bsk`）已提供、而 pageqa 尚未使用的能力，判断哪些可以直接接上提升测试覆盖面与执行效率，哪些需要向上游提需求。
 - 参照对象：
   - pageqa 本体：本仓库（`src/`）
@@ -103,19 +103,19 @@ bsk 每一次交互的返回都带 `dialogs[]`，但：
 
 目前报告（文本 / JSON / HTML）全是文字。给失败场景附一张截图（`--full-page` 或失败当时的视口），能省掉大半排查时间。改动含 `report-html.ts` 的嵌图。
 
-**（6）`get-html` → 精确断言兜底**
+**（6）`get-html` → 精确断言兜底**（已落地，见第八节）
 
 `snapshot.ts` 的瘦身会**截断长文本行、整行省略非关键文本**，`assert_text` 已经因此专门绕开瘦身文本（`ensureRawSnapshot`）。当断言对象落在被截断区间、或需要断言属性/结构而非可见文本时，`get-html --ref` 是权威来源。
 
-**（7）`wheel` → 真实的滚动事件**
+**（7）`wheel` → 真实的滚动事件**（已落地，见第八节）
 
 pageqa 只有 `scroll-to`，它把元素滚进视口但**不产生滚动事件**。无限滚动加载（滚到底部触发加载下一页）必须用真实滚轮增量才能触发。
 
 ### 3.3 P2/P3 — 覆盖面扩展
 
-- **`select`**：原生 `<select>` 用 bsk 的「按 `value` 设置 + 支持多选」比 pageqa 的 `select_option`（为 Element Plus 浮层设计）更直接。
+- **`select`**：原生 `<select>` 用 bsk 的「按 `value` 设置 + 支持多选」比 pageqa 的 `select_option`（为 Element Plus 浮层设计）更直接。**本阶段未接**——bsk 只按 option 的 `value` 属性匹配，而用例说的是可见文本，中间那步映射不划算（理由见第八节阶段 4）；更该做的是给上游加 `--label`。
 - **`emulate --device`**：移动端响应式测试，7 个内置预设。
-- **`focus` / `blur`**：表单必填校验常在 blur 触发；`:focus` 样式断言。
+- **`focus` / `blur`**：表单必填校验常在 blur 触发；`:focus` 样式断言。（已落地，见第八节）
 - **`tab` 管理**：断言「点链接开了新标签页」。
 - **`observe --probe-hover`**：现在「hover → snapshot」要两轮，一轮可出结果（但仅此一项值得用，见 2.2 的说明）。
 - **`request-help`**：pageqa 自称能跑十几分钟的长流程，但卡在登录/验证码就整条报废。
@@ -211,7 +211,7 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 | 1 | `press` 工具 + `dialogs` 透传 | 工程量最小、收益最直接，且能立刻被录制/回放覆盖 | 已完成（2026-09-29） |
 | 2 | `assert_no_console_error` / `assert_network` | 需按 `download` 的模式产出 `AssertOutcome` 才会进报告 | 已完成（2026-09-29） |
 | 3 | `screenshot` + HTML 报告嵌图 | 失败现场证据 | 已完成（2026-09-29） |
-| 4 | `wheel` / `focus` / `blur` / `select` / `get-html` + 扩展 IPC 快路径 | 覆盖面扩展 | 待办 |
+| 4 | `wheel` / `focus` / `blur` / `get-html` + 扩展 IPC 快路径 | 覆盖面扩展 | 已完成（2026-09-29）<br/>`select` 未接（按 value 匹配，与用例的可见文本对不上，理由见第八节） |
 | 5 | 向上游提 `wait-for` 条件等待 PR | 落地后可回收 `condition.ts` / `settle.ts` 的轮询逻辑 | 待办 |
 
 ---
@@ -339,16 +339,38 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 
 本次改动后全量单测 580 项通过。
 
+### 阶段 4：`wheel` / `focus` / `blur` / `get_html` + IPC 快路径（2026-09-29 完成）
+
+| 位置 | 改动 |
+| --- | --- |
+| `src/bsk/ipc-commands.ts` | `planIpcCall` 新增 `wheel` / `focus` / `blur` 三个 case（IPC 快路径覆盖的命令从 8 条扩到 11 条）；抽出 `optionalTarget`（三条目标来源 → `{ref}` / `{selector}`）与 `wheelDeltas`（f64 增量解析，允许负数与小数）；`usedTarget` 支持自定义兜底——`wheel` 取不到落点时 bsk 打的是 `viewport-center`，不是共用的 `?`。 |
+| `src/bsk/tools.ts` | 操作层 `wheel` / `focus` / `blur` / `getHtml` 四个方法 + 四个 AgentTool + 注册；`clampHtmlBudget` 收敛 HTML 预算；`requiredTarget` 做本地必填校验。 |
+| `src/record.ts` / `src/replay.ts` | `wheel` / `focus` / `blur` 三个**动作**步骤（带定位符、占位符还原、加载校验「焦点步骤缺目标当场拒绝」）；`get_html` **不录**（理由见下）。 |
+| `src/agent.ts` / `src/i18n.ts` / `README.md` / `README.zh-CN.md` / `CONTEXT.md` | 提示词四行、zh/en 文案、工具数 17 → 21、术语表「动作」补三个。 |
+
+四个决策：
+
+1. **`get_html` 的预算由工具这边管死：默认 16KiB、上限 64KiB，超限报错而不是静默截断。** HTML 是原样进模型上下文的东西，而 bsk 自己的默认预算是 512KiB——折合十几万 token，一次调用就能把上下文冲爆，可模型多半只是想确认某个 class 在不在。要看更大范围就传 `out` 落盘（那条路径不设预算，返回的是路径与字节数，不是正文）。超限**报错**而不是改小：静默截断会让模型以为自己看到了完整 DOM，由此得出的「页面里没有这个属性」是假的。
+2. **把 `wheel` 与 `scroll` 的区别写进工具描述。** `scroll` 是 `scroll-to`（把元素滚进视口、**不产生滚动事件**），`wheel` 才是真实滚轮输入——无限加载的触底回调只认后者。描述里同时写明「滚完要先用 `wait_for` 等新内容出现」：加载是异步的，滚完立刻断言必然落空。
+3. **`focus` / `blur` 做成两个工具，而不是一个带 flag 的工具。** 两者各自只改焦点、语义对称，但报告与轨迹里要能一眼看出这一步是「聚焦」还是「失焦」；合成一个 `focus(blur: true)` 会让轨迹说谎。
+4. **`get_html` 不进化回放脚本。** 它与 `snapshot` 同类：读页面、不改页面、结果只供模型当下决策；录进去回放也只是再吐一遍 HTML，没有动作语义。要固化的结论由 `assert_text` 承担。
+
+**`select` 为什么没接**：bsk 的 `select` 只按 option 的 **`value` 属性**匹配（`cli/interaction.rs` 的 `--value`，扩展侧 `handleSelect` 在找不到时返回 `option_not_found`），而用例说的永远是**可见文本**（「选北京」）。中间那步 value↔label 的映射，要么让模型去猜 value——那正是 pageqa 一贯拒绝的「猜元素」——要么多跑一次 `get_html` 去翻原始 DOM，把「选一次」变成「猜一次 + 选一次」。**更该做的是给上游加 `--label`（或 value-or-label 匹配）**，已记入第五节。同一批的 `emulate` / `tab` / `request-help` 同样不在本阶段范围。
+
+测试：`tests/bsk-ipc.test.mjs`（三个命令的参数翻译、行格式、退让规则——含 `wheel` 双零增量与被拼错的修饰键、`focus` 缺目标、结果缺字段时算传输问题而不编默认值）、`tests/replay.test.mjs`（三个动作的录制与回放、`wheel` 的 0 增量不写进脚本、焦点步骤缺目标的加载校验，并把三个新类型纳入「所有步骤类型都在白名单里」）。
+
+本次改动后全量单测 592 项通过。
+
 ### 待办
 
-阶段 4–5 见 7.2。
+阶段 5（向上游提 `wait-for` 条件等待 PR）见 7.2。
 
 ---
 
 ## 附：查证记录
 
 - pageqa 侧全仓搜索 `dialogs`：调研时 **0 匹配**（`src/`）；2026-09-29 起已接入（见第八节）。
-- `planIpcCall` 覆盖范围：调研时 `src/bsk/ipc-commands.ts` 的 `switch (command)` 共 7 个 case；2026-09-29 起为 8 个（新增 `press`）。
+- `planIpcCall` 覆盖范围：调研时 `src/bsk/ipc-commands.ts` 的 `switch (command)` 共 7 个 case；2026-09-29 起为 11 个（新增 `press` / `wheel` / `focus` / `blur`）。
 - `REJECTED_FLAGS` 含 `json`：`src/bsk/ipc-commands.ts`。
 - bsk 命令枚举：`crates/bsk-cli/src/cli/mod.rs` 的 `enum Command`。
 - bsk 错误码常量（13 个）与 `data.reason` 细分码：`crates/bsk-protocol/src/error.rs`、`crates/bsk-cli/src/cli/render_error.rs`。

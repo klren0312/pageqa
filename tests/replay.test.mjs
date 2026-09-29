@@ -416,6 +416,45 @@ describe("Recorder 录制", () => {
     });
   });
 
+  test("wheel 录成一步：增量为 0 不写进脚本，落点照常带定位符", () => {
+    const r = new Recorder(vars);
+    r.noteText("第 1 步完成：滚到底部触发加载");
+    r.noteTool({ name: "wheel", params: { deltaY: 600 }, ok: true, lastSnapshot: "" });
+    r.noteText("第 2 步完成：横向滚到最右");
+    r.noteTool({
+      name: "wheel",
+      params: { target: "@e1", deltaX: 300, deltaY: 0, modifiers: "Shift" },
+      ok: true,
+      lastSnapshot: SNAPSHOT_1,
+    });
+    const [vertical, horizontal] = r.recorded;
+    // 没给落点：滚视口中心，脚本里不该出现 target
+    assert.deepEqual(vertical, { kind: "wheel", step: 2, locator: null, deltaY: 600 });
+    // 落点经定位符构造（回放时重新解析），0 的增量不写
+    assert.equal(horizontal.target, "@e1");
+    assert.equal(horizontal.deltaX, 300);
+    assert.equal(horizontal.deltaY, undefined);
+    assert.equal(horizontal.modifiers, "Shift");
+    assert.equal(horizontal.locator.role, "link");
+  });
+
+  test("focus / blur 录成一步：目标是主体，照常带定位符", () => {
+    const r = new Recorder(vars);
+    r.noteText("第 1 步完成：填入用户名");
+    r.noteTool({ name: "blur", params: { target: "@e1" }, ok: true, lastSnapshot: SNAPSHOT_1 });
+    const [step] = r.recorded;
+    assert.equal(step.kind, "blur");
+    assert.equal(step.step, 2);
+    assert.equal(step.target, "@e1");
+    assert.equal(step.locator.role, "link");
+  });
+
+  test("focus / blur 没有目标（不该发生）不进脚本", () => {
+    const r = new Recorder(vars);
+    r.noteTool({ name: "focus", params: {}, ok: true, lastSnapshot: "" });
+    assert.equal(r.recorded.length, 0);
+  });
+
   test("screenshot 录「截什么」，不录「截到哪」", () => {
     const r = new Recorder(vars);
     r.noteText("第 1 步完成：已交互");
@@ -546,6 +585,18 @@ describe("回放失败语义（executeReplaySteps）", () => {
       screenshot: (options) => {
         calls.push(["screenshot", options ?? {}]);
         return "已截图";
+      },
+      wheel: (options) => {
+        calls.push(["wheel", options ?? {}]);
+        return "已滚动";
+      },
+      focus: (target) => {
+        calls.push(["focus", target]);
+        return `已聚焦 ${target}`;
+      },
+      blur: (target) => {
+        calls.push(["blur", target]);
+        return `已失焦 ${target}`;
       },
       wait: (ms) => {
         calls.push(["wait", ms]);
@@ -876,6 +927,46 @@ describe("回放失败语义（executeReplaySteps）", () => {
     const out = await run(ops, [{ kind: "assert_network", step: 1, url: "/api/x" }]);
     assert.equal(out.assertions[0].verdict, "fail");
     assert.equal(replayScenarioStatus(out), "fail");
+  });
+
+  test("wheel 步骤：增量与落点按原样回放，没给落点就滚视口中心", async () => {
+    const ops = makeOps();
+    await run(ops, [{ kind: "wheel", step: 1, deltaY: 600, locator: null }]);
+    assert.deepEqual(ops.calls, [["wheel", { deltaY: 600 }]]);
+  });
+
+  test("wheel 步骤：落点经定位符解析后传给工具", async () => {
+    const ops = makeOps({ snapshot: '  @e7 link "Learn more"' });
+    await run(ops, [
+      {
+        kind: "wheel",
+        step: 1,
+        target: "@e7",
+        locator: { role: "link", name: "Learn more", nth: 0, target: "@e7" },
+        deltaY: 300,
+        deltaX: 20,
+        modifiers: "Shift",
+      },
+    ]);
+    assert.deepEqual(ops.calls.at(-1), [
+      "wheel",
+      { target: "@e7", deltaX: 20, deltaY: 300, modifiers: "Shift" },
+    ]);
+  });
+
+  test("focus / blur 步骤：目标经定位符解析后传给工具，且不产生断言", async () => {
+    const ops = makeOps({ snapshot: '  @e7 textbox "搜索关键词"' });
+    const out = await run(ops, [
+      {
+        kind: "blur",
+        step: 1,
+        target: "@e7",
+        locator: { role: "textbox", name: "搜索关键词", nth: 0, target: "@e7" },
+      },
+    ]);
+    assert.deepEqual(ops.calls.at(-1), ["blur", "@e7"]);
+    assert.equal(out.assertions.length, 0);
+    assert.equal(out.failed, 0);
   });
 
   test("screenshot 步骤：只留证据，不产生断言、也不改场景结论", async () => {
@@ -1231,6 +1322,42 @@ describe("回放脚本文件", () => {
     assert.equal(loaded.scenarios[0].steps[0].timeoutMs, 5000);
   });
 
+  test("focus / blur 步骤缺目标当场拒绝（不知道要动谁的焦点，不该在回放中途静默跳过）", () => {
+    const base = { format: REPLAY_FORMAT, version: REPLAY_VERSION };
+    for (const [i, step] of [
+      { kind: "focus", step: null, locator: null },
+      { kind: "blur", step: null, target: "   ", locator: null },
+    ].entries()) {
+      const p = join(dir, `bad-focus-${i}.json`);
+      writeFileSync(
+        p,
+        JSON.stringify({
+          ...base,
+          scenarios: [{ name: "A1", caseSteps: [], steps: [step] }],
+        }),
+      );
+      assert.throws(() => loadReplayScript(p), /缺少目标/);
+    }
+    // 有目标则正常加载，且不需要升脚本版本号（与 wait_for / press 同一条规则）
+    const ok = join(dir, "ok-focus.json");
+    writeFileSync(
+      ok,
+      JSON.stringify({
+        ...base,
+        scenarios: [
+          {
+            name: "A1",
+            caseSteps: [],
+            steps: [{ kind: "blur", step: 1, target: "@e1", locator: null }],
+          },
+        ],
+      }),
+    );
+    const loaded = loadReplayScript(ok);
+    assert.equal(loaded.scenarios[0].steps[0].target, "@e1");
+    assert.equal(loaded.version, REPLAY_VERSION);
+  });
+
   test("press 步骤缺键名当场拒绝（空按键没有意义，不该在回放中途静默按空）", () => {
     const base = {
       format: REPLAY_FORMAT,
@@ -1385,6 +1512,9 @@ describe("回放脚本文件", () => {
       "hover",
       "scroll",
       "press",
+      "wheel",
+      "focus",
+      "blur",
       "screenshot",
       "wait",
       "wait_for",
@@ -1402,6 +1532,11 @@ describe("回放脚本文件", () => {
           return { kind, step: null, target: "@e1", locator: null };
         case "press":
           return { kind, step: null, key: "Enter", locator: null };
+        case "wheel":
+          return { kind, step: null, deltaY: 600, locator: null };
+        case "focus":
+        case "blur":
+          return { kind, step: null, target: "@e1", locator: null };
         case "screenshot":
           return { kind, step: null, fullPage: true, locator: null };
         case "assert_no_console_error":

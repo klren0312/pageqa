@@ -203,6 +203,40 @@ export class Recorder {
         });
         return;
       }
+      case "wheel": {
+        // 滚轮是**动作**：录下增量与落点，回放时重新滚一遍——无限加载那类页面不滚就没有
+        // 内容可断言，跳过它等于跳过整个加载过程。
+        const { target, locator } = targetOf();
+        const dx = Number(p["deltaX"]);
+        const dy = Number(p["deltaY"]);
+        const modifiers = text("modifiers").trim();
+        this.steps.push({
+          kind: "wheel",
+          step,
+          ...(target ? { target } : {}),
+          locator: target ? locator : null,
+          // 增量为 0 是默认值，不写进脚本（写死它等于把「当时的默认」固化，将来改默认值就失效）。
+          ...(Number.isFinite(dx) && dx !== 0 ? { deltaX: dx } : {}),
+          ...(Number.isFinite(dy) && dy !== 0 ? { deltaY: dy } : {}),
+          ...(modifiers ? { modifiers } : {}),
+        });
+        return;
+      }
+      case "focus": {
+        // 焦点变化是**动作**而不是查询：它会触发页面自己的 focus/blur 处理，
+        // 回放必须重做，否则「失焦后出现报错提示」那条断言在回放里必然失败。
+        const { target, locator } = targetOf();
+        // 没有目标就没有这一步（工具层已拦过，这里再兜一次，免得把空条件写进脚本）。
+        if (!target) return;
+        this.steps.push({ kind: "focus", step, target, locator });
+        return;
+      }
+      case "blur": {
+        const { target, locator } = targetOf();
+        if (!target) return;
+        this.steps.push({ kind: "blur", step, target, locator });
+        return;
+      }
       case "screenshot": {
         // 录「截什么」，不录「截到哪」：默认路径带时间戳、每次运行都不同，把这一次的文件名
         // 写进脚本，回放只会把图覆盖到一堆没人看的旧名字里。用例显式给了 out 才照写。

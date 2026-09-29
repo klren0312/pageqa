@@ -79,6 +79,9 @@ export type ReplayStepKind =
   | "hover"
   | "scroll"
   | "press"
+  | "wheel"
+  | "focus"
+  | "blur"
   | "screenshot"
   | "wait"
   | "wait_for"
@@ -197,6 +200,39 @@ export interface ReplayScreenshotStep {
   out?: string;
 }
 
+/**
+ * 滚轮步骤：录下增量与落点，回放时重滚一遍。
+ *
+ * 为什么是动作而不是「读一下」：无限加载那类页面，不滚就没有内容可断言——回放跳过它
+ * 等于跳过整个加载过程，后面那些断言必然落空。
+ */
+export interface ReplayWheelStep {
+  kind: "wheel";
+  step: number | null;
+  /** 落点（录制时的 @eN）；未指定时滚视口中心。 */
+  target?: string;
+  locator: Locator | null;
+  /** 水平增量（CSS 像素，向右为正）。 */
+  deltaX?: number;
+  /** 垂直增量（CSS 像素，向下为正）。 */
+  deltaY?: number;
+  /** 修饰键（原样保留录制时的写法）。 */
+  modifiers?: string;
+}
+
+/**
+ * 焦点步骤（`focus` / `blur`）。
+ *
+ * 也是动作：焦点变化会触发页面自己的 focus/blur 处理（表单校验、联动下拉都挂在这上面），
+ * 回放不重做的话，「失焦之后才出现的报错提示」这类断言必然失败。
+ */
+export interface ReplayFocusStep {
+  kind: "focus" | "blur";
+  step: number | null;
+  target: string;
+  locator: Locator | null;
+}
+
 export interface ReplayDownloadStep {
   kind: "download";
   step: number | null;
@@ -299,6 +335,8 @@ export type ReplayStep =
   | ReplayPickDateStep
   | ReplayUploadStep
   | ReplayPressStep
+  | ReplayWheelStep
+  | ReplayFocusStep
   | ReplayScreenshotStep
   | ReplayDownloadStep
   | ReplayNavigateStep
@@ -464,6 +502,13 @@ export function loadReplayScript(path: string): ReplayScript {
           throw new Error(t("replay.err.pressNoKey", { path }));
         }
       }
+      // 焦点步骤没有目标就没有意义（工具层同样要求必填）：与其在回放中途静默跳过，
+      // 不如在加载时就说清楚（与 pressNoKey 同一条理由）。
+      if (st?.kind === "focus" || st?.kind === "blur") {
+        if (typeof st.target !== "string" || !st.target.trim()) {
+          throw new Error(t("replay.err.focusNoTarget", { path }));
+        }
+      }
       // 网络断言的 url 是这一步**全部**的判定依据：空的 url 会匹配上任何请求，
       // 一条本该严格的断言会变成永远通过——比报错危险得多，加载时就拦下。
       if (st?.kind === "assert_network") {
@@ -494,6 +539,9 @@ const REPLAY_STEP_KINDS: ReadonlySet<string> = new Set<ReplayStepKind>([
   "hover",
   "scroll",
   "press",
+  "wheel",
+  "focus",
+  "blur",
   "screenshot",
   "wait",
   "wait_for",
@@ -639,6 +687,9 @@ export function normalizePlaceholderLiterals(script: ReplayScript): string[] {
         case "hover":
         case "scroll":
         case "press":
+        case "wheel":
+        case "focus":
+        case "blur":
         case "upload":
         case "download":
           applyLocator(st);
@@ -1022,6 +1073,29 @@ async function runStep(
             ? { holdMs: step.holdMs }
             : {}),
         }),
+      };
+    }
+    case "wheel": {
+      // 落点可选：不给就滚视口中心（bsk 侧的语义）。
+      const target = step.target
+        ? await resolveStepTarget(ops, step.target, step.locator, expand, locate)
+        : undefined;
+      return {
+        text: await ops.wheel({
+          ...(target ? { target } : {}),
+          ...(typeof step.deltaX === "number" ? { deltaX: step.deltaX } : {}),
+          ...(typeof step.deltaY === "number" ? { deltaY: step.deltaY } : {}),
+          ...(step.modifiers ? { modifiers: step.modifiers } : {}),
+        }),
+      };
+    }
+    case "focus":
+    case "blur": {
+      // 目标必填（加载时已校验），且照常走语义定位符——「聚焦到哪个输入框」同样会随改版而变。
+      const target = await resolveStepTarget(ops, step.target, step.locator, expand, locate);
+      return {
+        text:
+          step.kind === "focus" ? await ops.focus(target) : await ops.blur(target),
       };
     }
     case "screenshot": {
