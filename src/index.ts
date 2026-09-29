@@ -84,6 +84,13 @@ interface CliArgs {
    */
   settleWaits: boolean;
   /**
+   * `--locate-timeout <ms>`：回放时，定位符**所在区域整体缺失**等页面就绪的上限（默认 8000ms）。
+   *
+   * 只在区域一起缺失时才等：区域在、或区域是没打开的浮层，立刻按「元素未找到」处理
+   * （判据见 locator.ts 的 inspectRegion）。0 = 完全不等。
+   */
+  locateTimeoutMs?: number;
+  /**
    * `--only <序号|标题>`：只跑其中一个场景（由 `## 场景名` 分隔出来的那一个）。
    * 批处理选项，与 `--suite` / `--tui` / `--replay` 互斥；见 ADR-0013 决策二。
    */
@@ -257,6 +264,22 @@ export function parseArgs(argv: string[]): CliArgs {  const args: CliArgs = {
       case "--settle-waits":
         args.settleWaits = true;
         break;
+      case "--locate-timeout": {
+        const v = argv[++i];
+        if (v === undefined || v.startsWith("-")) {
+          args.error = t("err.locateTimeoutRequired");
+          return args;
+        }
+        // 0 是合法值（显式关闭等待），负数与非数字必须当场报错：静默回落成默认值
+        // 会让人以为「我已经关掉了怎么还在等」。
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 0) {
+          args.error = t("err.locateTimeoutInvalid", { value: v });
+          return args;
+        }
+        args.locateTimeoutMs = n;
+        break;
+      }
       case "--tui":
         args.tui = true;
         break;
@@ -600,6 +623,7 @@ async function replayMode(args: CliArgs): Promise<number> {
       now: new Date(),
       failFast: args.failFast,
       settleWaits: args.settleWaits,
+      locateTimeoutMs: args.locateTimeoutMs,
     });
     const out = args.json ? result.json : result.text;
     if (args.out) writeFileSync(args.out, out + "\n");

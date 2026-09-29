@@ -510,8 +510,14 @@ export interface BskOps {
   /** 最近一次快照文本（每次 snapshot / assert_text 都会刷新）。 */
   lastSnapshot(): string;
   navigate(url: string, signal?: AbortSignal): Promise<string>;
-  /** 读取页面快照（已瘦身）；期间无页面改动且间隔很短时复用上一份，不重新抓取。 */
-  snapshot(signal?: AbortSignal): Promise<string>;
+  /**
+   * 读取页面快照（已瘦身）；期间无页面改动且间隔很短时复用上一份，不重新抓取。
+   *
+   * `fresh` 绕开这个复用窗口（见 SNAPSHOT_DEDUP_MS）：回放的**定位轮询**必须每次都看当下，
+   * 否则连续几次轮询会拿到同一份旧快照，把「页面就绪了没有」问成一句废话
+   * （见 replay.ts 的 resolveByWaiting）。
+   */
+  snapshot(signal?: AbortSignal, options?: { fresh?: boolean }): Promise<string>;
   click(target: string, signal?: AbortSignal): Promise<string>;
   fill(target: string, value: string, signal?: AbortSignal): Promise<string>;
   upload(
@@ -902,7 +908,12 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       }
     },
 
-    async snapshot(signal?: AbortSignal): Promise<string> {
+    async snapshot(
+      signal?: AbortSignal,
+      options?: { fresh?: boolean },
+    ): Promise<string> {
+      // 强制取新：轮询场景专用（理由见 BskOps.snapshot 的说明）
+      if (options?.fresh) return await takeSnapshot(signal);
       return await ensureSnapshot(SNAPSHOT_DEDUP_MS, "snapshot", signal);
     },
 

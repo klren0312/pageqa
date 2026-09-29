@@ -14,6 +14,7 @@ import {
 import { Recorder } from "../dist/record.js";
 import {
   buildReplayScript,
+  DEFAULT_LOCATE_TIMEOUT_MS,
   executeReplaySteps,
   loadReplayScript,
   replayScenarioStatus,
@@ -631,6 +632,156 @@ describe("回放失败语义（executeReplaySteps）", () => {
       ops.calls.map((c) => c[0]),
       ["navigate", "settle", "assert_text"],
     );
+  });
+});
+
+describe("回放：所在区域缺失时等页面就绪（--locate-timeout）", () => {
+  // 这一组守的是真实事故（2026-09-28 钉钉日志用例）：回放刚 navigate 完就去点筛选表单里的
+  // 「创建时间」，而 SPA 在 load 之后还要 1~2 秒才渲染出那个表单——旧逻辑 1 秒内三次尝试
+  // 全部落空，把「页面还没就绪」报成了「元素未找到 / 多半是点到了另一个同名菜单」。
+  const TITLE = 'RootWebArea "经路云-LTC管理平台 - 钉钉日志"';
+  const FORM =
+    'form "创建时间 - 发送渠道 请选择发送渠道 消息类型 请选择消息类型 接收人 用户编号 发送状态 请选择发送状态 发送时间 -"';
+  /** 只有外壳（navigate 刚返回时的形态）。 */
+  const SHELL = [`  ${TITLE}`, '  @e2 button "经路云-LTC管理平台"'].join("\n");
+  /** 表单渲染出来了，但没有那个 combobox（元素确实变了）。 */
+  const FORM_ONLY = [`  ${TITLE}`, `  ${FORM}`].join("\n");
+  /** 完整页面：录制的定位符可以解析（回放时编号与录制时相同）。 */
+  const READY = [
+    `  ${TITLE}`,
+    `  ${FORM}`,
+    '    @e29 combobox "创建时间 [has-submenu]"',
+  ].join("\n");
+
+  const clickCreateTime = {
+    kind: "click",
+    step: 1,
+    target: "@e29",
+    locator: {
+      role: "combobox",
+      name: "创建时间 [has-submenu]",
+      nth: 0,
+      target: "@e29",
+      path: [TITLE, FORM],
+    },
+  };
+
+  /** 假操作层：snapshot 按调用顺序依次返回给定快照（用完后一直用最后一份）。 */
+  function makeOps(snapshots) {
+    const calls = [];
+    let i = 0;
+    return {
+      calls,
+      session: "fake",
+      lastSnapshot: () => "",
+      snapshot: (_signal, options) => {
+        calls.push(["snapshot", options?.fresh === true]);
+        return snapshots[Math.min(i++, snapshots.length - 1)];
+      },
+      click: (target) => {
+        calls.push(["click", target]);
+        return "已点击";
+      },
+      settle: () => {
+        calls.push(["settle"]);
+        return "页面已稳定";
+      },
+    };
+  }
+
+  const run = (ops, steps, options = {}) =>
+    executeReplaySteps(
+      ops,
+      { name: "S", caseSteps: ["用例第一步"], steps },
+      { expand: (t) => t, jevActive: false, ...options },
+    );
+  /** 单测不真的等：5ms 一次轮询 + 几百毫秒上限。 */
+  const fast = { locatePollMs: 5 };
+
+  test("区域缺失 → 等到页面就绪再解析，成功执行（不记跳过）", async () => {
+    const ops = makeOps([SHELL, SHELL, READY]);
+    const out = await run(ops, [clickCreateTime], { ...fast, locateTimeoutMs: 1000 });
+    assert.equal(out.skipped.length, 0);
+    assert.equal(out.failed, 0);
+    assert.equal(out.executed, 1);
+    assert.deepEqual(
+      ops.calls.filter((c) => c[0] === "click"),
+      [["click", "@e29"]],
+    );
+    // 轨迹里留下「等了多久、期间页面长什么样」
+    assert.match(
+      out.trace.join("\n"),
+      /\[replay-wait\] #1 click 等页面就绪 \d+ms（\d+ 次快照，行数 2 → 2 → 3）后解析到 @e29/,
+    );
+    // 首次解析用普通快照（可以复用），轮询必须每次都强制取新（否则连拿同一份旧快照）
+    assert.equal(ops.calls.filter((c) => c[0] === "snapshot" && c[1] === false).length, 1);
+    assert.equal(ops.calls.filter((c) => c[0] === "snapshot" && c[1] === true).length, 2);
+    assert.equal(ops.calls.filter((c) => c[0] === "settle").length, 0);
+  });
+
+  test("一直没就绪 → 等满上限后按「元素未找到」跳过，且不再叠加重试", async () => {
+    const ops = makeOps([SHELL]);
+    const out = await run(ops, [clickCreateTime], { ...fast, locateTimeoutMs: 120 });
+    assert.equal(out.skipped.length, 1);
+    assert.equal(out.failed, 0);
+    assert.equal(ops.calls.filter((c) => c[0] === "click").length, 0);
+    // 等待已经发生在定位里，不该再有「重试之间等页面稳定」那一轮
+    assert.equal(ops.calls.filter((c) => c[0] === "settle").length, 0);
+    // 证据要带上轮询次数、实际等待与快照行数轨迹
+    assert.match(out.skipped[0], /已等页面就绪 \d+ms（\d+ 次快照，行数 2 → 2/);
+    assert.match(out.skipped[0], /--locate-timeout/);
+  });
+
+  test("区域在页面上 → 不等（沿用三次尝试 + 两次等页面稳定）", async () => {
+    const ops = makeOps([FORM_ONLY]);
+    const out = await run(ops, [clickCreateTime], { ...fast, locateTimeoutMs: 5000 });
+    assert.equal(out.skipped.length, 1);
+    assert.equal(ops.calls.filter((c) => c[0] === "snapshot" && c[1] === true).length, 0);
+    assert.equal(ops.calls.filter((c) => c[0] === "settle").length, 2);
+    // 先说区域在不在，而不是猜「点到了另一个菜单」
+    assert.match(out.skipped[0], /录制时它所在区域 form "创建时间/);
+    assert.match(out.skipped[0], /在页面上存在/);
+  });
+
+  test("浮层缺失 → 不等（面板没打开，等也等不来），并如实说明", async () => {
+    const dialog = 'dialog "日 一 二 三 四 五 六 30 31 1 2 3 4 5 6 7"';
+    const ops = makeOps([FORM_ONLY]);
+    const out = await run(
+      ops,
+      [
+        {
+          kind: "click",
+          step: 1,
+          target: "@e149",
+          locator: {
+            role: "button",
+            name: "确定",
+            nth: 0,
+            target: "@e149",
+            path: [TITLE, dialog],
+          },
+        },
+      ],
+      { ...fast, locateTimeoutMs: 5000 },
+    );
+    assert.equal(out.skipped.length, 1);
+    assert.equal(ops.calls.filter((c) => c[0] === "snapshot" && c[1] === true).length, 0);
+    assert.equal(ops.calls.filter((c) => c[0] === "settle").length, 2);
+    assert.match(out.skipped[0], /位于浮层 dialog "日 一 二/);
+    assert.match(out.skipped[0], /面板\/弹窗没有打开/);
+  });
+
+  test("--locate-timeout 0 = 不等，退回旧行为（立刻判定 + 三次尝试）", async () => {
+    const ops = makeOps([SHELL]);
+    const out = await run(ops, [clickCreateTime], { ...fast, locateTimeoutMs: 0 });
+    assert.equal(out.skipped.length, 1);
+    assert.equal(ops.calls.filter((c) => c[0] === "snapshot").length, 3);
+    assert.equal(ops.calls.filter((c) => c[0] === "snapshot" && c[1] === true).length, 0);
+    assert.equal(ops.calls.filter((c) => c[0] === "settle").length, 2);
+  });
+
+  test("默认上限是常数（CLI 帮助与这里的口径同一个数）", () => {
+    assert.equal(DEFAULT_LOCATE_TIMEOUT_MS, 8000);
   });
 });
 
