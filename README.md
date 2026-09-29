@@ -210,7 +210,27 @@ Unrecognized placeholders (e.g. `${PATH}`) are kept as-is.
 | `--init-config` | Create/reset the config file |
 | `--out <file>` | Write the report to a file |
 | `--debug` | Debug logs (bsk commands & timings, snapshot slimming, Jev requests…) |
+| `sessions` (subcommand) | `pageqa sessions`: start the local archive server to review the parameters handed to the model and the full interaction (`--port <n>` / `--dir <path>` / `--no-open`) |
 | `-v, --version` · `-h, --help` | Version / help |
+
+---
+
+## Reviewing run archives (`pageqa sessions`)
+
+How much of the scene you can inspect decides whether you can debug it at all. Every run writes "what was handed to the agent" plus "the full interaction" into `~/.pageqa/sessions/sessions.sqlite` (one **SQLite container** through pi's session backend `@earendil-works/pi-session-backend-sqlite-node`: one run = one Session, with parameters/summary/verdict in `Value` and per-turn context plus tool calls in `ValueList`, written in a single transaction), and `pageqa sessions` serves them:
+
+- **Parameters handed to the agent**: system prompt, model, tool declarations (with JSON Schema), the step-numbered case and placeholder values;
+- **Per-turn LLM context**: the messages actually sent on that turn (including context trimming) — answering "what did the model really see, and were earlier steps pushed out?";
+- **Every tool call**: the arguments the model supplied, the result or failure reason, duration and verdict.
+
+```bash
+pageqa sessions                  # default http://127.0.0.1:7331/ (the port is bumped upward if taken)
+pageqa sessions --port 8080      # pick a port
+pageqa sessions --dir ./archives # use another archive directory
+pageqa sessions --no-open        # do not open the browser automatically
+```
+
+Archives are written automatically by every run, with no extra switch; in suite mode each scenario gets its own. They live in the **user directory** rather than the working directory, and `--no-side-outputs` does not turn them off — this is a debugging tool, not a test artifact; only the latest 200 runs are kept. Since an archive contains the system prompt, case text and page snapshots, the server binds to loopback (`127.0.0.1`) only.
 
 ---
 
@@ -237,7 +257,7 @@ flowchart TD
   end
 
   subgraph BSK["bsk tool layer · src/bsk"]
-    TOOLS["tools.ts 10 tools<br/>navigate·snapshot·click·fill·upload·download·hover·scroll·wait·assert_text<br/>async · abortable · globally serial"]
+    TOOLS["tools.ts 13 tools<br/>navigate·snapshot·click·fill·select_option·pick_date·upload·download·hover·scroll·wait·wait_for·assert_text<br/>async · abortable · globally serial"]
     DIAG["navigate-diagnosis.ts turn navigation failures into plain language"]
     SNAP["snapshot.ts snapshot slimming"]
   end
@@ -314,7 +334,7 @@ flowchart TD
 ```
 Natural-language intent
    └─> pi-agent-core agent (LLM: configurable OpenAI-compatible endpoint)
-          └─> bsk tools: navigate / snapshot / click / fill / upload / download / hover / scroll / wait / assert_text
+          └─> bsk tools: navigate / snapshot / click / fill / select_option / pick_date / upload / download / hover / scroll / wait / wait_for / assert_text
                  └─> real browser (connected by bsk)
           └─> conclusion & evidence -> report (text/JSON) + exit code
           └─> by default: record successful operations -> replay script (*.replay.json; off in /setting)
@@ -327,7 +347,9 @@ Interactive mode (pageqa --tui <case file>)
    └─> exit -> restore main screen -> summary report (stdout/--out) + exit code (cancelled not counted)
 ```
 
-Available tools (`src/bsk/tools.ts`): `navigate` opens a page; `snapshot` reads the page's aria tree and visible text (with slimming and reuse); `click`/`fill`/`hover` element interactions; `upload` uploads a local file; `download` captures a browser download (itself an assertion); `scroll`/`wait` scroll and wait; `assert_text` asserts the page contains the specified text.
+Available tools (`src/bsk/tools.ts`): `navigate` opens a page; `snapshot` reads the page's aria tree and visible text (with slimming and reuse; the `refs` mode keeps only the interactive-element list); `click`/`fill`/`hover` element interactions (pass `showPage: true` to get a post-action element list appended, saving the follow-up snapshot); `select_option` picks a dropdown/cascader option in one call (open -> wait for the overlay -> match by visible text); `pick_date` picks a date in one call (open the panel -> navigate to the target month -> click the day; accepts `2026-09-29` / `today` / `+3` / `-7`; for **date ranges** pass the end date as `endDate` and it walks "pick start -> pick end -> confirm", failing loudly when the panel type and the arguments disagree instead of leaving a half-finished range); `upload` uploads a local file; `download` captures a browser download (itself an assertion); `scroll`/`wait`/`wait_for` scroll and wait; `assert_text` asserts the page contains the specified text.
+
+Picker widgets (Element Plus and friends) use a **mixed strategy**: `.el-*` class contracts first (steadier than the aria tree), then generic ARIA selectors such as `[role=listbox]`; when neither hits, the tool fails honestly and lists the currently selectable options so the model can fall back to the generic "look at the snapshot and click" path — it **never guesses** at an element. Why a dedicated layer: on the generic path "open -> snapshot -> click the option" costs three LLM round trips, and stepping through calendar months costs one snapshot per click; collapsing that into a single call takes picking a date from over ten seconds down to a few.
 
 Long-flow protection (auto-retry): after one conversation round, if the agent's self-reported progress isn't full (`steps done: k/n` with `k < n`), or the case had assertions but the report only parsed some, pageqa automatically appends a "continue remaining steps" prompt and keeps going, at most 5 rounds.
 

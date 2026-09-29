@@ -35,6 +35,7 @@ import {
   writeReportSideOutput,
   type ScriptOutcome,
 } from "./side-outputs.js";
+import { runSessionServer } from "./session-server.js";
 import { runInteractive } from "./tui/app.js";
 import {
   buildReplayScript,
@@ -122,9 +123,25 @@ interface CliArgs {
   locale: string;
   /** 参数解析错误（如带值选项缺少参数）；有值时 main 会提示并退出。 */
   error?: string;
+  /** `sessions` 子命令：起本地查询服务（与「跑用例」是两种模式，单独一条解析路径）。 */
+  sessions?: SessionsArgs;
 }
 
-export function parseArgs(argv: string[]): CliArgs {  const args: CliArgs = {
+/** `pageqa sessions` 的选项。 */
+export interface SessionsArgs {
+  /** 监听端口（默认 7331；被占用则向上顺延）。 */
+  port?: number;
+  /** 存档目录（默认 `~/.pageqa/sessions`）。 */
+  dir?: string;
+  /** `--no-open`：不自动打开浏览器。 */
+  noOpen: boolean;
+  /** `sessions --help`：打印子命令帮助。 */
+  help: boolean;
+}
+
+/** CliArgs 的默认值（主解析与 sessions 子命令共用一份，避免两处默认值漂移）。 */
+function emptyCliArgs(): CliArgs {
+  return {
     json: false,
     suite: false,
     initConfig: false,
@@ -141,6 +158,15 @@ export function parseArgs(argv: string[]): CliArgs {  const args: CliArgs = {
     usageStream: false,
     locale: "",
   };
+}
+
+export function parseArgs(argv: string[]): CliArgs {
+  // 子命令：`pageqa sessions [...options]`
+  // 它起一个常驻服务，与「跑用例」是两种完全不同的模式，因此单独走一条解析路径：
+  // 主选项循环里每个位置参数都是「用例输入」，混进去会让 `pageqa sessions` 看起来像
+  // 「去跑一条叫 sessions 的用例」——那正是它以前的行为。
+  if (argv[0] === "sessions") return parseSessionsArgs(argv.slice(1));
+  const args: CliArgs = emptyCliArgs();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     // 兼容 `--locale=en` 写法（与 `--locale en` 等价）
@@ -313,6 +339,75 @@ export function parseArgs(argv: string[]): CliArgs {  const args: CliArgs = {
           return args;
         }
         args.input = a;
+    }
+  }
+  return args;
+}
+
+/**
+ * 解析 `pageqa sessions` 的选项。
+ *
+ * 与主解析同一条口径：带值选项缺参、值以 `-` 开头、坏值、未知选项、多余位置参数
+ * 一律当场报错（静默回落会让人以为设置生效了却没生效）。
+ */
+function parseSessionsArgs(rest: string[]): CliArgs {
+  const args = emptyCliArgs();
+  const sessions: SessionsArgs = { noOpen: false, help: false };
+  args.sessions = sessions;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a.startsWith("--locale=")) {
+      const v = a.slice("--locale=".length);
+      args.locale = v;
+      setLocale(parseLocale(v));
+      continue;
+    }
+    switch (a) {
+      case "-h":
+      case "--help":
+        sessions.help = true;
+        break;
+      case "--locale": {
+        const v = rest[++i];
+        if (v === undefined || v.startsWith("-")) {
+          args.error = t("err.localeRequired", { arg: "--locale" });
+          return args;
+        }
+        args.locale = v;
+        setLocale(parseLocale(v));
+        break;
+      }
+      case "--port": {
+        const v = rest[++i];
+        if (v === undefined || v.startsWith("-")) {
+          args.error = t("err.portRequired");
+          return args;
+        }
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1 || n > 65535) {
+          args.error = t("err.portInvalid");
+          return args;
+        }
+        sessions.port = n;
+        break;
+      }
+      case "--dir": {
+        const v = rest[++i];
+        if (v === undefined || v.startsWith("-")) {
+          args.error = t("err.dirRequired");
+          return args;
+        }
+        sessions.dir = v;
+        break;
+      }
+      case "--no-open":
+        sessions.noOpen = true;
+        break;
+      default:
+        args.error = a.startsWith("-")
+          ? t("err.unknownOption", { a })
+          : t("err.extraPositional", { a });
+        return args;
     }
   }
   return args;
@@ -656,8 +751,22 @@ async function main(): Promise<number> {
   );
   if (args.error) {
     process.stderr.write(t("err.param", { msg: args.error }) + "\n\n");
-    process.stdout.write(buildHelp() + "\n");
+    process.stdout.write(
+      (args.sessions ? t("help.sessions") : buildHelp()) + "\n",
+    );
     return 1;
+  }
+  // ── `sessions` 子命令：起本地查询服务（常驻，直到 Ctrl+C）──
+  if (args.sessions) {
+    if (args.sessions.help) {
+      process.stdout.write(t("help.sessions") + "\n");
+      return 0;
+    }
+    return await runSessionServer({
+      port: args.sessions.port,
+      dir: args.sessions.dir,
+      open: !args.sessions.noOpen,
+    });
   }
   if (args.version) {
     // 只打「pageqa <版本>」：脚本要的是版本号本身，不需要帮助文本那套排版。
