@@ -37,6 +37,34 @@ import {
   type WaitCondition,
 } from "./condition.js";
 import { buildSettleProbeExpression, describeSample, isSettled, parseSettleSample } from "./settle.js";
+import {
+  buildClearMarksExpression,
+  buildDateDayMarkExpression,
+  buildDatePanelProbeExpression,
+  buildOptionMarkExpression,
+  buildOverlayProbeExpression,
+  buildOwnOverlayExpression,
+  DATE_CONFIRM_SELECTORS,
+  DATE_NEXT_SELECTORS,
+  DATE_PREV_SELECTORS,
+  DATE_RANGE_NEXT_SELECTORS,
+  DATE_RANGE_PREV_SELECTORS,
+  monthDelta,
+  navDirection,
+  parseDatePanelProbe,
+  parseDateSpec,
+  parseDayMark,
+  parseOptionMark,
+  parseOverlayProbe,
+  pickTableIndex,
+  PICK_SELECTOR,
+  ROOT_SELECTOR,
+  scopedToRoot,
+  WIDE_OVERLAY_SELECTORS,
+  type DatePanelProbe,
+  type DateSpec,
+  type OverlayProbe,
+} from "./picker.js";
 import { slimSnapshot } from "../snapshot.js";
 import {
   BskIpcAbortError,
@@ -112,6 +140,37 @@ export const MAX_WAIT_FOR_TIMEOUT_MS = 60_000;
 
 /** `wait_for` 的轮询间隔（毫秒）：一次探针在 IPC 快路径下是毫秒级，150ms 已经足够灵敏。 */
 const WAIT_FOR_POLL_MS = 150;
+
+/**
+ * 等下拉浮层 / 日期面板出现的上限（毫秒）。
+ *
+ * 弹出动画是几百毫秒级，3 秒已经很宽松；再长说明这个控件根本不是「点开出现浮层」那种，
+ * 继续等只是把一次必然的失败拖成十几秒。
+ */
+const PICKER_WAIT_MS = 3_000;
+
+/**
+ * 等浮层**收起**的上限（毫秒）。
+ *
+ * 关闭动画是 200–300ms 级。这段等待不是洁癖：浮层收起前一直盖在下面的控件上，
+ * 不等它消失就去点下一个控件，那一下会落在浮层上——A 的下拉没关、B 的下拉没开，
+ * 后续读到的是 A 的选项（真实页面上正是这么串的）。等不到也无妨，多选下拉本就不关。
+ */
+const PICKER_CLOSE_MS = 1_500;
+
+/**
+ * 日期面板最多点几次「上/下一月」。
+ *
+ * 12 次 = 一年，够覆盖「选明年的某天」这类用例；再多就说明目标日期算错了
+ * （比如把日写成了月），继续点下去只是白跑。范围面板的窗口宽两个月，12 次移动
+ * 仍能覆盖大约一年。
+ */
+const MAX_MONTH_NAV = 12;
+
+/** 日期 → `yyyy-MM-dd`（返回文案与日志里统一用这个形状）。 */
+function fmtDate(d: DateSpec): string {
+  return `${d.y}-${d.m}-${d.d}`;
+}
 
 /** 操作被调用方主动中止（交互模式下按 Esc）。 */
 export class BskAbortError extends Error {
@@ -500,6 +559,21 @@ function paramsOf(
 }
 
 /**
+ * `showPage` 参数的声明（click / fill / hover 共用，措辞必须一致）。
+ *
+ * 默认**关闭**而不是默认开：附带的是一整份元素清单，在 Element Plus 那种几百个可交互
+ * 元素的页面上它本身就很大，每步都附等于让上下文翻倍——那反而更慢。只有当模型知道
+ * 「这一步会改变页面、接下来要看新编号」时才值得带上。
+ */
+const SHOW_PAGE_PARAM = {
+  type: "boolean",
+  description:
+    "可选。设为 true 时，动作完成后在结果里附一份「动作后的可交互元素」清单（含新的 @eN 编号）——" +
+    "展开下拉/菜单/弹窗之后用它，可以直接拿到新编号，省掉紧接着的一次 snapshot。" +
+    "其它情况不要开：清单本身不小，每步都带会把上下文撑大。",
+} as const;
+
+/**
  * bsk 操作层：一次浏览器操作 = 一条 bsk 命令。
  *
  * `lastSnapshot()` 暴露「最近一次快照文本」：录制时用它把 `@eN` 解析成语义定位符
@@ -561,6 +635,34 @@ export interface BskOps {
    * 因此不存在提前放行的风险。
    */
   waitFor(cond: WaitCondition, timeoutMs?: number, signal?: AbortSignal): Promise<string>;
+  /**
+   * 选择一个下拉/级联选项：点开控件 → 等浮层 → 按可见文本匹配选项 → 真实点击。
+   *
+   * 存在的理由是**省往返**：通用路径下这一步是「click 点开 → snapshot 看编号 →
+   * click 点选项」（常常还要再 snapshot 确认），每次工具调用都是一轮 LLM 往返（几秒）；
+   * 这里把它们压成一次调用，中间态根本不进模型上下文。
+   *
+   * 找不到浮层或选项时**抛错**，不猜、不静默：拿不到就说明这条捷径在这页面上不适用，
+   * 该由模型退回「看快照自己点」的通用路径，而不是被一个假的成功蒙过去。
+   */
+  selectOption(target: string, option: string, signal?: AbortSignal): Promise<string>;
+  /**
+   * 选一个日期（或一个日期范围）：点开面板 → 导航到目标年月 → 点日 →（有「确定」则点它）。
+   *
+   * 与 selectOption 同一动机。日期写法见 picker.ts 的 parseDateSpec：
+   * `2026-09-29` / `2026/9/29` / `2026年9月29日` / `today` / `今天` / `+3` / `-7`。
+   *
+   * 给了 `endSpec` 就按**范围**处理（选开始 → 选结束 → 确定）。面板类型与参数必须一致：
+   * 范围面板只给一个日期、或单日期面板给了两个，都会**明确报错**而不是将就着做完——
+   * 「只选了一端的范围 + 点掉确定」会留下一个半截筛选条件，而工具还会报成功，
+   * 那种假成功比报错难查得多。
+   */
+  pickDate(
+    target: string,
+    spec: string,
+    endSpec?: string,
+    signal?: AbortSignal,
+  ): Promise<string>;
   /**
    * 断言页面是否包含期望文本：字面包含优先，字面未命中时（Jev 可用）才做语义复核。
    */
@@ -883,6 +985,237 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     );
   };
 
+  /**
+   * 跑一条页面侧同步表达式。
+   *
+   * 与 wait_for / settle 走同一条路径（`bsk evaluate`）。表达式本身是毫秒级的，
+   * 那个 timeout 只防页面卡死。
+   */
+  const evalExpr = async (expr: string, signal?: AbortSignal): Promise<string> =>
+    await bsk(
+      ["evaluate", expr, "--session", session, "--timeout", `${SETTLE_PROBE_TIMEOUT_MS}ms`],
+      signal,
+      SETTLE_PROBE_TIMEOUT_MS + 10_000,
+    );
+
+  /** 清掉上一次留下的选择标记（残留会把这次的真实点击引到别的元素上）。 */
+  const clearMarks = async (signal?: AbortSignal): Promise<void> => {
+    try {
+      await evalExpr(buildClearMarksExpression(), signal);
+    } catch (err) {
+      if (err instanceof BskAbortError) throw err;
+      // 清理失败不影响这次操作（标记本来就会被下一次覆盖），只留一行 debug。
+      debugLog(
+        "[bsk] 清理选择标记失败：" +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  };
+
+  /** 依次尝试候选选择器，点中第一个存在的；全都不存在返回 false。 */
+  const clickFirst = async (
+    selectors: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<boolean> => {
+    for (const sel of selectors) {
+      try {
+        await bsk(["click", sel, ...quiet], signal);
+        return true;
+      } catch (err) {
+        if (err instanceof BskAbortError) throw err;
+        // 这个候选在当前组件库/版本里不存在：换下一个。全都不在才算「点不到」。
+      }
+    }
+    return false;
+  };
+
+  /** 轮询一条探针直到命中或超时，返回最后一次解析出的样本。 */
+  const pollProbe = async <T>(
+    expr: string,
+    hit: (sample: T | null) => boolean,
+    parse: (out: string) => T | null,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<T | null> => {
+    const outcome = await pollUntil<T | null>({
+      timeoutMs,
+      intervalMs: WAIT_FOR_POLL_MS,
+      sleep,
+      now: Date.now,
+      sample: async () => parse(await evalExpr(expr, signal)),
+      isHit: (sample) => hit(sample),
+    });
+    return outcome.last;
+  };
+
+  /** 读一次浮层状态（不等待）；命中时表达式会顺手标记那个浮层。 */
+  const probeOverlay = async (
+    signal?: AbortSignal,
+  ): Promise<OverlayProbe | null> =>
+    parseOverlayProbe(await evalExpr(buildOverlayProbeExpression(), signal));
+
+  /** 等一个可见浮层出现；命中时表达式会顺手标记那个浮层。 */
+  const waitOverlay = async (
+    signal?: AbortSignal,
+  ): Promise<OverlayProbe | null> =>
+    await pollProbe<OverlayProbe>(
+      buildOverlayProbeExpression(),
+      (sample) => sample?.hit === true,
+      parseOverlayProbe,
+      PICKER_WAIT_MS,
+      signal,
+    );
+
+  /**
+   * 问「target **自己**打开了吗」——按它声明的关联（`aria-controls`）找它的浮层。
+   *
+   * 比 `probeOverlay`（页面上有没有可见浮层）准：后者会把上一个还在关闭动画里的浮层
+   * 误认成本次的，于是「跳过点击」跳错、或在别人的浮层里找选项。
+   */
+  const probeOwnOverlay = async (
+    target: string,
+    signal?: AbortSignal,
+  ): Promise<OverlayProbe | null> =>
+    parseOverlayProbe(await evalExpr(buildOwnOverlayExpression(target), signal));
+
+  /** 等 target 自己的浮层出现（点开之后）。 */
+  const waitOwnOverlay = async (
+    target: string,
+    signal?: AbortSignal,
+  ): Promise<OverlayProbe | null> =>
+    await pollProbe<OverlayProbe>(
+      buildOwnOverlayExpression(target),
+      (sample) => sample?.hit === true,
+      parseOverlayProbe,
+      PICKER_WAIT_MS,
+      signal,
+    );
+
+  /** 页面上还有没有可见浮层（下拉、菜单、日期面板、通用 popper 都算）。 */
+  const anyOverlayVisible = async (signal?: AbortSignal): Promise<boolean> =>
+    parseOverlayProbe(
+      await evalExpr(
+        buildOverlayProbeExpression(WIDE_OVERLAY_SELECTORS),
+        signal,
+      ),
+    )?.hit === true;
+
+  /**
+   * 等浮层收起来。
+   *
+   * 选完一项之后浮层还在做关闭动画，这段时间它**盖在下面的控件上面**：紧接着去点下一个
+   * 控件，那一下会落在浮层上——A 的下拉没关、B 的下拉没开，后续读到的就是 A 的选项。
+   * 真实页面上正是这么串的。
+   *
+   * 等不到也不报错：多选下拉本来就不关闭，那种情况交给下一次操作自己的定位逻辑。
+   */
+  const waitOverlayGone = async (signal?: AbortSignal): Promise<void> => {
+    await pollUntil<boolean>({
+      timeoutMs: PICKER_CLOSE_MS,
+      intervalMs: WAIT_FOR_POLL_MS,
+      sleep,
+      now: Date.now,
+      sample: async () => !(await anyOverlayVisible(signal)),
+      isHit: (gone) => gone,
+    });
+  };
+
+  /** 读一次日期面板状态（不等待）；命中时表达式会顺手标记那个面板。 */
+  const probeDatePanel = async (
+    signal?: AbortSignal,
+  ): Promise<DatePanelProbe | null> =>
+    parseDatePanelProbe(await evalExpr(buildDatePanelProbeExpression(), signal));
+
+  /** 等日期面板出现。 */
+  const waitDatePanel = async (
+    signal?: AbortSignal,
+  ): Promise<DatePanelProbe | null> =>
+    await pollProbe<DatePanelProbe>(
+      buildDatePanelProbeExpression(),
+      (sample) => sample?.hit === true,
+      parseDatePanelProbe,
+      PICKER_WAIT_MS,
+      signal,
+    );
+
+  /**
+   * 把面板窗口移动到目标月，返回移动后的面板状态。
+   *
+   * 单日期面板只有一张表，范围面板左右两张（窗口宽两个月），两者都靠 `navDirection`
+   * 算方向；区别只在点哪一组箭头——范围类型的箭头是 `.arrow-left` / `.arrow-right`，
+   * 点一下整个窗口一起移动。
+   */
+  const navigateToMonth = async (
+    target: DateSpec,
+    range: boolean,
+    signal?: AbortSignal,
+  ): Promise<DatePanelProbe | null> => {
+    let state = await probeDatePanel(signal);
+    for (let i = 0; i < MAX_MONTH_NAV; i++) {
+      if (!state?.hit) return state ?? null;
+      const dir = navDirection(state.tables, target);
+      if (dir === 0) return state;
+      // 箭头限定在刚标记的那个面板内：全局选择器会命中 DOM 里第一个面板的箭头，
+      // 页面上有多个日期选择器时那可能是别人的（点不到，或把别的控件改掉）。
+      const moved = await clickFirst(
+        scopedToRoot(
+          range
+            ? dir > 0
+              ? DATE_RANGE_NEXT_SELECTORS
+              : DATE_RANGE_PREV_SELECTORS
+            : dir > 0
+              ? DATE_NEXT_SELECTORS
+              : DATE_PREV_SELECTORS,
+        ),
+        signal,
+      );
+      // 箭头全都不存在就停在这里：再循环也只是重复失败，点不到目标日时会如实报错。
+      if (!moved) return state;
+      state = await probeDatePanel(signal);
+    }
+    return state;
+  };
+
+  /**
+   * 在目标月所在的那张表里点中目标日。
+   *
+   * `pickTableIndex` 为 -1（面板里读不出月份）时退回第一张表：范围面板的左右两表
+   * 之外别无选择，而点错月份的风险由「点完校验结果」兜住——真点错时上层报的是
+   * 「目标日点不到」，而不是一个假的成功。
+   */
+  const clickDateDay = async (
+    container: string,
+    target: DateSpec,
+    state: DatePanelProbe,
+    signal?: AbortSignal,
+  ): Promise<boolean> => {
+    const found = pickTableIndex(state.tables, target);
+    const index = found >= 0 ? found : 0;
+    const mark = parseDayMark(
+      await evalExpr(
+        buildDateDayMarkExpression(container, target.d, index),
+        signal,
+      ),
+    );
+    if (!mark?.found) {
+      debugLog(
+        `[bsk] pick_date 未命中 ${target.y}-${target.m}-${target.d}（表 ${index}）：${mark?.reason ?? "unknown"}`,
+      );
+      return false;
+    }
+    await bsk(["click", PICK_SELECTOR, ...quiet], signal);
+    await clearMarks(signal);
+    return true;
+  };
+
+  /** 面板有「确定」就点掉它（只有部分类型/配置会渲染出来）。 */
+  const confirmDatePanel = async (signal?: AbortSignal): Promise<boolean> => {
+    const after = await probeDatePanel(signal);
+    if (!after?.hit || !after.hasFooter) return false;
+    // 同理限定在标记的面板内：「确定」按钮在别的日期面板里也有一个。
+    return await clickFirst(scopedToRoot(DATE_CONFIRM_SELECTORS), signal);
+  };
+
   return {
     session,
     lastSnapshot: () => snapshotText,
@@ -1156,6 +1489,147 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
 
     waitFor: doWaitFor,
 
+    async selectOption(
+      target: string,
+      option: string,
+      signal?: AbortSignal,
+    ): Promise<string> {
+      // 引用闸门与普通动作同一条规则：拿旧编号点开控件会点到别的地方去。
+      const landed = checkRef("select_option", target);
+      markStale();
+      // 上一次的标记若还在，这次的 `bsk click [data-pageqa-pick]` 就会点到那个元素。
+      await clearMarks(signal);
+
+      // 先问「target **自己**打开了吗」——按它声明的关联判断，而不是「页面上有没有可见浮层」。
+      // 后者会把上一个还没收起来的浮层误认成本次的：于是既不点开 target，又在那个浮层里
+      // 找选项，读到的自然是隔壁下拉的选项。
+      let overlay: OverlayProbe | null = await probeOwnOverlay(target, signal);
+      if (!overlay?.hit) {
+        await bsk(["click", target, ...quiet], signal);
+        overlay = await waitOwnOverlay(target, signal);
+      }
+      // 组件库没有 `aria-controls`（或结构不同）时回退到「任意可见浮层」：通用组件也能用，
+      // 代价是页面上同时有多个同类浮层时可能读错——那种情况会以「没有这个选项，当前可选项：
+      // …」的形式暴露出来，足以判断该换个用法。
+      if (!overlay?.hit) overlay = await probeOverlay(signal);
+      if (!overlay?.hit) throw new Error(t("bsk.picker.noOverlay", { target }));
+
+      // 根必须用**探针标记的那个**浮层，而不是探针回报的选择器字符串：后者能定位到的
+      // 只是 DOM 里第一个同类浮层——页面上有几个下拉时，那多半属于别人，于是读到隔壁的
+      // 选项（报告里那条「点开消息类型，却报出机器人、WEBHOOK」就是这么来的）。
+      const mark = parseOptionMark(
+        await evalExpr(buildOptionMarkExpression(ROOT_SELECTOR, option), signal),
+      );
+      if (!mark?.found) {
+        // 如实回报「现在能选什么」：让模型一次就能改对，而不是再花一轮去 snapshot 找选项。
+        const list =
+          mark && mark.candidates.length > 0 ? mark.candidates.join("、") : "";
+        throw new Error(
+          t("bsk.picker.optionMissing", { option }) +
+            (list ? t("bsk.picker.optionCandidates", { list }) : ""),
+        );
+      }
+
+      const out = await bsk(["click", PICK_SELECTOR, ...quiet], signal);
+      await clearMarks(signal);
+      markStale();
+      // 等它收起来再交还控制权：浮层还盖在下面的控件上，不等就去点下一个会点在它身上。
+      await waitOverlayGone(signal);
+      return `已选择「${mark.text}」${landed}\n${out}`;
+    },
+
+    async pickDate(
+      target: string,
+      spec: string,
+      endSpec?: string,
+      signal?: AbortSignal,
+    ): Promise<string> {
+      const start = parseDateSpec(spec);
+      // 解析不出来就说清楚，绝不退回到「今天」猜一个——那会把用例的错写成测试通过。
+      if (!start) throw new Error(t("bsk.picker.badDate", { spec }));
+      const end = endSpec === undefined ? null : parseDateSpec(endSpec);
+      if (endSpec !== undefined && !end) {
+        throw new Error(t("bsk.picker.badDate", { spec: endSpec }));
+      }
+      // 结束早于开始是写反了，不是页面问题：当场说清楚，别让它退化成「结束日点不到」。
+      if (end && monthDelta(start, end) < 0) {
+        throw new Error(
+          t("bsk.picker.rangeOrder", {
+            start: fmtDate(start),
+            end: fmtDate(end),
+          }),
+        );
+      }
+
+      const landed = checkRef("pick_date", target);
+      markStale();
+      await clearMarks(signal);
+
+      // 「已经打开了吗」按 target 自己声明的关联判断：面板类名随版本/类型变化，而
+      // `aria-controls` 是元素自己声明的，更靠得住；上一个面板还在关闭动画里时也不会被
+      // 误认成本次的（那会导致不点击、又在别人的面板里点日子）。
+      let panel = (await probeOwnOverlay(target, signal))?.hit
+        ? await probeDatePanel(signal)
+        : null;
+      if (!panel?.hit) {
+        await bsk(["click", target, ...quiet], signal);
+        panel = await waitDatePanel(signal);
+      }
+      // 没有 `aria-controls` 的组件库：退回「有没有可见面板」，与改造前行为一致。
+      if (!panel?.hit) panel = await probeDatePanel(signal);
+      if (!panel?.hit) throw new Error(t("bsk.picker.noPanel", { target }));
+      // 日期单元格的根同样用**探针标记的那个面板**：页面上有多个日期选择器时，
+      // 选择器字符串只能定位到 DOM 里第一个（往往是别的控件的面板），
+      // 会从别人的面板里读到同名日子并按它点击。
+      const container = ROOT_SELECTOR;
+
+      const isRange = panel.isRange === true;
+      if (isRange && !end) {
+        // 范围面板只选一端就点「确定」，会在页面上留下一个半截范围，而工具还会报成功
+        // —— 那比报错糟得多。宁可在这里停下，让模型知道「这是范围，得给两个日期」。
+        throw new Error(t("bsk.picker.rangeNeedsEnd", { target }));
+      }
+      if (!isRange && end) {
+        // 反过来：单日期面板却给了两个日期，说明模型认错了控件。
+        throw new Error(t("bsk.picker.notRange", { target }));
+      }
+
+      if (!end) {
+        // ── 单日期：导航到目标月 → 点中那一天 →（有确定则点它）──
+        const state = await navigateToMonth(start, false, signal);
+        if (!state) throw new Error(t("bsk.picker.noPanel", { target }));
+        if (!(await clickDateDay(container, start, state, signal))) {
+          throw new Error(t("bsk.picker.dayMissing", { date: fmtDate(start) }));
+        }
+        const confirmed = (await confirmDatePanel(signal))
+          ? t("bsk.picker.confirmed")
+          : "";
+        markStale();
+        // 面板收起前一直盖在下面的控件上：不等它消失，下一次点击会落在它身上。
+        await waitOverlayGone(signal);
+        return `已选择日期 ${fmtDate(start)}${confirmed}${landed}`;
+      }
+
+      // ── 范围：选开始 → 选结束 → 确定 ──
+      // 点完开始，面板进入「选结束」状态（窗口通常不动），所以两端各自导航一次。
+      let state = await navigateToMonth(start, true, signal);
+      if (!state) throw new Error(t("bsk.picker.noPanel", { target }));
+      if (!(await clickDateDay(container, start, state, signal))) {
+        throw new Error(t("bsk.picker.dayMissing", { date: fmtDate(start) }));
+      }
+      state = await navigateToMonth(end, true, signal);
+      if (!state) throw new Error(t("bsk.picker.noPanel", { target }));
+      if (!(await clickDateDay(container, end, state, signal))) {
+        throw new Error(t("bsk.picker.dayMissing", { date: fmtDate(end) }));
+      }
+      const confirmed = (await confirmDatePanel(signal))
+        ? t("bsk.picker.confirmed")
+        : "";
+      markStale();
+      await waitOverlayGone(signal);
+      return `已选择日期范围 ${fmtDate(start)} 至 ${fmtDate(end)}${confirmed}${landed}`;
+    },
+
     async assertText(
       expectation: string,
       signal?: AbortSignal,
@@ -1261,11 +1735,38 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
    * 统一包装一次工具执行：拿到结果后上报给录制器，失败时先上报再抛出
    * （抛出让 pi-agent-core 把该工具标记为错误，模型会据此重试）。
    */
+  /**
+   * 动作之后附一份**可交互元素清单**（快照的 `refs` 档位）。
+   *
+   * 这是「点开一个浮层之后」最省时间的一步：通用路径是「click 点开 → snapshot 看新编号
+   * → click 选项」，其中 snapshot 那一轮纯粹是为了拿编号，每次都是一轮 LLM 往返（几秒）。
+   * 把清单直接附在动作结果里，这一轮就省掉了。
+   *
+   * 只给清单而不是整页快照：此刻模型需要的仅仅是「现在能点哪些东西、编号是多少」，
+   * 而纯文本在 Element Plus 那种页面上能占掉九成体积。
+   *
+   * 取不到快照**不抛错**：动作本身已经成功了，附带的清单只是福利，不能让它把成功改写失败。
+   */
+  const refsAfterAction = async (signal?: AbortSignal): Promise<string> => {
+    try {
+      // `fresh`：动作刚改过页面，缓存的快照在这里必然是过期的。
+      const fresh = await ops.snapshot(signal, { fresh: true });
+      const slim = slimSnapshot(fresh, { mode: "refs" });
+      return `\n\n【动作后的可交互元素】\n${slim.text}`;
+    } catch (err) {
+      if (err instanceof BskAbortError) throw err;
+      return `\n\n（动作后取快照失败：${
+        err instanceof Error ? err.message : String(err)
+      }）`;
+    }
+  };
+
   const exec = async (
     name: string,
     params: Record<string, unknown>,
     fn: (signal?: AbortSignal) => Promise<string>,
     signal?: AbortSignal,
+    options: { snapshotAfter?: boolean } = {},
   ) => {
     const before = ops.lastSnapshot();
     try {
@@ -1287,7 +1788,9 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         // 不再从模型自述里反推（见 report.ts 的 buildReport）。
         ...(assertion ? { assert: assertion } : {}),
       });
-      return ok(text);
+      return ok(
+        options.snapshotAfter ? text + (await refsAfterAction(signal)) : text,
+      );
     } catch (err) {
       opts.onExec?.({ name, params, ok: false, lastSnapshot: before });
       throw err;
@@ -1326,18 +1829,24 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
   const click: AgentTool = {
     name: "click",
     label: "Click",
-    description: "点击一个元素。可用快照里的 @eN 引用或 CSS 选择器。",
+    description:
+      "点击一个元素。可用快照里的 @eN 引用或 CSS 选择器。" +
+      "展开下拉/菜单/弹窗、切换路由这类**会改变页面**的点击，请带上 showPage: true，一次拿到新编号。",
     parameters: paramsOf(
-      { target: { type: "string", description: "@eN 引用或 CSS 选择器" } },
+      {
+        target: { type: "string", description: "@eN 引用或 CSS 选择器" },
+        showPage: SHOW_PAGE_PARAM,
+      },
       ["target"],
     ),
     execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as TargetParams;
       return exec(
         "click",
-        { target: p.target },
+        { target: p.target, ...(p.showPage ? { showPage: true } : {}) },
         (s) => ops.click(p.target, s),
         signal,
+        { snapshotAfter: p.showPage === true },
       );
     },
   };
@@ -1345,11 +1854,16 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
   const fill: AgentTool = {
     name: "fill",
     label: "Fill",
-    description: "在输入框/文本域中填入文本（会先清空原有内容）。",
+    description:
+      "在输入框/文本域中填入文本（会先清空原有内容）。" +
+      "**只能填真正的文本输入框**：下拉框（el-select）、日期选择器等控件的输入框是只读的，" +
+      "填不进去——那两类请分别用 select_option / pick_date。" +
+      "填完之后若需要看校验提示或新出现的元素，带上 showPage: true。",
     parameters: paramsOf(
       {
         target: { type: "string", description: "@eN 引用或 CSS 选择器" },
         value: { type: "string", description: "要输入的文本" },
+        showPage: SHOW_PAGE_PARAM,
       },
       ["target", "value"],
     ),
@@ -1357,9 +1871,90 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       const p = params as FillParams;
       return exec(
         "fill",
-        { target: p.target, value: p.value },
+        { target: p.target, value: p.value, ...(p.showPage ? { showPage: true } : {}) },
         (s) => ops.fill(p.target, p.value, s),
         signal,
+        { snapshotAfter: p.showPage === true },
+      );
+    },
+  };
+
+  const selectOption: AgentTool = {
+    name: "select_option",
+    label: "Select Option",
+    description:
+      "在下拉框 / 级联选择器里选一项：工具自己点开控件、等浮层出现、按**可见文本**匹配选项并点击。" +
+      "**下拉框一律用它，不要用 fill**（el-select 这类控件的输入框是只读的，填不进去）；" +
+      "也不要「先 click 展开、再 snapshot、再 click 选项」——那要花三到四轮，这个工具一轮就完成。" +
+      "target 传下拉控件本身（@eN 或 CSS 选择器）；option 传页面上**印出来的选项文本**（如「已完成」「北京市」）。" +
+      "找不到浮层或选项时会报错，并把当前可选的项列出来，那时再退回通用路径手动操作。",
+    parameters: paramsOf(
+      {
+        target: { type: "string", description: "下拉控件（@eN 引用或 CSS 选择器）" },
+        option: { type: "string", description: "选项的可见文本（页面上印出来的字）" },
+        showPage: SHOW_PAGE_PARAM,
+      },
+      ["target", "option"],
+    ),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = params as SelectOptionParams;
+      return exec(
+        "select_option",
+        {
+          target: p.target,
+          option: p.option,
+          ...(p.showPage ? { showPage: true } : {}),
+        },
+        (s) => ops.selectOption(p.target, p.option, s),
+        signal,
+        { snapshotAfter: p.showPage === true },
+      );
+    },
+  };
+
+  const pickDate: AgentTool = {
+    name: "pick_date",
+    label: "Pick Date",
+    description:
+      "在日期选择器里选一个日期：工具自己点开面板、翻到目标年月、点中那一天（面板有「确定」时一并点掉）。" +
+      "**日期一律用它，不要一步步 click**：翻月份要点很多次，而每次点击之后旧编号都会失效、" +
+      "又得重新 snapshot，一轮轮下来能把一次选日期拖成五六次调用。" +
+      "target 传日期输入框（@eN 或 CSS 选择器；范围控件传它的**任一**输入框都可以，点哪个都会打开同一个面板）；" +
+      "date 支持 2026-09-29、2026/9/29、2026年9月29日，" +
+      "以及相对写法 today / 今天 / +3（三天后）/ -7（七天前）——**能写相对就写相对**：" +
+      "写死绝对日期会让用例过几天就变成假失败。" +
+      "**日期范围**（「发送时间 开始~结束」这类两个输入框的控件）：把结束日期传进 endDate，" +
+      "工具会按「选开始 → 选结束 → 点确定」走；只传 date 而面板其实是范围类型时会直接报错，" +
+      "不会留下一个半截的范围。" +
+      "showPage: true 时在结果里附一份动作后的可交互元素清单。",
+    parameters: paramsOf(
+      {
+        target: { type: "string", description: "日期输入框（@eN 引用或 CSS 选择器）" },
+        date: {
+          type: "string",
+          description: "目标日期：2026-09-29 / 2026/9/29 / 2026年9月29日 / today / 今天 / +3 / -7",
+        },
+        endDate: {
+          type: "string",
+          description: "仅日期范围控件需要：结束日期，写法同 date（必须不早于 date）",
+        },
+        showPage: SHOW_PAGE_PARAM,
+      },
+      ["target", "date"],
+    ),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = params as PickDateParams;
+      return exec(
+        "pick_date",
+        {
+          target: p.target,
+          date: p.date,
+          ...(p.endDate ? { endDate: p.endDate } : {}),
+          ...(p.showPage ? { showPage: true } : {}),
+        },
+        (s) => ops.pickDate(p.target, p.date, p.endDate, s),
+        signal,
+        { snapshotAfter: p.showPage === true },
       );
     },
   };
@@ -1453,18 +2048,24 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
   const hover: AgentTool = {
     name: "hover",
     label: "Hover",
-    description: "悬停在一个元素上，用于触发悬停菜单/提示。",
+    description:
+      "悬停在一个元素上，用于触发悬停菜单/提示。" +
+      "悬停型下拉（如 el-dropdown）展开后带上 showPage: true，一次拿到菜单项的新编号。",
     parameters: paramsOf(
-      { target: { type: "string", description: "@eN 引用或 CSS 选择器" } },
+      {
+        target: { type: "string", description: "@eN 引用或 CSS 选择器" },
+        showPage: SHOW_PAGE_PARAM,
+      },
       ["target"],
     ),
     execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as TargetParams;
       return exec(
         "hover",
-        { target: p.target },
+        { target: p.target, ...(p.showPage ? { showPage: true } : {}) },
         (s) => ops.hover(p.target, s),
         signal,
+        { snapshotAfter: p.showPage === true },
       );
     },
   };
@@ -1515,7 +2116,9 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       "都等一个**只在该状态出现**的地标（标题区的文字、表头、面板里的字段标签或菜单项；" +
       "菜单与导航里的字到处都是，不能当地标）。" +
       "记下的是**条件本身**：回放会重新等同一个条件，页面没到那个状态时会如实报「等它没出现」。" +
-      "典型用法：等列表刷新出现新行（text/selector）、等弹窗出现（selector）、等遮罩消失（gone）。",
+      "典型用法：等列表刷新出现新行（text/selector）、等弹窗出现（selector）、等遮罩消失（gone）。" +
+      "showPage: true 时等到之后顺带附一份可交互元素清单——「navigate 后先 wait_for 地标」" +
+      "这条最常用的开头，用它可以省掉紧接着的那次 snapshot。",
     parameters: paramsOf(
       {
         text: {
@@ -1531,6 +2134,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
           type: "number",
           description: `等待上限（毫秒，默认 ${DEFAULT_WAIT_FOR_TIMEOUT_MS}，最大 ${MAX_WAIT_FOR_TIMEOUT_MS}）`,
         },
+        showPage: SHOW_PAGE_PARAM,
       },
       [],
     ),
@@ -1557,9 +2161,11 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
           ...(cond.selector ? { selector: cond.selector } : {}),
           ...(cond.gone ? { gone: cond.gone } : {}),
           ...(typeof p.timeoutMs === "number" ? { timeoutMs: p.timeoutMs } : {}),
+          ...(p.showPage ? { showPage: true } : {}),
         },
         (s) => ops.waitFor(cond, p.timeoutMs, s),
         signal,
+        { snapshotAfter: p.showPage === true },
       );
     },
   };
@@ -1591,6 +2197,8 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     snapshot,
     click,
     fill,
+    selectOption,
+    pickDate,
     upload,
     download,
     hover,
@@ -1606,10 +2214,25 @@ interface NavParams {
 }
 interface TargetParams {
   target: string;
+  /** 动作后附一份可交互元素清单（见 SHOW_PAGE_PARAM）。 */
+  showPage?: boolean;
 }
 interface FillParams {
   target: string;
   value: string;
+  showPage?: boolean;
+}
+interface SelectOptionParams {
+  target: string;
+  option: string;
+  showPage?: boolean;
+}
+interface PickDateParams {
+  target: string;
+  date: string;
+  /** 日期范围控件的结束日期：给了就按范围处理（选开始 → 选结束 → 确定）。 */
+  endDate?: string;
+  showPage?: boolean;
 }
 interface UploadParams {
   target?: string;
@@ -1629,6 +2252,7 @@ interface WaitForParams {
   selector?: string;
   gone?: string;
   timeoutMs?: number;
+  showPage?: boolean;
 }
 interface ExpectParams {
   expectation: string;

@@ -45,7 +45,7 @@ _Avoid_：中断、中止、跳过
 _Avoid_：指令、命令行
 
 **动作（Action）**：
-一次浏览器操作（navigate / click / fill / upload / download / hover / scroll / wait），是回放脚本的最小执行单位。
+一次浏览器操作（navigate / click / fill / select_option / pick_date / upload / download / hover / scroll / wait / wait_for），是回放脚本的最小执行单位。
 _Avoid_：操作指令、tool call
 
 **断言（Assertion）**：
@@ -71,6 +71,10 @@ _Avoid_：重跑、执行脚本
 **旁路产物（Side Output）**：
 一次运行结束后旁路落盘、不进 stdout 报告的产物，即测试报告与回放脚本。默认生成，可在 `/setting` 中关掉。
 _Avoid_：输出文件、附件、归档
+
+**运行存档（Session Archive）**：
+一次运行结束后写下的「交给 agent 的参数 + 运行中的完整交互」（每轮实际发出的上下文、每次工具调用的入参/结果与耗时），供 `pageqa sessions` 起服务回看。它落在用户目录（`~/.pageqa/sessions/sessions.sqlite`）而不是工作目录，也不受 `/setting` 与 `--no-side-outputs` 影响——它是排查工具，不是测试产物。
+_Avoid_：会话记录、运行日志、trace
 
 **设置（/setting）**：
 交互模式里统一修改持久化偏好的入口：旁路产物开关、语言与并发量。模型切换、凭据各有专责命令，不并入这里。

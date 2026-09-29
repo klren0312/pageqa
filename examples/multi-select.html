@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>pageqa 多下拉验证页</title>
+  <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://unpkg.com/element-plus"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 24px; max-width: 640px; }
+    .field { margin-bottom: 14px; display: flex; gap: 10px; align-items: center; }
+    .field > span { width: 88px; color: #555; }
+    #result { margin-top: 18px; font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <h1>发送筛选</h1>
+  <!-- 三个并排的下拉：复现「页面上同时存在多个 el-select」的场景。
+       每个下拉各有一个常驻 DOM 的 popper（收起时仍留在文档里），
+       这正是 select_option 曾经读错浮层的那种页面。
+
+       注意 el-option 必须写成显式闭合：HTML 解析器不认自定义标签的自闭合写法，
+       `<el-option ... />` 会被当成开始标签并把后面的兄弟节点嵌进来。 -->
+  <div id="app">
+    <div class="field"><span>发送渠道</span>
+      <div id="channel">
+        <el-select v-model="channel" placeholder="请选择发送渠道">
+          <el-option label="机器人" value="robot"></el-option>
+          <el-option label="WEBHOOK" value="webhook"></el-option>
+        </el-select>
+      </div>
+    </div>
+    <div class="field"><span>消息类型</span>
+      <div id="msgType">
+        <el-select v-model="msgType" placeholder="请选择消息类型">
+          <el-option label="文本" value="text"></el-option>
+          <el-option label="Markdown" value="markdown"></el-option>
+        </el-select>
+      </div>
+    </div>
+    <div class="field"><span>发送状态</span>
+      <div id="status">
+        <el-select v-model="status" placeholder="请选择发送状态">
+          <el-option label="发送成功" value="ok"></el-option>
+          <el-option label="跳过" value="skip"></el-option>
+        </el-select>
+      </div>
+    </div>
+    <p id="result">channel=[{{ channel }}] msgType=[{{ msgType }}] status=[{{ status }}]</p>
+  </div>
+  <script>
+    const { createApp, ref } = Vue;
+    createApp({
+      setup() {
+        return { channel: ref(""), msgType: ref(""), status: ref("") };
+      },
+    })
+      .use(ElementPlus)
+      .mount("#app");
+  </script>
+</body>
+</html>
