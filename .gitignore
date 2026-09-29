@@ -6,3 +6,4 @@ dist/
 *.7z
 pageqa-report/
 .superpowers
+.codebuddy
