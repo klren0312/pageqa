@@ -67,6 +67,53 @@ const catalogs: Record<Locale, Catalog> = {
       "[pageqa] 执行完整性不足（步骤或断言未跑满），发起第 {n} 次续跑（进度 {progress}，断言 {a}/{b}）",
     "log.caseEnd":
       "[pageqa] 用例结束：{status}，断言 {n} 条，耗时 {dur}s",
+    // ── session 存档与查询服务（src/session-archive.ts / src/session-server.ts）──
+    "log.sessionArchived":
+      "[pageqa] session 存档已写入 {id}（pageqa sessions 可回看这次运行交给了模型什么）",
+    "log.sessionArchiveFailed":
+      "[pageqa] session 存档写入失败（不影响测试结论）：{msg}",
+    "log.sessionServing": "[pageqa] session 查询服务已启动：{url}",
+    "log.sessionArchiveDir": "[pageqa] 存档容器：{dir}",
+    "log.sessionArchiveEmpty":
+      "[pageqa] 存档目录里还没有运行记录——先跑一次用例再回来",
+    "sessions.pageTitle": "pageqa 运行存档",
+    "sessions.heading": "pageqa 运行存档",
+    "sessions.subtitle": "每次 agent 运行交给模型的参数、每轮上下文与每次工具调用",
+    "sessions.empty": "还没有运行记录。跑一次测试后，它留下的现场会出现在这里。",
+    "sessions.colTime": "时间",
+    "sessions.colCase": "用例",
+    "sessions.colScenario": "场景",
+    "sessions.colModel": "模型",
+    "sessions.colStatus": "状态",
+    "sessions.colSteps": "步骤",
+    "sessions.colTools": "工具调用",
+    "sessions.colTurns": "轮次",
+    "sessions.detailSubtitle": "运行 {id}",
+    "sessions.detailParams": "传给 agent 的参数",
+    "sessions.detailSystemPrompt": "系统提示词",
+    "sessions.detailCase": "用例原文",
+    "sessions.detailPrompt": "首次下发的 prompt（已按步骤编号）",
+    "sessions.detailTools": "工具声明（{n} 个）",
+    "sessions.detailVars": "占位符取值",
+    "sessions.detailTurns": "LLM 轮次",
+    "sessions.detailContextCount": "上下文 {n} 条",
+    "sessions.detailToolCalls": "工具调用",
+    "sessions.detailArgs": "入参",
+    "sessions.detailResult": "结果",
+    "sessions.detailUsage": "用量",
+    "sessions.detailTime": "时间",
+    "sessions.detailModel": "模型",
+    "sessions.detailBskSession": "bsk session",
+    "sessions.detailScenario": "场景",
+    "sessions.detailNote": "归因",
+    "sessions.detailTruncated": "（已截断，原始 {chars} 字符）",
+    "sessions.detailNotFound": "找不到这条运行记录（存档可能已被清理）",
+    "sessions.turn": "第 {n} 轮",
+    "sessions.raw": "JSON",
+    "err.sessionsListenFailed": "[pageqa] session 查询服务无法监听端口：{msg}",
+    "err.portRequired": "--port 需要一个端口号",
+    "err.portInvalid": "--port 只收 1-65535 的整数",
+    "err.dirRequired": "--dir 需要一个目录路径",
     "log.suiteStart": "[pageqa] 套件共 {n} 个场景：{names}",
     "log.suiteScenario": "[pageqa] ═══ 场景 {i}/{n}：{name} ═══",
     "log.suiteScenarioEnd": "[pageqa] ═══ 场景 {i}/{n} 结束：{status} ═══",
@@ -270,6 +317,24 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.err.refUnknown":
       "最近一次快照里没有 {target} 这个引用：{action} 用的 @eN 必须来自最近一次 snapshot。请先 snapshot 取当前编号，不要沿用更早快照的编号或凭记忆写编号。",
     "bsk.ref.landed": "（落点：{who}）",
+    // 选择类控件（src/bsk/picker.ts + src/bsk/tools.ts 的 select_option / pick_date）
+    "bsk.picker.noOverlay":
+      "点开 {target} 之后没有等到可见的下拉浮层（它可能不是「点开出现浮层」型的下拉）。若它其实是普通输入框，请改用 fill；否则用 snapshot 看清页面后手动点选。",
+    "bsk.picker.optionMissing": "浮层里没有可见文本为「{option}」的选项。",
+    "bsk.picker.optionCandidates": "当前可选项：{list}",
+    "bsk.picker.badDate":
+      "无法理解日期「{spec}」。支持的写法：2026-09-29、2026/9/29、2026年9月29日，或 today / 今天 / +3 / -7。",
+    "bsk.picker.noPanel":
+      "点开 {target} 之后没有等到日期面板（它可能不是「点选日历」型的日期选择器）。若它允许直接输入，请用 fill 按页面要求的格式填入。",
+    "bsk.picker.dayMissing":
+      "日期面板里没能点到 {date}：它可能不在面板当前显示的月份里，或这一天被禁用。请先 snapshot 看清面板显示的月份。",
+    "bsk.picker.confirmed": "（已点「确定」确认）",
+    "bsk.picker.rangeNeedsEnd":
+      "{target} 打开的是**日期范围**控件（面板里有左右两张日历表），只给一个日期会在页面上留下一个半截的范围。请把结束日期也传进 endDate，例如 date=\"2026-09-27\"、endDate=\"2026-09-29\"。",
+    "bsk.picker.notRange":
+      "{target} 打开的是**单日期**面板（只有一张日历表），不需要 endDate。如果页面上确实是「开始~结束」两个输入框，请把 target 指向范围控件的输入框，而不是其中某一个。",
+    "bsk.picker.rangeOrder":
+      "结束日期早于开始日期（{start} ~ {end}）：请检查用例里的顺序，这不是页面问题。",
     // 下载断言（src/bsk/tools.ts 的 download 工具 + src/downloads.ts）
     "bsk.download.expectation": "导出的文件已下载到本地",
     "bsk.download.expectationNamed": "下载的文件名匹配 {pattern}",
@@ -640,6 +705,8 @@ const catalogs: Record<Locale, Catalog> = {
 
 用法:
   pageqa [options] <input>
+  pageqa sessions [--port <n>] [--dir <path>]
+                   起本地存档查询服务，浏览器打开即可回看每次运行交给了模型什么
 
   <input>          自然语言脚本文件(.md/.txt，路径含空格请用引号包裹)，
                    或用引号包裹的内联文本
@@ -782,6 +849,30 @@ const catalogs: Record<Locale, Catalog> = {
   pageqa examples/smoke.md --debug
   pageqa --tui examples/smoke.md        # 交互模式：跑用例的同时可以追加场景
   pageqa --tui examples/smoke.md --emit-script   # 顺手固化出回放脚本
+  pageqa sessions                       # 回看历史运行的参数与工具调用（Ctrl+C 退出）
+`,
+    "help.sessions": `pageqa sessions - 本地存档查询服务
+
+用法:
+  pageqa sessions [选项]
+
+起一个只监听 127.0.0.1 的本地服务，浏览器打开即可回看每次 agent 运行：
+  - 交给模型的参数：系统提示词、模型、工具声明（含 schema）、编号后的用例
+  - 每轮实际发出的上下文：模型这一轮到底看到了什么、有没有被裁剪
+  - 每次工具调用的入参、结果、耗时与成败
+
+选项:
+  --port <n>   监听端口（默认 7331；被占用时自动向上顺延）
+  --dir <path> 存档目录（默认 ~/.pageqa/sessions）
+  --no-open    不自动打开浏览器
+  -h, --help   显示本帮助
+
+存档由每次运行自动写入（~/.pageqa/sessions/sessions.sqlite，SQLite 单容器，走 pi 的
+session 后端），不需要额外开关；它落在用户目录而不是工作目录，也不会被
+--no-side-outputs 关掉——它是排查工具，不是测试产物。默认只保留最近 200 次运行。
+
+注：早期版本按「一次运行两个 JSON 文件」写在 ~/.pageqa/sessions/*.json 的存档不再读取
+（换存储格式时不做迁移），需要的话手动删掉即可。
 `,
   },
   en: {
@@ -836,6 +927,56 @@ const catalogs: Record<Locale, Catalog> = {
       "[pageqa] incomplete execution (steps or assertions not finished), initiating retry #{n} (progress {progress}, assertions {a}/{b})",
     "log.caseEnd":
       "[pageqa] case ended: {status}, {n} assertions, elapsed {dur}s",
+    // ── session archive & query server (src/session-archive.ts / src/session-server.ts) ──
+    "log.sessionArchived":
+      "[pageqa] session archive written: {id} (run `pageqa sessions` to review what was handed to the model)",
+    "log.sessionArchiveFailed":
+      "[pageqa] failed to write the session archive (does not affect the test verdict): {msg}",
+    "log.sessionServing": "[pageqa] session query server started: {url}",
+    "log.sessionArchiveDir": "[pageqa] archive container: {dir}",
+    "log.sessionArchiveEmpty":
+      "[pageqa] no runs archived yet — run a case first, then come back",
+    "sessions.pageTitle": "pageqa run archive",
+    "sessions.heading": "pageqa run archive",
+    "sessions.subtitle":
+      "the parameters handed to the agent, per-turn context and every tool call",
+    "sessions.empty":
+      "No runs archived yet. Run a test and the scene it left behind shows up here.",
+    "sessions.colTime": "time",
+    "sessions.colCase": "case",
+    "sessions.colScenario": "scenario",
+    "sessions.colModel": "model",
+    "sessions.colStatus": "status",
+    "sessions.colSteps": "steps",
+    "sessions.colTools": "tool calls",
+    "sessions.colTurns": "turns",
+    "sessions.detailSubtitle": "run {id}",
+    "sessions.detailParams": "parameters handed to the agent",
+    "sessions.detailSystemPrompt": "system prompt",
+    "sessions.detailCase": "case text",
+    "sessions.detailPrompt": "first prompt sent (steps numbered)",
+    "sessions.detailTools": "tool declarations ({n})",
+    "sessions.detailVars": "placeholder values",
+    "sessions.detailTurns": "LLM turns",
+    "sessions.detailContextCount": "context: {n} message(s)",
+    "sessions.detailToolCalls": "tool calls",
+    "sessions.detailArgs": "arguments",
+    "sessions.detailResult": "result",
+    "sessions.detailUsage": "usage",
+    "sessions.detailTime": "time",
+    "sessions.detailModel": "model",
+    "sessions.detailBskSession": "bsk session",
+    "sessions.detailScenario": "scenario",
+    "sessions.detailNote": "cause",
+    "sessions.detailTruncated": "(truncated; {chars} chars originally)",
+    "sessions.detailNotFound": "run not found (the archive may have been pruned)",
+    "sessions.turn": "turn {n}",
+    "sessions.raw": "JSON",
+    "err.sessionsListenFailed":
+      "[pageqa] the session query server could not listen on a port: {msg}",
+    "err.portRequired": "--port needs a port number",
+    "err.portInvalid": "--port only accepts an integer between 1 and 65535",
+    "err.dirRequired": "--dir needs a directory path",
     "log.suiteStart": "[pageqa] suite has {n} scenario(s): {names}",
     "log.suiteScenario":
       "[pageqa] ═══ scenario {i}/{n}: {name} ═══",
@@ -1048,6 +1189,25 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.err.refUnknown":
       "the latest snapshot has no ref {target}: {action} must use a ref from the most recent snapshot. Call snapshot for current refs instead of reusing numbers from an earlier snapshot or writing them from memory.",
     "bsk.ref.landed": "(landed on: {who})",
+    // picker widgets (src/bsk/picker.ts + select_option / pick_date in src/bsk/tools.ts)
+    "bsk.picker.noOverlay":
+      "no visible dropdown overlay appeared after opening {target} (it may not be an open-on-click dropdown). If it is really a plain text input, use fill instead; otherwise call snapshot and pick the option by hand.",
+    "bsk.picker.optionMissing":
+      "the overlay has no option whose visible text is \"{option}\".",
+    "bsk.picker.optionCandidates": "currently selectable: {list}",
+    "bsk.picker.badDate":
+      "cannot understand the date \"{spec}\". Supported: 2026-09-29, 2026/9/29, 2026年9月29日, or today / 今天 / +3 / -7.",
+    "bsk.picker.noPanel":
+      "no date panel appeared after opening {target} (it may not be a click-to-pick date picker). If it accepts typed input, use fill with the format the page expects.",
+    "bsk.picker.dayMissing":
+      "could not click {date} in the date panel: it may not be in the month currently shown, or the day is disabled. Call snapshot first to see which month the panel shows.",
+    "bsk.picker.confirmed": " (confirmed with OK)",
+    "bsk.picker.rangeNeedsEnd":
+      "{target} opened a **date range** picker (the panel shows two calendar tables). Picking only one end would leave a half-finished range on the page. Pass the end date as endDate as well, e.g. date=\"2026-09-27\", endDate=\"2026-09-29\".",
+    "bsk.picker.notRange":
+      "{target} opened a **single-date** panel (only one calendar table), so endDate is not expected. If the page really has a \"start ~ end\" pair of inputs, point target at the range control rather than one of its inputs.",
+    "bsk.picker.rangeOrder":
+      "the end date is earlier than the start date ({start} ~ {end}): check the order used in the case; this is not a page problem.",
     // download assertion (the `download` tool in src/bsk/tools.ts + src/downloads.ts)
     "bsk.download.expectation": "the exported file has been downloaded locally",
     "bsk.download.expectationNamed":
@@ -1445,6 +1605,9 @@ const catalogs: Record<Locale, Catalog> = {
 
 Usage:
   pageqa [options] <input>
+  pageqa sessions [--port <n>] [--dir <path>]
+                   start the local archive server; open it in a browser to review
+                   what each run handed to the model
 
   <input>          a natural-language script file (.md/.txt, quote paths with spaces),
                    or inline text wrapped in quotes
@@ -1601,6 +1764,35 @@ Examples:
   pageqa examples/smoke.md --debug
   pageqa --tui examples/smoke.md        # interactive mode: append scenarios while running
   pageqa --tui examples/smoke.md --emit-script   # also freeze a replay script
+  pageqa sessions                       # review archived parameters and tool calls (Ctrl+C to quit)
+`,
+    "help.sessions": `pageqa sessions - local archive query server
+
+Usage:
+  pageqa sessions [options]
+
+Starts a local server (bound to 127.0.0.1 only); open it in a browser to review each
+agent run:
+  - the parameters handed to the model: system prompt, model, tool declarations
+    (including schema), the step-numbered case
+  - the context actually sent on every turn: what the model really saw, and whether
+    the context was trimmed
+  - every tool call: arguments, result, duration, success or failure
+
+Options:
+  --port <n>   listen port (default 7331; bumped upward when taken)
+  --dir <path> archive directory (default ~/.pageqa/sessions)
+  --no-open    do not open the browser automatically
+  -h, --help   show this help
+
+Every run writes its archive automatically (~/.pageqa/sessions/sessions.sqlite, one
+SQLite container through pi's session backend) with no extra switch. It lives in the
+user directory rather than the working directory, and --no-side-outputs does not turn
+it off: it is a debugging tool, not a test artifact. Only the latest 200 runs are kept.
+
+Note: archives that earlier versions wrote as two JSON files per run
+(~/.pageqa/sessions/*.json) are no longer read — the storage change ships without a
+migration — and can simply be deleted.
 `,
   },
 };

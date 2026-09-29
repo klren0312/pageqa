@@ -1004,4 +1004,69 @@ describe("回放脚本文件", () => {
     );
     assert.equal(loadReplayScript(p).scenarios.length, 1);
   });
+
+  /**
+   * 全部步骤类型都要能被加载。
+   *
+   * `REPLAY_STEP_KINDS` 是个手写的 Set：加新类型时很容易忘了往里补一笔，
+   * 而漏掉的后果是「录得出来、回放直接拒绝」——那正是这个测试要拦住的东西。
+   */
+  test("所有步骤类型都在加载白名单里（含选择类控件的新类型）", () => {
+    const kinds = [
+      "navigate",
+      "click",
+      "fill",
+      "select_option",
+      "pick_date",
+      "upload",
+      "download",
+      "hover",
+      "scroll",
+      "wait",
+      "wait_for",
+      "assert_text",
+    ];
+    const steps = kinds.map((kind) => {
+      switch (kind) {
+        case "navigate":
+          return { kind, step: null, url: "https://example.com" };
+        case "click":
+        case "hover":
+        case "scroll":
+          return { kind, step: null, target: "@e1", locator: null };
+        case "fill":
+          return { kind, step: null, target: "@e1", locator: null, value: "x" };
+        case "select_option":
+          return { kind, step: null, target: "@e1", locator: null, option: "已完成" };
+        case "pick_date":
+          return { kind, step: null, target: "@e2", locator: null, date: "+3" };
+        case "upload":
+          return { kind, step: null, file: "a.txt", locator: null };
+        case "download":
+          return { kind, step: null, target: "@e1", locator: null };
+        case "wait":
+          return { kind, step: null, ms: 10 };
+        case "wait_for":
+          return { kind, step: null, text: "完成" };
+        default:
+          return { kind, step: null, expectation: "标题" };
+      }
+    });
+    const p = join(dir, "all-kinds.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        format: REPLAY_FORMAT,
+        version: REPLAY_VERSION,
+        scenarios: [{ name: "A1", caseSteps: [], steps }],
+      }),
+    );
+    const loaded = loadReplayScript(p);
+    assert.deepEqual(
+      loaded.scenarios[0].steps.map((s) => s.kind),
+      kinds,
+    );
+    // 新类型仍按占位符写法保存（回放时重新展开），不需要升脚本版本号。
+    assert.equal(loaded.version, REPLAY_VERSION);
+  });
 });

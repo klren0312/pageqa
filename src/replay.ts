@@ -70,6 +70,8 @@ export type ReplayStepKind =
   | "navigate"
   | "click"
   | "fill"
+  | "select_option"
+  | "pick_date"
   | "upload"
   | "download"
   | "hover"
@@ -98,6 +100,40 @@ export interface ReplayFillStep {
   /** 占位符被还原时，记录录制当次真正填入的具体值，便于人工核对。 */
   recordedValue?: string;
   locator: Locator | null;
+}
+
+/**
+ * 下拉选项选择步骤：由工具内部一次完成「点开控件 → 等浮层 → 按可见文本匹配 → 点击」。
+ *
+ * 为什么记成**一个**步骤，而不是展开成「click 展开 + click 选项」：展开后的选项是浮层，
+ * 它的 `@eN` 只在那一次快照里有效，展开成两条 click 等于把录制当次的编号写进脚本——
+ * 那正是脚本里最不该出现的东西（见 locator.ts）。记成一步，回放走的是同一套内部逻辑。
+ */
+export interface ReplaySelectOptionStep {
+  kind: "select_option";
+  step: number | null;
+  /** 下拉控件（录制时模型给出的 target）。 */
+  target: string;
+  locator: Locator | null;
+  /** 选项的可见文本（已还原成占位符写法）。 */
+  option: string;
+}
+
+/**
+ * 日期选择步骤：工具内部完成「点开面板 → 翻到目标年月 → 点日 →（有「确定」则确认）」。
+ *
+ * 带 `endDate` 时是**日期范围**（面板里左右两张日历表）：工具会按「选开始 → 选结束 → 确定」
+ * 走。范围与单日期是同一套内部逻辑的两个分支，因此不另立步骤类型。
+ */
+export interface ReplayPickDateStep {
+  kind: "pick_date";
+  step: number | null;
+  target: string;
+  locator: Locator | null;
+  /** 目标日期（已还原成占位符写法，如 `+3`、`${date}`）。 */
+  date: string;
+  /** 范围控件的结束日期（已还原成占位符写法）；缺省即单日期。 */
+  endDate?: string;
 }
 
 export interface ReplayUploadStep {
@@ -174,6 +210,8 @@ export interface ReplayAssertStep {
 export type ReplayStep =
   | ReplayTargetStep
   | ReplayFillStep
+  | ReplaySelectOptionStep
+  | ReplayPickDateStep
   | ReplayUploadStep
   | ReplayDownloadStep
   | ReplayNavigateStep
@@ -346,6 +384,8 @@ const REPLAY_STEP_KINDS: ReadonlySet<string> = new Set<ReplayStepKind>([
   "navigate",
   "click",
   "fill",
+  "select_option",
+  "pick_date",
   "upload",
   "download",
   "hover",
@@ -461,6 +501,17 @@ export function normalizePlaceholderLiterals(script: ReplayScript): string[] {
           break;
         case "assert_text":
           st.expectation = apply(st.expectation);
+          break;
+        case "select_option":
+          // 选项文本里可能带动态值（如「自动化测试产品202609211103」）：还原成占位符，
+          // 回放时重新展开，否则下一次运行里压根没有这一项。
+          st.option = apply(st.option);
+          applyLocator(st);
+          break;
+        case "pick_date":
+          st.date = apply(st.date);
+          if (st.endDate !== undefined) st.endDate = apply(st.endDate);
+          applyLocator(st);
           break;
         case "wait_for":
           // 条件文本里同样可能残留录制当次写死的动态值（例如等「刚创建的那条产品」出现）：
@@ -818,6 +869,23 @@ async function runStep(
         text: await ops.fill(
           await resolveStepTarget(ops, step.target, step.locator, expand, locate),
           expand(step.value),
+        ),
+      };
+    case "select_option":
+      // 控件本身仍走语义定位（与 click 同一条路径），而「展开 → 匹配 → 点击」的中间态
+      // 由操作层内部完成：回放与录制走的是同一个方法，不存在两套实现漂移的可能。
+      return {
+        text: await ops.selectOption(
+          await resolveStepTarget(ops, step.target, step.locator, expand, locate),
+          expand(step.option),
+        ),
+      };
+    case "pick_date":
+      return {
+        text: await ops.pickDate(
+          await resolveStepTarget(ops, step.target, step.locator, expand, locate),
+          expand(step.date),
+          step.endDate === undefined ? undefined : expand(step.endDate),
         ),
       };
     case "upload": {

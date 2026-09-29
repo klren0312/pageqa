@@ -125,6 +125,33 @@ export class Recorder {
         });
         return;
       }
+      case "select_option": {
+        const { target, locator } = targetOf();
+        if (!target) return;
+        const option = restore(text("option")).trim();
+        if (!option) return;
+        this.steps.push({ kind: "select_option", step, target, option, locator });
+        return;
+      }
+      case "pick_date": {
+        const { target, locator } = targetOf();
+        if (!target) return;
+        const date = text("date").trim();
+        if (!date) return;
+        // 日期同样按占位符写法存：用例写 `${date}` 时，回放要按**当天**重新展开，
+        // 把录制那天的具体日期写死会让这条用例从第二天起就失败（与 fill.value 同一条规则）。
+        // 范围控件的结束日期同理，一起存。
+        const endDate = text("endDate").trim();
+        this.steps.push({
+          kind: "pick_date",
+          step,
+          target,
+          date,
+          ...(endDate ? { endDate } : {}),
+          locator,
+        });
+        return;
+      }
       case "upload": {
         const { target, locator } = targetOf();
         this.steps.push({
