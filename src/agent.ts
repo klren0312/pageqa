@@ -14,14 +14,16 @@ import {
   type ModelChoice,
 } from "./models.js";
 import {
+  captureSessionScreenshot,
   closeSession,
   createBskTools,
   ensureSession,
   ensureBskReady,
 } from "./bsk/tools.js";
 import { flushDownloadCleanup } from "./downloads.js";
+import { resetScreenshots, screenshotsTaken } from "./screenshots.js";
 import { JevClient } from "./jev.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, readAutoScreenshot } from "./config.js";
 import { debugLog, info, setDebug } from "./log.js";
 import {
   addUsage,
@@ -130,6 +132,7 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "- upload(target, file): 上传本地文件到文件输入框/上传区域",
   "- download(target, expectName?): 捕获一次浏览器下载并落盘；它本身就是一条断言（expectName 传文件名通配，如 *.xlsx）",
   "- scroll(target): 滚动到元素",
+  "- screenshot(fullPage?, target?, out?): 给当前页面截图留证（证据）。默认截视口，fullPage=true 截整页，target 传 @eN 只截那个元素；**图会内联进 HTML 报告**，所以「截图留证」用它、不要用 evaluate 去碰 canvas。它是**只读动作、不产生断言**（结论仍由 assert_* 给），元素截图只支持 @eN 引用",
   "- press(key, target?, modifiers?): 键盘按键（**真实按键**）：输入框里回车触发搜索/提交、按 Escape 关弹窗、Tab 走焦点顺序验证校验；key 如 Enter / Escape / Tab / Ctrl+A，要先聚焦某个元素就把它的 @eN 传给 target（不传则按在当前焦点上）。**不要**用 evaluate 注入键盘事件代替它（合成事件页面多半不认）",
   "- wait(ms): 固定等待。只用于**页面之外**的事情（等服务端生成文件、后台排队）；页面内的等待一律用 wait_for——写死的秒数会被回放脚本当成事实照付",
   "- wait_for(text | selector | gone, timeoutMs?): 等到页面出现某可见文本 / 某元素出现 / 某元素消失（如 loading 遮罩），三者只能给一个",
@@ -953,6 +956,11 @@ function finalizeResult(
     cancelled: aborted,
   });
   report.durationMs = Date.now() - startedAt;
+  // 截图路径随报告传出去：套件模式下父进程据此生成的那份 HTML 报告才能嵌出图
+  // （父进程拿不到子进程的模块级清单，见 report.ts 的 screenshots 字段）。
+  report.screenshots = [...screenshotsTaken()];
+  // 取走即清空：同一进程里连续跑多个场景（--only / runSuite）时，清单不会串到下一个场景。
+  resetScreenshots();
   // 报告里标注回放脚本的落盘位置（真正写文件由 CLI 在运行结束后完成）
   if (opts.scriptPath) report.script = opts.scriptPath;
   if (aborted) {
@@ -1017,6 +1025,12 @@ async function runAgentCore(
   setDebug(opts.debug ?? false);
   const session = await initializeAgent(input, opts, holder);
   await executeWithContinuations(session, input);
+  // 场景收尾自动留一张现场图：真实用例不会专门写「截图留证」，而失败现场最需要它。
+  // 位置在 finalizeResult 之前——报告的 screenshots 字段是在那里取走的。
+  // 截图失败不影响结论（见 captureSessionScreenshot），开关见 config 的 autoScreenshot。
+  if (readAutoScreenshot() && holder.id) {
+    await captureSessionScreenshot(holder.id, { signal: session.abortSignal });
+  }
   const result = finalizeResult(session, input, opts);
   // 收尾：把结论、总用量与归因补进存档再落盘。走不到这里（编排中途抛错）的路径
   // 由 runAgent 的 finally 兜底写一次——半截现场同样值得留下。

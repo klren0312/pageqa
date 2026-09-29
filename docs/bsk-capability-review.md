@@ -1,6 +1,6 @@
 # bsk 能力复用评估（可优化项与缺口）
 
-- 状态：调研结论（2026-09）；阶段 1（`press` + `dialogs` 透传）与阶段 2（`console` / `network` 断言）**已落地**，其余待办（见第八节）
+- 状态：调研结论（2026-09）；阶段 1（`press` + `dialogs` 透传）、阶段 2（`console` / `network` 断言）与阶段 3（`screenshot` + 报告嵌图）**已落地**，其余待办（见第八节）
 - 目的：清点 browserskill（`bsk`）已提供、而 pageqa 尚未使用的能力，判断哪些可以直接接上提升测试覆盖面与执行效率，哪些需要向上游提需求。
 - 参照对象：
   - pageqa 本体：本仓库（`src/`）
@@ -99,7 +99,7 @@ bsk 每一次交互的返回都带 `dialogs[]`，但：
 
 断言 `status=200`、抓失败原因（`net::ERR_*`）。与 `console` 同一形态，建议一并实现。
 
-**（5）`screenshot` → 失败现场可视化**
+**（5）`screenshot` → 失败现场可视化**（已落地，见第八节）
 
 目前报告（文本 / JSON / HTML）全是文字。给失败场景附一张截图（`--full-page` 或失败当时的视口），能省掉大半排查时间。改动含 `report-html.ts` 的嵌图。
 
@@ -210,7 +210,7 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 | --- | --- | --- | --- |
 | 1 | `press` 工具 + `dialogs` 透传 | 工程量最小、收益最直接，且能立刻被录制/回放覆盖 | 已完成（2026-09-29） |
 | 2 | `assert_no_console_error` / `assert_network` | 需按 `download` 的模式产出 `AssertOutcome` 才会进报告 | 已完成（2026-09-29） |
-| 3 | `screenshot` + HTML 报告嵌图 | 失败现场证据 | 待办 |
+| 3 | `screenshot` + HTML 报告嵌图 | 失败现场证据 | 已完成（2026-09-29） |
 | 4 | `wheel` / `focus` / `blur` / `select` / `get-html` + 扩展 IPC 快路径 | 覆盖面扩展 | 待办 |
 | 5 | 向上游提 `wait-for` 条件等待 PR | 落地后可回收 `condition.ts` / `settle.ts` 的轮询逻辑 | 待办 |
 
@@ -293,9 +293,55 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 
 两条结论都写进了 `examples/smoke-test.md` 该场景的注释与示例页对应代码的注释里。
 
+### 阶段 3：`screenshot` + HTML 报告嵌图（2026-09-29 完成）
+
+| 位置 | 改动 |
+| --- | --- |
+| `src/screenshots.ts`（新） | 截图路径策略（`~/.pageqa/screenshots/run-<启动时间戳>-<pid>-<随机串>/`，口径与下载产物完全一致）+ 本次运行的截图清单。与下载产物**同构但去处相反**：下载产物断言成立后默认清理（回归不跑一百次就堆一百个文件），截图只登记、从不清理——它是给人看的证据。 |
+| `src/bsk/tools.ts` | 操作层 `screenshot({fullPage?, target?, out?})` + `screenshot` AgentTool + 注册。元素截图**只接受 `@eN`**（bsk 的 screenshot 没有 `--selector`），给 CSS 选择器当场报错；bsk 回 `capture_unavailable` 时视为「没截成」并抛错，绝不给一条看起来成功的回显。它是只读动作：不 `markStale()`，也不产生断言。 |
+| `src/record.ts` / `src/replay.ts` | 录「截什么」而不是「截到哪」：默认路径带时间戳、每次运行都不同，把这一次的文件名写进脚本只会把图覆盖到旧名字里。元素目标带语义定位符，回放时重新解析；解析不到按「元素未找到」跳过（截图不该把整条用例判死）。 |
+| `src/report.ts` | `TestReport.screenshots` / `ScenarioDetail.screenshots`，套件汇总时展平，并导出 `collectScreenshots()`。 |
+| `src/report-html.ts` | 截图按 `data:` URL **内联**进自包含报告（单张 ≤4MiB；超限或文件已不在时退化成一行路径）。 |
+| `src/side-outputs.ts` / `src/index.ts` | 旁路产物清单逐张列出截图路径（报告里虽有图，但「文件在哪」是运行刚结束时最想知道的）。 |
+| `src/agent.ts` / `src/i18n.ts` / `README.md` / `README.zh-CN.md` | 提示词一行、zh/en 文案、工具数 16 → 17。 |
+
+三个关键决策：
+
+1. **截图路径走报告，不走进程内存**。套件模式下每个场景一个子进程，而 HTML 报告由**父进程**写——父进程拿不到子进程的模块级清单。所以路径放进 `TestReport` / `ScenarioDetail` 随报告上传。顺带暴露了既有的一处同源问题：**下载产物的清单至今是模块级的**，套件模式下父进程那份必然为空（`emitSideOutputs(..., downloadedFiles())` 由父进程调用）。这一版没有顺手改它，但记在这里。
+2. **截图不产生断言**。它是证据，不是结论；「页面看起来不对」仍要由 `assert_*` 给出可判定的说法。做成断言会让「截了图」变成一条永远成立的断言。
+3. **元素截图只认 `@eN`**。bsk 的 screenshot 只有 `--ref`；与其让模型传 CSS 再收到一条难懂的下层报错，不如当场说清楚。
+
+测试：`tests/replay.test.mjs`（录制「截什么」、回放分派、元素目标的定位符解析、`out` 的占位符展开、不产生断言）、`tests/report-html.test.mjs`（`data:` URL 内联、文件不存在时退化成路径、无截图时不渲染该区）。
+
+**补记（同日）：为什么补了「场景收尾自动截图」**
+
+第一版把截图做成「模型按需调用的工具」。真机拿真实业务用例（`C:\Users\dll\Desktop\dingtalk-log.md`）跑完，报告里**一张图都没有**——检查 `~/.pageqa/screenshots` 连目录都没建，说明 `screenshot` 从未被调用过。原因很直白：**真实用例不会写「截图留证」这一步**，模型自然不会去截。
+
+于是补了**场景收尾自动截图**（`captureSessionScreenshot`，挂在 `agent.ts` 与 `replay.ts` 的收尾，默认开、`autoScreenshot: false` 可关）。它与工具层的 `screenshot` 并存不冲突：自动那份保证「跑完就有现场图」，手动那份让模型在中途需要时留证。
+
+两个实现细节：
+
+- **挂在收尾的 `finally` / `finalizeResult` 之前**：失败与中止时也有图——那正是最需要现场的时候。
+- **失败只记 debug，绝不影响结论**：缺一张证据图不该把一条 PASS 变成 FAIL。这与工具层的 `screenshot` 正相反（那是模型主动要的，失败必须报）——所以两者分开写，没有硬套一个实现。
+
+**再补（同日）：失败即时截图**
+
+收尾截图保证了「跑完有图」，但**失败时它晚了一步**：失败往往发生在「点击 → 跳转 → 结果不对」这条链的中间，等场景收尾时页面已经被后续步骤带走。所以又加了两处**失败即截**：
+
+| 位置 | 触发点 |
+| --- | --- |
+| `src/bsk/tools.ts` 的 `exec()` | 任一断言型工具返回**不成立**（`assert_text` / `download` / `assert_no_console_error` / `assert_network`）——一处覆盖全部四个，因为断言结论本来就统一在 `ASSERTION_TOOLS` + `lastAssert()` 上 |
+| `src/replay.ts` 的 `runStepWithRetry` | 重试耗尽仍未成功（含 `LocatorWaitTimeoutError` 那条刻意不重试的路径） |
+
+两处都用 `label: "failure"` 落在同一个运行目录里，文件名一眼能把它与收尾的 `final` 分开。工具层那处还会把路径回显给模型（`（已自动截图：…）`），让它知道现场已经留下、不必再自己调一次 `screenshot`。
+
+**刻意不做「每个工具错误都截」**：模型探索时点错元素是常态，每次都截会产出成堆没人看的图；「断言不成立」才是确定性、可判定的失败信号。回放那处不同——回放没有模型探索，步骤重试耗尽就是真失败。
+
+本次改动后全量单测 580 项通过。
+
 ### 待办
 
-阶段 3–5 见 7.2。
+阶段 4–5 见 7.2。
 
 ---
 

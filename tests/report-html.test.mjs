@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -18,6 +18,39 @@ const base = (over = {}) => ({
   transcript: "",
   summary: "全部断言成立",
   ...over,
+});
+
+describe("截图内联", () => {
+  // 1x1 的合法 PNG：内容不重要，重要的是「文件真能读出来并被 base64 化」。
+  const PNG = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  test("有截图时内联成 data URL，并保留文件名作为图注", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pageqa-shots-"));
+    const path = join(dir, "shot.png");
+    writeFileSync(path, PNG);
+    try {
+      const html = renderHtml(base({ screenshots: [path] }));
+      assert.ok(html.includes('class="shots"'));
+      assert.ok(html.includes("data:image/png;base64,"));
+      assert.ok(html.includes("shot.png"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("截图文件不在了 → 退化成一行路径，报告照常渲染", () => {
+    const html = renderHtml(base({ screenshots: ["D:/does/not/exist.png"] }));
+    assert.ok(html.includes('class="shots"'));
+    assert.ok(!html.includes("data:image/png;base64,"));
+    assert.ok(html.includes("D:/does/not/exist.png"));
+  });
+
+  test("没有截图时不渲染截图区", () => {
+    assert.ok(!renderHtml(base()).includes('class="shots"'));
+  });
 });
 
 describe("renderHtml", () => {

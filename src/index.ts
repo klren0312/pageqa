@@ -23,7 +23,7 @@ import {
   type SideOutputPrefs,
 } from "./config.js";
 import { downloadedFiles } from "./downloads.js";
-import type { TestReport, TokenUsage } from "./report.js";
+import { collectScreenshots, type TestReport, type TokenUsage } from "./report.js";
 import {
   ConcurrencySessionConflictError,
   formatUsageLine,
@@ -663,7 +663,12 @@ async function interactiveMode(
   const out = args.json ? result.json : result.text;
   if (args.out) writeFileSync(args.out, out + "\n");
   process.stdout.write(out + "\n");
-  emitSideOutputs(reportOutcome, scriptOutcome, downloadedFiles());
+  emitSideOutputs(
+    reportOutcome,
+    scriptOutcome,
+    downloadedFiles(),
+    collectScreenshots(result.report),
+  );
   if (scriptError) {
     process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");
     return 1;
@@ -730,7 +735,12 @@ async function replayMode(args: CliArgs): Promise<number> {
       ? { htmlReport: false, replayScript: false }
       : readSideOutputPrefs();
     // 回放用的是现成的脚本、不产出脚本：清单里不列脚本行（ADR-0011 决策五）。
-    emitSideOutputs(writeReportSideOutput(result.report, prefs), { kind: "na" }, downloadedFiles());
+    emitSideOutputs(
+      writeReportSideOutput(result.report, prefs),
+      { kind: "na" },
+      downloadedFiles(),
+      collectScreenshots(result.report),
+    );
     return result.report.status === "pass" ? 0 : 1;
   } catch (err) {
     process.stderr.write(
@@ -1038,6 +1048,7 @@ async function main(): Promise<number> {
       writeReportSideOutput(result.report, prefs),
       scriptOutcome,
       downloadedFiles(),
+      collectScreenshots(result.report),
     );
     if (scriptError) {
       process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");

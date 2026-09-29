@@ -203,6 +203,25 @@ export class Recorder {
         });
         return;
       }
+      case "screenshot": {
+        // 录「截什么」，不录「截到哪」：默认路径带时间戳、每次运行都不同，把这一次的文件名
+        // 写进脚本，回放只会把图覆盖到一堆没人看的旧名字里。用例显式给了 out 才照写。
+        if (p["fullPage"] === true) {
+          this.steps.push({ kind: "screenshot", step, fullPage: true, locator: null });
+          return;
+        }
+        const { target, locator } = targetOf();
+        const rawOut = text("out").trim();
+        this.steps.push({
+          kind: "screenshot",
+          step,
+          ...(target ? { target } : {}),
+          // 元素截图带定位符：回放时在新快照里重新解析（与 click 同一条规则）。
+          locator: target ? locator : null,
+          ...(rawOut ? { out: restore(rawOut) } : {}),
+        });
+        return;
+      }
       case "wait": {
         const ms = Number(p["ms"]);
         this.steps.push({

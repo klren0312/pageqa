@@ -58,6 +58,7 @@ export function renderSideOutputLines(
   report: ReportOutcome,
   script: ScriptOutcome,
   downloads: readonly DownloadArtifact[] = [],
+  screenshots: readonly string[] = [],
 ): string[] {
   const lines = [t("log.sideOutputsTitle")];
 
@@ -116,6 +117,12 @@ export function renderSideOutputLines(
     );
   }
 
+  // 截图逐张列出：报告里虽然嵌了图，但「文件到底在哪」是运行刚结束时最想知道的事
+  // （与下载产物的理由相同），而且超过内联上限的大图在报告里只会退化成一行路径。
+  for (const path of screenshots) {
+    lines.push(t("log.sideOutputScreenshot", { path }));
+  }
+
   return lines;
 }
 
@@ -124,9 +131,12 @@ export function emitSideOutputs(
   report: ReportOutcome,
   script: ScriptOutcome,
   downloads: readonly DownloadArtifact[] = [],
+  screenshots: readonly string[] = [],
 ): void {
   try {
-    for (const line of renderSideOutputLines(report, script, downloads)) info(line);
+    for (const line of renderSideOutputLines(report, script, downloads, screenshots)) {
+      info(line);
+    }
   } catch (err) {
     info(
       t("log.sideOutputReportFailed", {

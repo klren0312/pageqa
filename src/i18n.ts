@@ -351,6 +351,18 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.network.hit": "匹配「{url}」的请求 {count} 条，最近一条：{latest}{note}",
     "bsk.network.miss":
       "匹配「{url}」的请求 {count} 条，实际：{actual}（期望 {expected}）{note}",
+    // 截图（src/bsk/tools.ts 的 screenshot 工具 + src/report-html.ts 的嵌图）
+    "bsk.screenshot.bothModes":
+      "截图不能同时要「整页」和「某个元素」：二选一（整页用 fullPage=true，元素用 target）。",
+    "bsk.screenshot.refOnly":
+      "元素截图只支持 @eN 引用（bsk 的 screenshot 没有 CSS 选择器入口），收到的是「{target}」。请先 snapshot 取编号再截。",
+    "bsk.screenshot.onFailure": "（已自动截图：{path}）",
+    "bsk.screenshot.unavailable":
+      "这次截图没成（bsk 报的原因：{reason}）。页面可能处于隐藏状态，或目标本身读不到——不要把它当成「已经留了证据」。",
+    "log.sideOutputScreenshot": "截图: {path}",
+    "reportHtml.screenshots": "截图",
+    "reportHtml.screenshotMissing":
+      "截图没有内联进报告（文件已不在，或体积超过 4MiB）：{path}",
     // 选择类控件（src/bsk/picker.ts + src/bsk/tools.ts 的 select_option / pick_date）
     "bsk.picker.noOverlay":
       "点开 {target} 之后没有等到可见的下拉浮层（它可能不是「点开出现浮层」型的下拉）。若它其实是普通输入框，请改用 fill；否则用 snapshot 看清页面后手动点选。",
@@ -1270,6 +1282,18 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "bsk.network.hit": '{count} request(s) matching "{url}"; latest: {latest}{note}',
     "bsk.network.miss":
       '{count} request(s) matching "{url}"; actual: {actual} (expected {expected}){note}',
+    // screenshots (the `screenshot` tool in src/bsk/tools.ts + embedding in src/report-html.ts)
+    "bsk.screenshot.bothModes":
+      'a screenshot cannot be both "full page" and "a single element": pick one (fullPage=true, or target).',
+    "bsk.screenshot.refOnly":
+      'element screenshots only accept an @eN ref (bsk\'s screenshot has no CSS selector entry); got "{target}". Call snapshot for a ref first.',
+    "bsk.screenshot.onFailure": " (screenshot captured automatically: {path})",
+    "bsk.screenshot.unavailable":
+      "the screenshot did not happen (bsk reported: {reason}). The page may be hidden, or the target is unreadable — do not treat this as evidence captured.",
+    "log.sideOutputScreenshot": "screenshot: {path}",
+    "reportHtml.screenshots": "Screenshots",
+    "reportHtml.screenshotMissing":
+      "screenshot not inlined (file is gone, or it exceeds 4MiB): {path}",
     // picker widgets (src/bsk/picker.ts + select_option / pick_date in src/bsk/tools.ts)
     "bsk.picker.noOverlay":
       "no visible dropdown overlay appeared after opening {target} (it may not be an open-on-click dropdown). If it is really a plain text input, use fill instead; otherwise call snapshot and pick the option by hand.",
