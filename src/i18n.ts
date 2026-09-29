@@ -471,6 +471,9 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.model.badgeCurrent": "当前",
     "tui.model.badgeDefault": "默认",
     "tui.select.hint": "↑↓ 选择 · Enter 确认 · Esc 取消",
+    "tui.select.searchHint": "输入关键字可实时过滤",
+    "tui.select.searchPlaceholder": "输入关键字过滤…",
+    "tui.select.noMatch": "没有匹配的项",
     "tui.model.fallback":
       "启动默认模型 {provider}/{model} 当前不可用（provider 未登录或模型已下线），本次先退回 {next}；可用 /model 重新选择",
     "tui.model.switched":
@@ -1354,6 +1357,9 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.model.badgeCurrent": "current",
     "tui.model.badgeDefault": "default",
     "tui.select.hint": "↑↓ move · Enter confirm · Esc cancel",
+    "tui.select.searchHint": "type to filter in real time",
+    "tui.select.searchPlaceholder": "type to filter…",
+    "tui.select.noMatch": "no matching items",
     "tui.model.fallback":
       "the startup default {provider}/{model} is unavailable (provider not signed in, or the model was retired); falling back to {next} for this session — use /model to pick again",
     "tui.model.switched":
