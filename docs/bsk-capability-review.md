@@ -1,6 +1,6 @@
 # bsk 能力复用评估（可优化项与缺口）
 
-- 状态：调研结论（2026-09），**尚未落地任何一项**
+- 状态：调研结论（2026-09）；阶段 1（`press` + `dialogs` 透传）与阶段 2（`console` / `network` 断言）**已落地**，其余待办（见第八节）
 - 目的：清点 browserskill（`bsk`）已提供、而 pageqa 尚未使用的能力，判断哪些可以直接接上提升测试覆盖面与执行效率，哪些需要向上游提需求。
 - 参照对象：
   - pageqa 本体：本仓库（`src/`）
@@ -18,6 +18,8 @@
 3. **不建议**用 bsk 命令替换 pageqa 自建的 `picker.ts` / `condition.ts` / `settle.ts`。这三者不是「重复实现 bsk 已有能力」，而是「把多个 bsk 原子操作收敛成一次调用」，替换反而会丢掉性能与防错收益。
 4. **值得向上游提的需求只有一条**：元素级条件等待（`wait-for-selector` / `wait-for-function`）。这是 pageqa 不得不在页面侧用 `evaluate` 轮询自建 `wait_for` / 页面稳定检测的根因，且 bsk 在扩展侧实现能绕开后台标签页定时器节流。
 5. **结构性效率优化**集中在 `--json` 与 IPC 快路径两处：前者是透传 dialogs 的卡点，后者只覆盖 7 个命令，其余每条都要付 13–20ms 的子进程开销。
+
+> 落地进展：第 1 条（`press`）与第 2 条（`dialogs` 透传）已完成；第 1 条里点名的 `console` / `network` 缺口也已补上（阶段 2）。实施记录见第八节。
 
 ---
 
@@ -73,11 +75,11 @@ bsk 的命令枚举在 `crates/bsk-cli/src/cli/mod.rs`（`enum Command`，约 10
 
 ### 3.1 P0 — 直接接上即有收益
 
-**（1）`press` 键盘工具**
+**（1）`press` 键盘工具**（已落地，见第八节）
 
 pageqa 目前**没有任何键盘能力**。真实用例里高频出现：回车触发搜索或提交、`Esc` 关闭弹窗/抽屉、`Tab` 走焦点顺序验证校验、`Ctrl+A` 后重填。现在只能靠 `evaluate` 注入合成 `KeyboardEvent`，而合成事件在多数前端框架（Element Plus / React 受控组件）里与真实按键行为不一致——这是「用例明明该通过却报失败」的一个常见来源。
 
-**（2）原生对话框（`dialogs[]`）透传**
+**（2）原生对话框（`dialogs[]`）透传**（已落地，见第八节）
 
 bsk 每一次交互的返回都带 `dialogs[]`，但：
 
@@ -87,13 +89,13 @@ bsk 每一次交互的返回都带 `dialogs[]`，但：
 
 结果：页面弹了 `confirm`，报告里没有任何记录。搜索结果证实 `src/` 下 `dialogs` **零匹配**。修复方向有两条：在 IPC 路径上直接读 daemon result 的 `dialogs` 字段（本就在返回值里，零额外成本），或让交互命令走 `--json`。
 
-**（3）`console` → 断言「无 JS 异常」**
+**（3）`console` → 断言「无 JS 异常」**（已落地，见第八节）
 
 页面测试最有价值的检查之一。bsk 直接给出 `kind=exception` 与 `stack_trace[]`，做成与 `download` 同形的断言工具（产出 `AssertOutcome`）即可进 `assertions`、进三种报告、影响退出码。
 
 ### 3.2 P1 — 补齐证据链
 
-**（4）`network` → 断言接口状态**
+**（4）`network` → 断言接口状态**（已落地，见第八节）
 
 断言 `status=200`、抓失败原因（`net::ERR_*`）。与 `console` 同一形态，建议一并实现。
 
@@ -204,20 +206,103 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 
 ### 7.2 建议顺序
 
-| 阶段 | 内容 | 说明 |
-| --- | --- | --- |
-| 1 | `press` 工具 + `dialogs` 透传 | 工程量最小、收益最直接，且能立刻被录制/回放覆盖 |
-| 2 | `assert_no_console_error` / `assert_network` | 需按 `download` 的模式产出 `AssertOutcome` 才会进报告 |
-| 3 | `screenshot` + HTML 报告嵌图 | 失败现场证据 |
-| 4 | `wheel` / `focus` / `blur` / `select` / `get-html` + 扩展 IPC 快路径 | 覆盖面扩展 |
-| 5 | 向上游提 `wait-for` 条件等待 PR | 落地后可回收 `condition.ts` / `settle.ts` 的轮询逻辑 |
+| 阶段 | 内容 | 说明 | 状态 |
+| --- | --- | --- | --- |
+| 1 | `press` 工具 + `dialogs` 透传 | 工程量最小、收益最直接，且能立刻被录制/回放覆盖 | 已完成（2026-09-29） |
+| 2 | `assert_no_console_error` / `assert_network` | 需按 `download` 的模式产出 `AssertOutcome` 才会进报告 | 已完成（2026-09-29） |
+| 3 | `screenshot` + HTML 报告嵌图 | 失败现场证据 | 待办 |
+| 4 | `wheel` / `focus` / `blur` / `select` / `get-html` + 扩展 IPC 快路径 | 覆盖面扩展 | 待办 |
+| 5 | 向上游提 `wait-for` 条件等待 PR | 落地后可回收 `condition.ts` / `settle.ts` 的轮询逻辑 | 待办 |
+
+---
+
+## 八、实施进度
+
+### 阶段 1：`press` 工具 + `dialogs` 透传（2026-09-29 完成）
+
+#### a) 新增 `press` 工具（第 14 个）
+
+| 位置 | 改动 |
+| --- | --- |
+| `src/bsk/tools.ts` | 操作层新增 `BskOps.press(key, { target?, modifiers?, holdMs? })`：`target` 按 `looksLikeRef` 二选一走 `--ref`/`--selector`（先聚焦再按键），`--hold-ms` 只接受正整数，动作前照常过引用闸门 `checkRef`。新增 `press` AgentTool（带 `showPage`）并注册进返回数组。 |
+| `src/bsk/ipc-commands.ts` | `planIpcCall` 新增 `press` case：`ref` / `selector` / `modifiers` / `hold-ms` 加入 `VALUE_FLAGS`；`parseModifierList` 复刻 CLI 的 `parse_modifiers`（别名归一 + 保序去重，认不出即返回 `null` 退回 CLI）；`render` 复刻 `press ok tab=… key=… code=… modifiers=[…]`；标 `mutating: true`（按键同样会改页面，重发就是按两次）。 |
+| `src/record.ts` | `press` case：键名 + 可选 target（照常构造语义定位符）+ modifiers + holdMs；`holdMs` 只在模型确实给过时才写进脚本（与 `download` / `wait_for` 同一条规则）。 |
+| `src/replay.ts` | 新增 `ReplayPressStep`，并入 `ReplayStep` 与 `REPLAY_STEP_KINDS`（不升 `REPLAY_VERSION`，理由同 `wait_for`）；加载时校验「缺键名当场拒绝」（`replay.err.pressNoKey`）；`normalizePlaceholderLiterals` 对其 locator 生效；`runStep` 新增执行分支。 |
+| `src/agent.ts` | 系统提示的工具清单加一行，并写明「不要用 `evaluate` 注入键盘事件代替它」。 |
+| `README.md` / `README.zh-CN.md` / `CONTEXT.md` | 工具数 13 → 14、工具清单补 `press`；术语表「动作」词条补 `press`。 |
+
+`press` 的转发规则与其它动作一致：`target` 只是「先聚焦到谁」，不传就按在当前焦点上——这正是「输入框里填完直接回车」的常规写法，因此回放时按同一个键名重走即可，不需要把焦点状态也录进脚本。
+
+#### b) 原生对话框透传
+
+`src/bsk/ipc-commands.ts` 新增两个纯函数，**两条路径共用同一份形状**：
+
+- `renderDialogs(result.dialogs)` —— IPC 路径：daemon 返回的 `dialogs`（CDP 的 `alert`/`confirm`/`prompt`/`beforeunload`）直接转成文本块；
+- `extractDialogs(stderr)` —— CLI 路径：从 stderr 里抠出 `dialog: …` 行及其缩进续行（bsk 的 human 模式把摘要打在这里，此前成功路径整条丢弃）；只认这两种行，所以同一流里的截断告警不会被卷进来。
+
+`src/bsk/tools.ts` 在两处接上：IPC 分支 `plan.render(result) + renderDialogs(dialogsOf(result))`；CLI 分支成功时 `stdout + extractDialogs(stderr)`（**有摘要时**才先收掉 stdout 的尾换行再附加，两条路径的最终形状因此一致）。提示文案走 i18n 的 `bsk.dialog.notice`（zh/en 各一份）。
+
+两句设计说明：
+
+- **前置提示不是装饰**。bsk 对原生对话框是**自动按默认策略处理**的（确认框点确定、提示框点关闭），页面不会卡住——不说清楚，模型会把「弹了框但流程继续」误读成「页面根本没弹框」，进而漏掉用例里「确认弹框出现后点确定」这条要求的核对。
+- **两条路径都要做**。绝大多数命令走 IPC 快路径，但 `navigate` / `upload` / `download` 等仍走 CLI 子进程；只补一边会留下「换个命令就丢对话框」的暗坑。
+
+#### c) 测试
+
+- `tests/bsk-ipc.test.mjs`：`press` 的参数翻译、行格式、退让规则（缺键名 / 多给位置参数 / 修饰键拼错 / `--ref` 与 `--selector` 同时给 / `--hold-ms` 非整数）；`renderDialogs` 与 `extractDialogs` 的**形状一致性**——同一组 dialogs，一条从 JSON 生成、一条从 bsk 的 stderr 文本提取，断言两者逐字节相等。
+- `tests/replay.test.mjs`：`press` 的录制（键名 / 定位符 / modifiers / holdMs）、三种回放执行路径、缺键名的加载校验，并把 `press` 纳入「所有步骤类型都在加载白名单里」。
+- `tests/bsk-ipc.test.mjs` 与 `tests/replay.test.mjs` 均在 `test:unit` 内，无需真实浏览器。本次改动后全量单测（557 项）通过。
+
+### 阶段 2：`assert_no_console_error` / `assert_network`（2026-09-29 完成）
+
+两个新工具都按 `download` 的模式做成**断言型工具**：直接产出 `AssertOutcome`（期望 + 成立与否 + 证据），因此自动进 `assertions`、进三种报告、影响退出码。`src/bsk/tools.ts` 新增 `ASSERTION_TOOLS` 集合统一识别断言型工具——此前是 `name === "assert_text" || name === "download"` 这样散着写的，漏掉一个的后果是「断言跑了但报告里没有它」，一条静默的假通过。
+
+| 位置 | 改动 |
+| --- | --- |
+| `src/bsk/tools.ts` | 操作层 `assertNoConsoleError(options?, signal)` / `assertNetwork(url, options?, signal)`；模块级判定 `isConsoleOffender` / `parseStatusSpec` / `statusMatches`（导出供单测钉住）；读取辅助 `readConsole` / `readNetwork`；两个 `AgentTool` 定义与注册；`ASSERTION_TOOLS`。 |
+| `src/record.ts` | 两个 case：录**判定条件**（ignore / warnings；url / status / method），不录这次的结果。 |
+| `src/replay.ts` | 两个 step 类型 + 白名单 + 加载校验（`assert_network` 缺 url 当场拒绝）+ `normalizePlaceholderLiterals` 对 url 生效 + `runStep` 分支；新增 `assertionFromOps`：结构化结果 → 回放断言记录，取不到就按 FAIL（而不是静默跳过）。 |
+| `src/agent.ts` | 系统提示工具清单加两行。 |
+| `src/i18n.ts` | 两个工具的全部文案（zh / en）。 |
+| `README.md` / `README.zh-CN.md` | 工具数 14 → 16、工具清单与「断言行要对齐」说明同步。 |
+
+四个关键决策：
+
+1. **`--limit 200` 且不带 `--since`**。bsk 的语义是「有游标才从游标处往后切片，没有游标则取尾部 limit 条」（见 `readBufferedEntries`），正是「最近的报错」需要的；带游标反而会从头拿一批陈年记录。200 与扩展侧的缓冲上限（`MAX_CONSOLE_BUFFER` / `MAX_NETWORK_BUFFER`）一致，一次拿全。
+2. **warning 默认不算失败**。第三方库的 deprecation 警告太常见，默认算失败会让这个工具在真实页面上天天假失败——那比没有它更糟。要看警告就显式传 `warnings: true`。同理，`ignore` 是必需的逃生口：没有它，一条已知噪音就只剩「把断言删掉」一条路。
+3. **不该猜的地方一律如实说明**。缓冲真被截断时（`truncated`）在证据里注明「看到的不是全部」；网络未匹配时列出最近几条请求（模型据此一轮就能改对 url），而不是只说一句「没找到」。
+4. **只读当下，不冻结结果**。录制的是判定条件本身；回放时重新读一遍缓冲再判。把「这次恰好没报错」冻成常数，等于让这条断言在回放里永远通过。
+
+测试：
+
+- `tests/bsk-assert.test.mjs`：`isConsoleOffender` 的四类判定（未捕获异常一律算、`kind: log` + `level: error` 也算、warning 默认放行而显式开启才算、普通 log / info / debug 永不算）、`parseStatusSpec` 的接受集与拒绝集、`statusMatches` 对「缺状态码（请求失败）」的处理。
+- `tests/replay.test.mjs`：假操作层补上两个方法；两个新步骤的回放分派、参数透传、`url` 占位符展开、断言 FAIL 影响场景结论；「所有步骤类型都在加载白名单里」纳入两个新类型；`assert_network` 缺 url 的加载校验。
+
+本次改动后全量单测通过（阶段 2 落地时 571 项；补上下面这轮修复的测试后 574 项）。
+
+#### 真机跑暴露的两个问题（同日修复）
+
+拿 `examples/smoke-test.md` 真机跑了一遍，两条 FAIL **都不是用例写错，而是工具的缺陷**——这正是真机验证的价值：
+
+1. **浏览器扩展的噪音被判成「页面报错」**。证据是 `[error/log] Failed to load resource: net::ERR_FAILED`，而同一时刻的 network 缓冲里躺着一条一模一样的 `GET 失败(net::ERR_FAILED) chrome-extension://invalid/`。扩展会在被测页面里注入脚本、发自己的请求与报错，这些条目与被测页面毫无关系；不过滤的话，「断言页面没有报错」在**任何装了扩展的机器上**都会红——这个断言等于废掉。
+   → 读取时按 URL 过滤掉 `chrome-extension://` / `chrome-untrusted://` / `chrome://` / `devtools://` / `moz-extension://`（`isBrowserInternalUrl`）。判定取「宁可漏过，不可错杀」：`data:` / `blob:` / `file:` 一律保留，因为被测页面自己也可能用。
+   同时把 console 证据改成**带出处 URL**（`[level/kind] text @ url`）——第一版证据没给 url，看着那条报错根本无法判断是谁的，只能再跑一次去猜。
+
+2. **navigate 的文档请求不在网络缓冲里**。第二版用例拿它当 `assert_network` 的靶子，结果缓冲里只有 7 条扩展资源请求，文档请求一条也没有（`Network.enable` 在 attach 时是 best-effort，实测没能覆盖首个文档请求）。
+   → 结论：**不要用 navigate 的文档请求当靶子**。用例改成断言「点击触发」的请求，并给示例页加了一页「接口请求」（`fetch` 一份确定存在的静态文件，状态码因此可预期）。真在业务系统里同理：先触发（点提交 / 点导出），再断言。
+
+两条结论都写进了 `examples/smoke-test.md` 该场景的注释与示例页对应代码的注释里。
+
+### 待办
+
+阶段 3–5 见 7.2。
 
 ---
 
 ## 附：查证记录
 
-- pageqa 侧全仓搜索 `dialogs`：**0 匹配**（`src/`）。
-- `planIpcCall` 覆盖范围：`src/bsk/ipc-commands.ts` 的 `switch (command)` 共 7 个 case。
+- pageqa 侧全仓搜索 `dialogs`：调研时 **0 匹配**（`src/`）；2026-09-29 起已接入（见第八节）。
+- `planIpcCall` 覆盖范围：调研时 `src/bsk/ipc-commands.ts` 的 `switch (command)` 共 7 个 case；2026-09-29 起为 8 个（新增 `press`）。
 - `REJECTED_FLAGS` 含 `json`：`src/bsk/ipc-commands.ts`。
 - bsk 命令枚举：`crates/bsk-cli/src/cli/mod.rs` 的 `enum Command`。
 - bsk 错误码常量（13 个）与 `data.reason` 细分码：`crates/bsk-protocol/src/error.rs`、`crates/bsk-cli/src/cli/render_error.rs`。

@@ -254,6 +254,7 @@
     <a href="#/form2" class="nav-link" data-route="/form2">表单页面 2</a>
     <a href="#/upload" class="nav-link" data-route="/upload">文件上传</a>
     <a href="#/download" class="nav-link" data-route="/download">文件下载</a>
+    <a href="#/api" class="nav-link" data-route="/api">接口请求</a>
   </nav>
 
   <main class="content">
@@ -384,6 +385,17 @@
           <label>导出（需要在确认弹框里点「确定」才会开始下载）</label>
           <button type="button" id="exportBtn" class="btn">导出数据</button>
           <div class="download-status" id="downloadStatus"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="api" class="route-content" data-route="/api" style="display:none;">
+      <h1>接口请求</h1>
+      <div class="download-section">
+        <div class="form-group">
+          <label>发起一次真实请求（用于测试网络断言：断言「请求发生了」以及「状态码对不对」）</label>
+          <p><button type="button" id="pingBtn" class="btn">请求接口</button></p>
+          <div class="download-status" id="pingStatus"></div>
         </div>
       </div>
     </section>
@@ -632,6 +644,26 @@
           if (downloadStatus) {
             // 成功提示常驻：agent 从「点确定」到「回头断言」要经历若干次 LLM 往返
             downloadStatus.innerHTML = '<div class="success-message">导出成功</div>';
+          }
+        });
+      }
+
+      // ── 接口请求：给网络断言一个**稳定可预期**的靶子 ──
+      // 为什么单做这一页：页面自身 HTML 的文档请求在 bsk 的网络缓冲里不保证出现
+      // （2026-09-29 实测：采不到，缓冲里只有扩展注入的资源请求），而**点击触发**的请求
+      // 一定在。打一份确定存在的静态文件，状态码因此可预期（200）。
+      const pingBtn = document.getElementById('pingBtn');
+      const pingStatus = document.getElementById('pingStatus');
+      if (pingBtn) {
+        pingBtn.addEventListener('click', async () => {
+          pingStatus.innerHTML = '<p>请求中...</p>';
+          try {
+            // cache: 'no-store' 保证每次点击都真的走一次网络：命中缓存时缓冲里可能看不到
+            // 新请求，断言就落空了（回放会重复点同一个按钮）。
+            const res = await fetch('download-sample.txt', { cache: 'no-store' });
+            pingStatus.innerHTML = `<div class="success-message">接口返回 ${res.status}</div>`;
+          } catch (err) {
+            pingStatus.innerHTML = `<div class="error">请求失败：${err.message}</div>`;
           }
         });
       }

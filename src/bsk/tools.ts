@@ -73,10 +73,13 @@ import {
   ipcCall,
 } from "./ipc.js";
 import {
+  extractDialogs,
   ipcErrorToCliError,
   ipcTimeoutToCliError,
   isProtocolDrift,
+  looksLikeRef,
   planIpcCall,
+  renderDialogs,
   withCliTrailingNewline,
 } from "./ipc-commands.js";
 import {
@@ -263,7 +266,9 @@ async function runBskCommand(
 
   try {
     const result = await ipcCall(plan.sessionKey, plan.method, plan.params, timeoutMs, signal);
-    return withCliTrailingNewline(plan.render(result));
+    // 原生对话框随每次交互的结果带回（result.dialogs）：CLI 路径下它在 stderr 里，
+    // 这里在 result 里。两条路径追加到同一个位置，模型看到的形状便与走哪条路无关。
+    return withCliTrailingNewline(plan.render(result) + renderDialogs(dialogsOf(result)));
   } catch (err) {
     if (err instanceof BskIpcAbortError) {
       throw new BskAbortError(t("bsk.err.aborted", { cmd: args.join(" ") }));
@@ -316,7 +321,13 @@ function runBsk(
         }
         if (!err) {
           debugLog(`[bsk] $ bsk ${args[0] ?? ""} 完成（${done()}ms）`);
-          resolve(String(stdout));
+          // 对话框摘要走 stderr（human 模式），成功路径此前整条丢掉。有它时才先收掉
+          // stdout 的尾换行再附加：IPC 路径的文本不带尾换行、由 withCliTrailingNewline
+          // 统一补上，这样两条路径的最终形状才一致（不多出空行）。
+          const dialogs = extractDialogs(String(stderr ?? ""));
+          resolve(
+            dialogs ? String(stdout).replace(/[\r\n]+$/, "") + dialogs : String(stdout),
+          );
           return;
         }
         debugLog(`[bsk] $ bsk ${args[0] ?? ""} 失败（${done()}ms）`);
@@ -502,6 +513,18 @@ function parseBskJson<T>(out: string): T | null {
 }
 
 /**
+ * 取交互结果里的原生对话框（`dialogs` 字段）。
+ *
+ * 形状不认识（不是对象、字段缺失）时给 undefined —— 对话框是**附加信息**，
+ * 读不到不该影响一次已经成功的操作。
+ */
+function dialogsOf(result: unknown): unknown {
+  return result && typeof result === "object"
+    ? (result as { dialogs?: unknown }).dialogs
+    : undefined;
+}
+
+/**
  * 把 bsk 命令失败的原因压成一行可读文本（下载失败时作为证据）。
  *
  * Node 的 `execFile` 会在 message 前面挂一行 `Command failed: bsk …`——那是包装噪声，
@@ -574,6 +597,19 @@ const SHOW_PAGE_PARAM = {
 } as const;
 
 /**
+ * 断言型工具：它们的调用结果是一条**断言**（进报告、影响退出码），而不只是一次操作。
+ *
+ * 用一个集合而不是散落的 `||`：新增断言型工具时只改这里，`exec` 的上报与报告侧的取用
+ * 都不会漏掉——漏掉的后果是「断言跑了但报告里没有它」，一条静默的假通过。
+ */
+const ASSERTION_TOOLS: ReadonlySet<string> = new Set([
+  "assert_text",
+  "download",
+  "assert_no_console_error",
+  "assert_network",
+]);
+
+/**
  * bsk 操作层：一次浏览器操作 = 一条 bsk 命令。
  *
  * `lastSnapshot()` 暴露「最近一次快照文本」：录制时用它把 `@eN` 解析成语义定位符
@@ -618,6 +654,18 @@ export interface BskOps {
   ): Promise<string>;
   hover(target: string, signal?: AbortSignal): Promise<string>;
   scroll(target: string, signal?: AbortSignal): Promise<string>;
+  /**
+   * 按一次键盘键（可选：先聚焦到某元素再按）。
+   *
+   * 与用 `evaluate` 注入合成 `KeyboardEvent` 的区别：这里走 bsk（CDP
+   * `Input.dispatchKeyEvent`），是**真实按键**——React/Vue 受控组件、快捷键处理、
+   * 「输入框里回车提交」这类原生行为认得它；而合成事件多半被框架忽略（`isTrusted=false`）。
+   */
+  press(
+    key: string,
+    options?: { target?: string; modifiers?: string; holdMs?: number },
+    signal?: AbortSignal,
+  ): Promise<string>;
   wait(ms: number, signal?: AbortSignal): Promise<string>;
   /**
    * 等页面稳定下来：没有正在播的动画、且 DOM 已经安静一小会儿；已经是稳定状态时立刻返回。
@@ -674,6 +722,32 @@ export interface BskOps {
     opts?: AssertTextOptions,
     signal?: AbortSignal,
   ): Promise<string>;
+  /**
+   * 断言「页面没有 JavaScript 报错」：读 console 缓冲，找 `exception` / `error` 级条目。
+   *
+   * 为什么值得单独做一个工具：这类错误**不体现在页面文字上**，`assert_text` 永远看不到它，
+   * 而它恰恰是页面测试最该抓的一类缺陷（脚本抛异常 → 点了按钮没反应 → 后续断言全挂，
+   * 报告里却只说「没找到某段文本」）。做成断言而不是「读一下看看」「没有报错」也是这个
+   * 原因：它是一件应该影响退出码的事实。
+   *
+   * `ignore` 是必需的逃生口：被测页面常有已知噪音（第三方脚本、favicon 404 之类），
+   * 没有它，用户只剩下「把断言删掉」一条路——那等于把这类缺陷整个放弃。
+   */
+  assertNoConsoleError(
+    options?: { ignore?: string[]; warnings?: boolean },
+    signal?: AbortSignal,
+  ): Promise<string>;
+  /**
+   * 断言「某个请求发生了，且状态符合期望」：读 network 缓冲，按 URL 子串（可选方法）匹配。
+   *
+   * 与 `assert_text` 是同一件事的两面：一个看页面**显示**了什么，一个看页面**请求**了什么。
+   * 后端 500 而前端把错误吞掉、只显示一句「操作失败」的页面，只有它能抓到真正的原因。
+   */
+  assertNetwork(
+    url: string,
+    options?: { status?: string; method?: string },
+    signal?: AbortSignal,
+  ): Promise<string>;
   /** 最近一次 assertText 是否**靠 Jev 语义判断才成立**（供录制标记语义断言）。 */
   lastAssertSemantic(): boolean;
   /**
@@ -686,7 +760,7 @@ export interface BskOps {
   lastAssert(): AssertOutcome | null;
 }
 
-/** 一次 assert_text / download 的结构化结果。 */
+/** 一次断言型工具（assert_text / download / assert_no_console_error / assert_network）的结构化结果。 */
 export interface AssertOutcome {
   /** 断言期望（assert_text 的 expectation，或 download 的「文件已下载」期望）。 */
   expectation: string;
@@ -770,6 +844,126 @@ interface BskDownloadJson {
   mime?: string | null;
   /** bsk 对下载内容的危险分级（如 `safe`）。 */
   danger?: string | null;
+}
+
+/** 一条 console 记录（`bsk console --json` 的 `entries[]`；只声明用到的字段）。 */
+interface BskConsoleEntry {
+  /** 文档序（单调递增）。 */
+  sequence?: number;
+  /** `console`（console.* 调用）/ `exception`（未捕获异常）/ `log`（浏览器日志，如资源 404）。 */
+  kind?: string;
+  /** `error` / `warning` / `warn` / `log` / `info` / `debug`… */
+  level?: string;
+  /** 正文（已被 bsk 按 `--max-text-chars` 截断）。 */
+  text?: string;
+  /** 出处的脚本 URL。 */
+  url?: string;
+  line?: number;
+}
+
+/** `bsk console --json` 回传的字段（用到哪几个就声明哪几个）。 */
+interface BskConsoleJson {
+  entries?: BskConsoleEntry[];
+  /** 缓冲里还有更早的记录没能返回（超过扩展的缓冲上限）。 */
+  truncated?: boolean;
+}
+
+/** 一条网络记录（`bsk network --json` 的 `entries[]`；只声明用到的字段）。 */
+interface BskNetworkEntry {
+  sequence?: number;
+  /** `response`（收到了响应）/ `failure`（请求未完成）。 */
+  kind?: string;
+  method?: string;
+  url?: string;
+  /** HTTP 状态码（仅 `response`）。 */
+  status?: number;
+  /** CDP 的失败原因（仅 `failure`），如 `net::ERR_CONNECTION_REFUSED`。 */
+  error_text?: string;
+}
+
+/** `bsk network --json` 回传的字段（用到哪几个就声明哪几个）。 */
+interface BskNetworkJson {
+  entries?: BskNetworkEntry[];
+  truncated?: boolean;
+}
+
+/** console 的读取上限：与扩展侧的缓冲上限（`MAX_CONSOLE_BUFFER = 200`）一致，一次拿全。 */
+const CONSOLE_LIMIT = 200;
+
+/** 网络记录的读取上限：同上（`MAX_NETWORK_BUFFER = 200`）。 */
+const NETWORK_LIMIT = 200;
+
+/**
+ * 这条 console 记录算不算「报错」。
+ *
+ * `kind === "exception"` 是未捕获异常（一定是错）；`level === "error"` 覆盖 `console.error`
+ * 与浏览器日志里的错误条目（含资源加载失败这类 `kind: "log"` 的记录）。warning 只在显式
+ * 要求时才算——第三方库的 deprecation 警告太常见，默认把它们当失败会让这个工具没法用。
+ */
+export function isConsoleOffender(
+  entry: { kind?: string; level?: string },
+  withWarnings: boolean,
+): boolean {
+  if (entry.kind === "exception") return true;
+  const level = (entry.level ?? "").toLowerCase();
+  if (level === "error") return true;
+  // CDP 两处来源写法不一：Runtime 侧给 `warning`，部分版本给 `warn`。
+  return withWarnings && (level === "warn" || level === "warning");
+}
+
+/**
+ * 这条记录是不是**浏览器自身 / 扩展**产生的（而不是被测页面的）。
+ *
+ * 必须过滤掉它们，这不是洁癖：任何真实浏览器上都装着一堆扩展，它们在页面里注入的脚本
+ * 会产生自己的请求与报错。实测（2026-09-29，真实跑）——一条
+ * `GET chrome-extension://invalid/ net::ERR_FAILED` 就足以让「断言页面没有报错」失败，
+ * 而那条报错与被测页面毫无关系。不过滤的话，这个断言在**每个人**的机器上都会红。
+ */
+export function isBrowserInternalUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  return (
+    lower.startsWith("chrome-extension://") ||
+    lower.startsWith("chrome-untrusted://") ||
+    lower.startsWith("chrome://") ||
+    lower.startsWith("devtools://") ||
+    lower.startsWith("moz-extension://")
+  );
+}
+
+/** 状态码期望：`200` 精确，`2xx` / `4xx` / `5xx` 区间；认不出返回 null。 */
+export type StatusSpec = { exact: number } | { from: number; to: number };
+
+export function parseStatusSpec(spec: string): StatusSpec | null {
+  const text = spec.trim().toLowerCase();
+  if (!text) return null;
+  const range = /^([1-5])xx$/.exec(text);
+  if (range) {
+    const base = Number(range[1]) * 100;
+    return { from: base, to: base + 99 };
+  }
+  const exact = Number(text);
+  if (!Number.isInteger(exact) || exact < 100 || exact > 599) return null;
+  return { exact };
+}
+
+/** 状态码期望 → 可读文案（期望描述与证据里用同一个形状）。 */
+function describeStatusSpec(spec: StatusSpec): string {
+  return "exact" in spec ? String(spec.exact) : `${Math.floor(spec.from / 100)}xx`;
+}
+
+/** 某条响应是否满足状态码期望。 */
+export function statusMatches(status: number | undefined, spec: StatusSpec): boolean {
+  if (typeof status !== "number") return false;
+  return "exact" in spec
+    ? status === spec.exact
+    : status >= spec.from && status <= spec.to;
+}
+
+/** 把一段文本压成单行短句（证据要进报告，不能让它整段吞掉输出）。 */
+function clipLine(text: string, max = 160): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length <= max ? one : `${one.slice(0, max)}…`;
 }
 
 /**
@@ -1273,6 +1467,51 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     return await clickFirst(scopedToRoot(DATE_CONFIRM_SELECTORS), signal);
   };
 
+  /**
+   * 读 console 缓冲（最近 `CONSOLE_LIMIT` 条）。
+   *
+   * 刻意**不带 `--since`**：bsk 的语义是「没有游标时取尾部 limit 条」（见扩展的
+   * `readBufferedEntries`：有游标才从头切片，没游标取 `slice(-limit)`）——正是「最近的报错」
+   * 需要的。带游标反而会从头拿一批陈年记录，把最近的错误挤出窗口。
+   */
+  const readConsole = async (
+    signal?: AbortSignal,
+  ): Promise<{ entries: BskConsoleEntry[]; truncated: boolean }> => {
+    const out = await bsk(
+      ["console", "--limit", String(CONSOLE_LIMIT), "--json", ...quiet],
+      signal,
+    );
+    const json = parseBskJson<BskConsoleJson>(out);
+    if (!json || !Array.isArray(json.entries)) {
+      // 形状认不出 = 这一条断言**没有依据**，不能当成「没有报错」放过去。
+      throw new Error(t("bsk.console.unreadable"));
+    }
+    return {
+      // 扩展注入脚本自己的报错不是被测页面的问题，先滤掉（理由见 isBrowserInternalUrl）。
+      entries: json.entries.filter((e) => !isBrowserInternalUrl(e.url)),
+      truncated: json.truncated === true,
+    };
+  };
+
+  /** 读网络缓冲（最近 `NETWORK_LIMIT` 条）；语义与 readConsole 相同。 */
+  const readNetwork = async (
+    signal?: AbortSignal,
+  ): Promise<{ entries: BskNetworkEntry[]; truncated: boolean }> => {
+    const out = await bsk(
+      ["network", "--limit", String(NETWORK_LIMIT), "--json", ...quiet],
+      signal,
+    );
+    const json = parseBskJson<BskNetworkJson>(out);
+    if (!json || !Array.isArray(json.entries)) {
+      throw new Error(t("bsk.network.unreadable"));
+    }
+    return {
+      // 同上：扩展自己的请求会把「最近的请求」这段诊断淹掉（实测整段全是 chrome-extension://）。
+      entries: json.entries.filter((e) => !isBrowserInternalUrl(e.url)),
+      truncated: json.truncated === true,
+    };
+  };
+
   return {
     session,
     lastSnapshot: () => snapshotText,
@@ -1540,6 +1779,29 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       return `已滚动到 ${target}${landed}\n${out}`;
     },
 
+    async press(
+      key: string,
+      options?: { target?: string; modifiers?: string; holdMs?: number },
+      signal?: AbortSignal,
+    ): Promise<string> {
+      const target = options?.target?.trim();
+      // 引用闸门与其它动作同一条规则：拿旧编号聚焦会聚焦到别的元素，随后这一键就按给了它。
+      const landed = target ? checkRef("press", target) : "";
+      markStale();
+      const args = ["press", key];
+      // press 的位置参数是**键名**，元素目标只能走 --ref / --selector（先聚焦再按键）。
+      if (target) args.push(looksLikeRef(target) ? "--ref" : "--selector", target);
+      const modifiers = options?.modifiers?.trim();
+      if (modifiers) args.push("--modifiers", modifiers);
+      if (typeof options?.holdMs === "number" && options.holdMs > 0) {
+        args.push("--hold-ms", String(Math.round(options.holdMs)));
+      }
+      args.push(...quiet);
+      const out = await bsk(args, signal);
+      const what = target ? `${key}（先聚焦 ${target}）` : key;
+      return `已按键 ${what}${landed}\n${out}`;
+    },
+
     wait: doWait,
 
     settle: doSettle,
@@ -1747,6 +2009,170 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       // 默认：字符串包含匹配
       return verdict(false, `页面中未找到「${expectation}」`);
     },
+
+    async assertNoConsoleError(
+      options?: { ignore?: string[]; warnings?: boolean },
+      signal?: AbortSignal,
+    ): Promise<string> {
+      const { entries, truncated } = await readConsole(signal);
+      const withWarnings = options?.warnings === true;
+      const ignores = (options?.ignore ?? [])
+        .map((s) => String(s).trim().toLowerCase())
+        .filter((s) => s.length > 0);
+      const scope = t(
+        withWarnings ? "bsk.console.scopeWarnings" : "bsk.console.scopeErrors",
+      );
+      const expectation = t("bsk.console.expectation", { scope });
+      // 缓冲真满了才有必要说这句：不说明的话，「没发现报错」会被读成「整场都没有报错」。
+      const note = truncated ? t("bsk.console.truncated") : "";
+
+      const offenders = entries.filter((entry) => {
+        if (!isConsoleOffender(entry, withWarnings)) return false;
+        // 已知噪音按子串放行：正文与出处 URL 一起看，否则「同一条消息换了 URL」就会漏放。
+        const haystack = `${entry.text ?? ""} ${entry.url ?? ""}`.toLowerCase();
+        return !ignores.some((needle) => haystack.includes(needle));
+      });
+
+      if (offenders.length === 0) {
+        const evidence = t("bsk.console.clean", {
+          count: entries.length,
+          scope,
+          note,
+        });
+        assertOutcome = { expectation, pass: true, evidence };
+        return `断言「${expectation}」：成立。${evidence}`;
+      }
+
+      const sample = offenders
+        .slice(0, 3)
+        // 带上出处 URL：这次真机跑的第一版证据只给了 level/kind/text，看不出那条
+        // 「Failed to load resource」到底是谁的，只能再跑一次去猜。
+        .map(
+          (e) =>
+            `[${e.level ?? "?"}/${e.kind ?? "?"}] ${clipLine(e.text ?? "", 140)}` +
+            (e.url ? ` @ ${clipLine(e.url, 100)}` : ""),
+        )
+        .join("；");
+      const evidence = t("bsk.console.dirty", {
+        count: offenders.length,
+        scope,
+        sample,
+        note,
+      });
+      assertOutcome = { expectation, pass: false, evidence };
+      return `断言「${expectation}」：不成立。${evidence}`;
+    },
+
+    async assertNetwork(
+      url: string,
+      options?: { status?: string; method?: string },
+      signal?: AbortSignal,
+    ): Promise<string> {
+      const needle = url.trim();
+      if (!needle) throw new Error(t("bsk.network.urlRequired"));
+      const rawStatus = (options?.status ?? "").trim();
+      const statusSpec = rawStatus ? parseStatusSpec(rawStatus) : null;
+      // 状态码写错是**用法错误**，当场说清楚：硬按「有请求就行」跑下去，
+      // 等于把一条本该严格的断言悄悄放宽，而报告里看不出这回事。
+      if (rawStatus && !statusSpec) {
+        throw new Error(t("bsk.network.badStatus", { spec: rawStatus }));
+      }
+      const method = (options?.method ?? "").trim().toUpperCase();
+
+      const { entries, truncated } = await readNetwork(signal);
+      const note = truncated ? t("bsk.network.truncated") : "";
+      const wanted = needle.toLowerCase();
+      const matched = entries.filter((entry) => {
+        if (!(entry.url ?? "").toLowerCase().includes(wanted)) return false;
+        if (method && (entry.method ?? "").toUpperCase() !== method) return false;
+        return true;
+      });
+
+      const expectation = statusSpec
+        ? t("bsk.network.expectationStatus", {
+            url: needle,
+            status: describeStatusSpec(statusSpec),
+          })
+        : t("bsk.network.expectationAny", { url: needle });
+      const verdict = (pass: boolean, why: string): string => {
+        assertOutcome = { expectation, pass, evidence: why };
+        return `断言「${expectation}」：${pass ? "成立" : "不成立"}。${why}`;
+      };
+      /** 一条记录 → 短描述（证据里逐条列出实际发生了什么）。 */
+      const one = (e: BskNetworkEntry): string =>
+        e.kind === "failure"
+          ? `${e.method ?? "?"} 失败(${clipLine(e.error_text ?? "failed", 60)})`
+          : `${e.method ?? "?"} ${e.status ?? "?"}`;
+
+      if (matched.length === 0) {
+        // 如实给出「最近到底请求过什么」：模型据此一轮就能改对 URL 片段，
+        // 不必再花一轮去猜（与 picker 报「当前可选项」同一个动机）。
+        const recent = entries
+          .slice(-5)
+          .map((e) => `${one(e)} ${clipLine(e.url ?? "(未知)", 80)}`)
+          .join("；");
+        return verdict(
+          false,
+          t("bsk.network.noMatch", {
+            url: needle,
+            count: entries.length,
+            recent: recent || t("bsk.network.noTraffic"),
+            note,
+          }),
+        );
+      }
+
+      const responses = matched.filter((e) => e.kind === "response");
+      if (statusSpec) {
+        const hit = responses.filter((e) => statusMatches(e.status, statusSpec));
+        if (hit.length > 0) {
+          const last = hit[hit.length - 1];
+          return verdict(
+            true,
+            t("bsk.network.hit", {
+              url: needle,
+              count: matched.length,
+              latest: one(last),
+              note,
+            }),
+          );
+        }
+        return verdict(
+          false,
+          t("bsk.network.miss", {
+            url: needle,
+            count: matched.length,
+            actual: matched.map(one).join("、"),
+            expected: describeStatusSpec(statusSpec),
+            note,
+          }),
+        );
+      }
+
+      if (responses.length > 0) {
+        // 没给状态码时语义是「这个请求发生了（且没有失败）」：有一条成功响应即成立。
+        const last = responses[responses.length - 1];
+        return verdict(
+          true,
+          t("bsk.network.hit", {
+            url: needle,
+            count: matched.length,
+            latest: one(last),
+            note,
+          }),
+        );
+      }
+      return verdict(
+        false,
+        t("bsk.network.miss", {
+          url: needle,
+          count: matched.length,
+          actual: matched.map(one).join("、"),
+          expected: t("bsk.network.expectedResponse"),
+          note,
+        }),
+      );
+    },
   };
 }
 
@@ -1817,9 +2243,9 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     const before = ops.lastSnapshot();
     try {
       const text = await fn(signal);
-      // download 也是断言型工具：它的结论（捕获到没有、文件名对不对）落在同一条结构化结果上。
-      const assertion =
-        name === "assert_text" || name === "download" ? ops.lastAssert() : null;
+      // 断言型工具的结论（成立与否 + 证据）都落在同一条结构化结果上：报告直接取用，
+      // 不去解析工具返回文案的措辞（见 ASSERTION_TOOLS）。
+      const assertion = ASSERTION_TOOLS.has(name) ? ops.lastAssert() : null;
       opts.onExec?.({
         name,
         params,
@@ -2135,6 +2561,65 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     },
   };
 
+  const press: AgentTool = {
+    name: "press",
+    label: "Press",
+    description:
+      "按一次键盘键（**真实按键**，走 CDP 键盘事件，不是合成事件）。" +
+      "key 传键名：Enter / Escape / Tab / ArrowDown / Backspace / Home，或组合键 Ctrl+A / Ctrl+Enter / Shift+Tab。" +
+      "**用它的时机**：输入框里回车触发搜索或提交、按 Escape 关掉弹窗/下拉/抽屉、" +
+      "用 Tab 走焦点顺序验证失焦校验、先 fill 再 Ctrl+A 重填。" +
+      "**不要**用 evaluate 注入 KeyboardEvent 来代替它：合成事件 isTrusted=false，" +
+      "React/Vue 受控组件与快捷键处理多半不认，会得到「看起来按了、页面毫无反应」。" +
+      "target 可选：传 @eN 或 CSS 选择器时**先聚焦到该元素再按键**（如聚焦输入框后按 Enter）；" +
+      "不传就按在页面当前焦点上（通常是上一步 fill 过的输入框）。" +
+      "modifiers 可选：逗号分隔的修饰键（如 \"Ctrl,Shift\"）；键名里已写出的组合键不必重复。" +
+      "holdMs 可选：按下与松开之间保持的毫秒数，用于测试长按。" +
+      "showPage: true 时在结果里附一份动作后的可交互元素清单。",
+    parameters: paramsOf(
+      {
+        key: {
+          type: "string",
+          description:
+            "键名，如 Enter / Escape / Tab / ArrowDown / Backspace，或组合键 Ctrl+A / Shift+Tab",
+        },
+        target: {
+          type: "string",
+          description: "可选：先聚焦的元素（@eN 引用或 CSS 选择器）；不传则按在当前焦点上",
+        },
+        modifiers: {
+          type: "string",
+          description: "可选的修饰键列表（逗号分隔）：Ctrl / Shift / Alt / Meta",
+        },
+        holdMs: { type: "number", description: "可选：按住多少毫秒再松开（测试长按）" },
+        showPage: SHOW_PAGE_PARAM,
+      },
+      ["key"],
+    ),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = params as PressParams;
+      // 键名是这一步的全部内容：空的 key 没有意义，在本地拦下，别白费一次浏览器往返
+      // （这次失败也不会被录进回放脚本——录制层只记成功的操作）。
+      if (typeof p.key !== "string" || !p.key.trim()) {
+        throw new Error(
+          "press 需要给出 key（键名，如 Enter / Escape / Tab / Ctrl+A）",
+        );
+      }
+      const options = {
+        ...(p.target ? { target: p.target } : {}),
+        ...(p.modifiers ? { modifiers: p.modifiers } : {}),
+        ...(typeof p.holdMs === "number" ? { holdMs: p.holdMs } : {}),
+      };
+      return exec(
+        "press",
+        { key: p.key, ...options, ...(p.showPage ? { showPage: true } : {}) },
+        (s) => ops.press(p.key, options, s),
+        signal,
+        { snapshotAfter: p.showPage === true },
+      );
+    },
+  };
+
   const wait: AgentTool = {
     name: "wait",
     label: "Wait",
@@ -2250,6 +2735,102 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     },
   };
 
+  const assertNoConsoleError: AgentTool = {
+    name: "assert_no_console_error",
+    label: "Assert No Console Error",
+    description:
+      "断言页面自加载以来没有 JavaScript 报错（未捕获异常 + console.error / 浏览器错误日志）。" +
+      "**这类错误不体现在页面文字上，assert_text 永远看不到它**：脚本抛异常导致按钮点了没反应时，" +
+      "页面往往只显示一句「操作失败」，真正的原因只有它能给出来。" +
+      "用例写了「页面无控制台报错」「不应有 JS 异常」「控制台没有报错」时用它，" +
+      "不要用 assert_text 检查某个字眼来假装覆盖。" +
+      "ignore 可选：字符串数组，正文或出处 URL 里含任一项的条目被忽略（放行已知噪音，" +
+      "如第三方脚本的报错、favicon 404）——没有它，一条已知噪音就会让用例永远红。" +
+      "warnings 可选（默认 false）：设为 true 时把 warning 级消息也算失败；默认只算 error 与未捕获异常，" +
+      "因为第三方库的 deprecation 警告太常见。" +
+      "本工具直接产生一条断言：没有匹配的报错为「成立」，有则「不成立」并列出前几条作为证据。",
+    parameters: paramsOf({
+      ignore: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "可选：放行的已知噪音（子串匹配、忽略大小写，同时比对正文与出处 URL），如 [\"favicon\", \"ResizeObserver loop\"]",
+      },
+      warnings: {
+        type: "boolean",
+        description:
+          "可选：true 时把 warning 级消息也算失败（默认只算 error 与未捕获异常）",
+      },
+    }),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = (params as ConsoleAssertParams) ?? {};
+      const ignore = Array.isArray(p.ignore)
+        ? p.ignore
+            .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+            .map((s) => s.trim())
+        : [];
+      const warnings = p.warnings === true;
+      return exec(
+        "assert_no_console_error",
+        {
+          ...(ignore.length > 0 ? { ignore } : {}),
+          ...(warnings ? { warnings: true } : {}),
+        },
+        (s) => ops.assertNoConsoleError({ ignore, warnings }, s),
+        signal,
+      );
+    },
+  };
+
+  const assertNetwork: AgentTool = {
+    name: "assert_network",
+    label: "Assert Network",
+    description:
+      "断言某个网络请求发生了、且状态符合期望（读 bsk 的网络缓冲并按 URL 子串匹配）。" +
+      "**用于检查页面对后端请求的结果**：提交表单后确认接口真的返回了 200、" +
+      "导出时确认 `/api/export` 被调用过、排查「页面说保存失败但不知道后端到底说了什么」。" +
+      "url 必填，传请求地址里的**一段**（子串匹配、忽略大小写，如 `/api/user/save`）；" +
+      "status 可选，写 `200`（精确）或 `2xx` / `4xx` / `5xx`（区间）；不给 status 时语义是" +
+      "「这个请求成功完成了」（至少有一条非失败的响应）；" +
+      "method 可选（如 POST），用于同名路径的 GET/POST 区分。" +
+      "匹配不到时会把它看到的最接近的几条请求列出来，据此一轮就能改对 url。" +
+      "本工具直接产生一条断言：命中为「成立」，未命中或状态不符为「不成立」。",
+    parameters: paramsOf(
+      {
+        url: {
+          type: "string",
+          description: "请求地址的一段（子串匹配、忽略大小写），如 /api/user/save",
+        },
+        status: {
+          type: "string",
+          description: "可选的状态码期望：200（精确）或 2xx / 4xx / 5xx（区间）",
+        },
+        method: { type: "string", description: "可选的 HTTP 方法，如 GET / POST；不给则不限制" },
+      },
+      ["url"],
+    ),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = (params as NetworkAssertParams) ?? {};
+      const url = typeof p.url === "string" ? p.url : "";
+      if (!url.trim()) {
+        // 与 wait_for 同一条规则：用法错误在**本地**报错，不消耗一次浏览器往返，
+        // 这次失败也不会被录进回放脚本（录制层只记成功的操作）。
+        throw new Error(
+          "assert_network 需要给出 url（要断言的那个请求地址的一段，如 /api/user/save）",
+        );
+      }
+      const status = typeof p.status === "string" && p.status.trim() ? p.status.trim() : undefined;
+      const method =
+        typeof p.method === "string" && p.method.trim() ? p.method.trim() : undefined;
+      return exec(
+        "assert_network",
+        { url, ...(status ? { status } : {}), ...(method ? { method } : {}) },
+        (s) => ops.assertNetwork(url, { status, method }, s),
+        signal,
+      );
+    },
+  };
+
   return [
     navigate,
     snapshot,
@@ -2261,9 +2842,12 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     download,
     hover,
     scroll,
+    press,
     wait,
     waitFor,
     assertText,
+    assertNoConsoleError,
+    assertNetwork,
   ];
 }
 
@@ -2278,6 +2862,17 @@ interface TargetParams {
 interface FillParams {
   target: string;
   value: string;
+  showPage?: boolean;
+}
+interface PressParams {
+  /** 键名（Enter / Escape / Tab / Ctrl+A…）。 */
+  key: string;
+  /** 可选：先聚焦到该元素再按键（@eN 引用或 CSS 选择器）。 */
+  target?: string;
+  /** 可选：逗号分隔的修饰键列表（Ctrl / Shift / Alt / Meta）。 */
+  modifiers?: string;
+  /** 可选：按住多少毫秒再松开。 */
+  holdMs?: number;
   showPage?: boolean;
 }
 interface SelectOptionParams {
@@ -2316,6 +2911,20 @@ interface ExpectParams {
   expectation: string;
   /** 反向断言：断言页面**不包含** `expectation` 这段文本（见 AssertTextOptions）。 */
   absent?: boolean;
+}
+interface ConsoleAssertParams {
+  /** 放行的已知噪音（子串，忽略大小写）；形状不认识时按「没有」处理。 */
+  ignore?: unknown;
+  /** 是否把 warning 级消息也算失败。 */
+  warnings?: boolean;
+}
+interface NetworkAssertParams {
+  /** 请求地址的一段（子串匹配）。 */
+  url?: string;
+  /** 状态码期望：`200` 或 `2xx`。 */
+  status?: string;
+  /** HTTP 方法（可选）。 */
+  method?: string;
 }
 
 /** 创建一个 bsk session；若已提供且仍在活跃列表中则复用，否则新建。 */

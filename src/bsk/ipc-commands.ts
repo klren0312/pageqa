@@ -17,6 +17,7 @@
  * 这条规则是整层安全性的地基——新增一个 bsk 参数不会让这里静默跑错，只会让快路径暂时失效。
  */
 
+import { t } from "../i18n.js";
 import { BskIpcRpcError, BskIpcTransportError } from "./ipc.js";
 
 /** 一次 IPC 快路径调用：怎么发、发完怎么渲染。 */
@@ -48,6 +49,12 @@ const VALUE_FLAGS = new Set([
   "settle",
   "await-promise",
   "return-by-value",
+  // press 专用：按键目标与修饰键。`--ref`/`--selector` 是「聚焦到哪个元素再按键」，
+  // 与位置参数里的 target 不是一回事（press 的位置参数是**键名**）。
+  "modifiers",
+  "ref",
+  "selector",
+  "hold-ms",
 ]);
 
 /** 布尔参数（不带值）。 */
@@ -136,6 +143,45 @@ export function parseDurationMs(raw: string): number | null {
   const n = Number(num);
   if (!Number.isFinite(n) || n < 0) return null;
   return n * factor;
+}
+
+/**
+ * CLI `parse_modifiers` 的同义实现：逗号分隔、大小写无关、保序去重。
+ *
+ * 认不出的修饰键返回 null（调用方退回 CLI），而不是丢掉它继续——CLI 会对同一个输入
+ * 报 `unknown modifier 'xxx'`，把它静默吞掉等于让一次写错的按键悄悄按成别的组合。
+ */
+function parseModifierList(input: string): string[] | null {
+  const out: string[] = [];
+  for (const raw of input.split(",")) {
+    const m = raw.trim().toLowerCase();
+    if (!m) continue;
+    let normalised: string;
+    switch (m) {
+      case "alt":
+      case "option":
+      case "opt":
+        normalised = "alt";
+        break;
+      case "ctrl":
+      case "control":
+        normalised = "ctrl";
+        break;
+      case "meta":
+      case "cmd":
+      case "command":
+      case "super":
+        normalised = "meta";
+        break;
+      case "shift":
+        normalised = "shift";
+        break;
+      default:
+        return null;
+    }
+    if (!out.includes(normalised)) out.push(normalised);
+  }
+  return out;
 }
 
 /** 数字渲染成 Rust `{}` 的样子（整数值不带 `.0`）；不是数字时给 `?`。 */
@@ -272,6 +318,66 @@ export function planIpcCall(args: string[]): IpcPlan | null {
         render: (result) => {
           const r = asRecord(result, "tool.fill");
           return `fill ok tab=${num(r.tab_id)} target=${usedTarget(r)} length=${num(r.value_length)}`;
+        },
+      };
+    }
+
+    case "press": {
+      if (typeof session !== "string" || !session) return null;
+      // 位置参数是**键名**（`Enter` / `Ctrl+A` / `Escape`），不是元素目标：元素目标走
+      // `--ref`/`--selector`（可选，用于先聚焦再按键）。两者混起来会按错键。
+      if (positionals.length !== 1) return null;
+      const key = positionals[0];
+      if (!key.trim()) return null;
+      const rawModifiers = flags.get("modifiers");
+      let modifiers: string[] | null = null;
+      if (typeof rawModifiers === "string" && rawModifiers.trim()) {
+        modifiers = parseModifierList(rawModifiers);
+        if (modifiers === null) return null;
+      }
+      const refFlag = flags.get("ref");
+      const selectorFlag = flags.get("selector");
+      // 协议侧 ref 与 selector 互斥（CLI 的 clap 也是），两个都给就退回 CLI 由它报错。
+      if (typeof refFlag === "string" && typeof selectorFlag === "string") return null;
+      const target: Record<string, unknown> =
+        typeof refFlag === "string"
+          ? { ref: refFlag }
+          : typeof selectorFlag === "string"
+            ? { selector: selectorFlag }
+            : {};
+      const params: Record<string, unknown> = {
+        session_id: session,
+        key,
+        ...(modifiers && modifiers.length > 0 ? { modifiers } : {}),
+        ...target,
+        ...tabId(flags),
+        ...timeoutMs(flags),
+      };
+      // `--hold-ms` 在 CLI 侧是裸 u32（不是 `30s` 那种时长语法），这里照抄：
+      // 非整数一律退回 CLI，别把它当毫秒解析器用。
+      const holdRaw = flags.get("hold-ms");
+      if (typeof holdRaw === "string") {
+        const ms = Number(holdRaw);
+        if (!Number.isInteger(ms) || ms < 0) return null;
+        params.hold_ms = ms;
+      }
+      return {
+        method: "tool.press",
+        params,
+        sessionKey,
+        mutating: true,
+        render: (result) => {
+          const r = asRecord(result, "tool.press");
+          if (typeof r.key !== "string" || typeof r.code !== "string") {
+            throw badShape("tool.press", "缺少 key/code");
+          }
+          // CLI 的 modifiers 渲染是 ` modifiers=[ctrl,shift]`（小写标签、逗号分隔）；
+          // 协议里就是这个形状，直接拼即可（见 bsk 的 modifier_label）。
+          const mods =
+            Array.isArray(r.modifiers) && r.modifiers.length > 0
+              ? ` modifiers=[${r.modifiers.map((m) => String(m)).join(",")}]`
+              : "";
+          return `press ok tab=${num(r.tab_id)} key=${r.key} code=${r.code}${mods}`;
         },
       };
     }
@@ -480,4 +586,71 @@ export function ipcTimeoutToCliError(method: string, detail: string): Error {
  */
 export function isProtocolDrift(err: BskIpcRpcError): boolean {
   return err.code === "unknown_method";
+}
+
+/**
+ * 把 dialog 摘要行包成要追加到工具结果末尾的文本块（没有就给空串）。
+ *
+ * 两条路径（IPC / CLI 子进程）都走这里，所以模型看到的形状与措辞是同一份。
+ * 前缀那句不是装饰：bsk 对原生对话框是**自动按默认策略处理**的（确认框点确定、
+ * 提示框点关闭），页面不会卡住——不说清楚，模型会把「弹了框但流程继续」误读成
+ * 「页面根本没弹框」。
+ */
+function dialogBlock(lines: string[]): string {
+  if (lines.length === 0) return "";
+  return `\n${t("bsk.dialog.notice")}\n${lines.join("\n")}`;
+}
+
+/**
+ * 交互结果里的原生对话框（`dialogs` 字段）→ 追加文本块。
+ *
+ * 为什么值得接：bsk 把 alert / confirm / prompt / beforeunload 的处置结果**随每次交互的
+ * 结果**带回（CDP 的 `javascriptDialogOpening` / `handleJavaScriptDialog`）。此前 pageqa
+ * 只取 human 模式的 stdout，而 dialogs 打在 stderr，于是「页面弹了确认框」在模型上下文
+ * 与报告里一个字都没有——用例里那句「确认弹框出现后点确定」既无法断言也无法排查。
+ *
+ * 文案与 bsk 的 `cli/dialogs.rs` 逐字一致（两条路径共用一个形状）。
+ */
+export function renderDialogs(dialogs: unknown): string {
+  if (!Array.isArray(dialogs) || dialogs.length === 0) return "";
+  const lines: string[] = [];
+  for (const item of dialogs) {
+    if (!item || typeof item !== "object") continue;
+    const d = item as Record<string, unknown>;
+    const type = typeof d.type === "string" ? d.type : "?";
+    const handled = typeof d.handled === "string" ? d.handled : "?";
+    const message = typeof d.message === "string" ? d.message : "";
+    lines.push(`dialog: type=${type} handled=${handled} message=${message}`);
+    if (typeof d.url === "string" && d.url) lines.push(`  url=${d.url}`);
+    if (typeof d.default_prompt === "string" && d.default_prompt) {
+      lines.push(`  default_prompt=${d.default_prompt}`);
+    }
+  }
+  return dialogBlock(lines);
+}
+
+/**
+ * 从 CLI 子进程的 **stderr** 里抠出对话框摘要 → 同一个文本块。
+ *
+ * 走 CLI 时对话框走的是 stderr（human 模式），stdout 里没有；而同一个流里还混着
+ * 截断告警之类的别的信息，所以只认 `dialog: ` 打头的行及其紧随的缩进续行
+ * （`  url=…` / `  default_prompt=…`）。
+ */
+export function extractDialogs(stderr: string): string {
+  if (!stderr) return "";
+  const lines: string[] = [];
+  let inDialog = false;
+  for (const line of stderr.split(/\r?\n/)) {
+    if (line.startsWith("dialog: ")) {
+      inDialog = true;
+      lines.push(line);
+      continue;
+    }
+    if (inDialog && /^\s+\S/.test(line)) {
+      lines.push(line);
+      continue;
+    }
+    inDialog = false;
+  }
+  return dialogBlock(lines);
 }

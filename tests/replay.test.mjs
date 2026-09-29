@@ -383,6 +383,45 @@ describe("Recorder 录制", () => {
     assert.equal(r.recorded.length, 0);
   });
 
+  test("press 录成一步：键名是主体，target 只在「先聚焦到谁」时出现", () => {
+    const r = new Recorder(vars);
+    r.noteText("第 1 步完成：已填入搜索词");
+    r.noteTool({ name: "press", params: { key: "Enter" }, ok: true, lastSnapshot: "" });
+    r.noteText("第 2 步完成：已按 Escape 关掉弹窗");
+    r.noteTool({
+      name: "press",
+      params: { key: "Escape", target: "@e1", modifiers: "Shift", holdMs: 800 },
+      ok: true,
+      lastSnapshot: SNAPSHOT_1,
+    });
+    const [plain, focused] = r.recorded;
+    // 不给 target：按在当前焦点上（通常是上一步 fill 过的输入框）
+    assert.deepEqual(plain, { kind: "press", step: 2, key: "Enter", locator: null });
+    // 给了 target：照常构造语义定位符（回放时在新快照里重新解析），
+    // 因为「先聚焦到谁」和别的动作一样会随页面改版而变。
+    assert.deepEqual(focused, {
+      kind: "press",
+      step: 3,
+      key: "Escape",
+      target: "@e1",
+      locator: {
+        role: "link",
+        name: "Learn more",
+        nth: 0,
+        target: "@e1",
+        path: ['RootWebArea "Example Domain"'],
+      },
+      modifiers: "Shift",
+      holdMs: 800,
+    });
+  });
+
+  test("press 没有键名（不该发生）不进脚本", () => {
+    const r = new Recorder(vars);
+    r.noteTool({ name: "press", params: { key: "  " }, ok: true, lastSnapshot: "" });
+    assert.equal(r.recorded.length, 0);
+  });
+
   test("靠 Jev 语义复核才成立的断言带 semantic 标记", () => {
     const r = new Recorder(vars);
     r.noteTool({
@@ -480,6 +519,10 @@ describe("回放失败语义（executeReplaySteps）", () => {
         calls.push(["scroll", target]);
         return "已滚动";
       },
+      press: (key, options) => {
+        calls.push(["press", key, options ?? {}]);
+        return `已按键 ${key}`;
+      },
       wait: (ms) => {
         calls.push(["wait", ms]);
         return `已等待 ${ms}ms`;
@@ -508,6 +551,27 @@ describe("回放失败语义（executeReplaySteps）", () => {
           evidence: decision.evidence,
         };
         return `断言：${decision.pass ? "成立" : "不成立"}。${decision.evidence}`;
+      },
+      assertNoConsoleError: (options = {}) => {
+        calls.push(["assert_no_console_error", options]);
+        const offenders = handlers.consoleOffenders ?? [];
+        const pass = offenders.length === 0;
+        assertOutcome = {
+          expectation: "页面没有 JavaScript 报错",
+          pass,
+          evidence: pass ? "没有报错条目" : `发现 ${offenders.length} 条报错`,
+        };
+        return `断言：${pass ? "成立" : "不成立"}`;
+      },
+      assertNetwork: (url, options = {}) => {
+        calls.push(["assert_network", url, options]);
+        const pass = handlers.networkPass !== false;
+        assertOutcome = {
+          expectation: `请求 ${url} 返回 200`,
+          pass,
+          evidence: pass ? "最近一条：GET 200" : "没有匹配的请求",
+        };
+        return `断言：${pass ? "成立" : "不成立"}`;
       },
       lastAssert: () => assertOutcome,
       lastAssertSemantic: () => false,
@@ -705,6 +769,89 @@ describe("回放失败语义（executeReplaySteps）", () => {
     const ops = makeOps();
     await run(ops, [{ kind: "wait_for", step: 1, selector: ".row" }]);
     assert.deepEqual(ops.calls, [["wait_for", { selector: ".row" }, undefined]]);
+  });
+
+  test("press 步骤：按的是录下的键名，没给 target 就按当前焦点", async () => {
+    const ops = makeOps();
+    await run(ops, [{ kind: "press", step: 1, key: "Enter", locator: null }]);
+    assert.deepEqual(ops.calls, [["press", "Enter", {}]]);
+  });
+
+  test("press 步骤：修饰键与长按时长按原样回放", async () => {
+    const ops = makeOps();
+    await run(ops, [
+      { kind: "press", step: 1, key: "a", modifiers: "Ctrl", holdMs: 800, locator: null },
+    ]);
+    assert.deepEqual(ops.calls, [["press", "a", { modifiers: "Ctrl", holdMs: 800 }]]);
+  });
+
+  test("press 步骤：target 是「先聚焦到谁」，经定位符解析后传给工具", async () => {
+    const ops = makeOps({ snapshot: '  @e7 textbox "搜索关键词"' });
+    await run(ops, [
+      {
+        kind: "press",
+        step: 1,
+        key: "Enter",
+        target: "@e7",
+        locator: { role: "textbox", name: "搜索关键词", nth: 0, target: "@e7" },
+      },
+    ]);
+    assert.deepEqual(ops.calls.at(-1), ["press", "Enter", { target: "@e7" }]);
+  });
+
+  test("assert_no_console_error 步骤：回放重新读 console，产出断言而不是复用录制结果", async () => {
+    const ops = makeOps();
+    const out = await run(ops, [{ kind: "assert_no_console_error", step: 1 }]);
+    assert.deepEqual(ops.calls, [["assert_no_console_error", { warnings: false }]]);
+    assert.equal(out.assertions.length, 1);
+    assert.equal(out.assertions[0].verdict, "pass");
+  });
+
+  test("assert_no_console_error 步骤：有报错条目 → 断言 FAIL，场景结论也是 fail", async () => {
+    const ops = makeOps({ consoleOffenders: [{ text: "TypeError: boom" }] });
+    const out = await run(ops, [{ kind: "assert_no_console_error", step: 1 }]);
+    assert.equal(out.assertions[0].verdict, "fail");
+    assert.equal(replayScenarioStatus(out), "fail");
+  });
+
+  test("assert_no_console_error 步骤：ignore 与 warnings 原样透传", async () => {
+    const ops = makeOps();
+    await run(ops, [
+      { kind: "assert_no_console_error", step: 1, ignore: ["favicon"], warnings: true },
+    ]);
+    assert.deepEqual(ops.calls.at(-1), [
+      "assert_no_console_error",
+      { ignore: ["favicon"], warnings: true },
+    ]);
+  });
+
+  test("assert_network 步骤：url 走占位符展开，status/method 一并透传", async () => {
+    const ops = makeOps();
+    await run(
+      ops,
+      [
+        {
+          kind: "assert_network",
+          step: 1,
+          url: "/api/order/${timestamp}",
+          status: "200",
+          method: "POST",
+        },
+      ],
+      { expand: (s) => s.replace("${timestamp}", "20260929") },
+    );
+    assert.deepEqual(ops.calls.at(-1), [
+      "assert_network",
+      "/api/order/20260929",
+      { status: "200", method: "POST" },
+    ]);
+  });
+
+  test("assert_network 步骤：没命中 → 断言 FAIL（不得假通过）", async () => {
+    const ops = makeOps({ networkPass: false });
+    const out = await run(ops, [{ kind: "assert_network", step: 1, url: "/api/x" }]);
+    assert.equal(out.assertions[0].verdict, "fail");
+    assert.equal(replayScenarioStatus(out), "fail");
   });
 
   test("--settle-waits 只改 wait 步骤，其它步骤的执行路径不变", async () => {
@@ -1028,6 +1175,81 @@ describe("回放脚本文件", () => {
     assert.equal(loaded.scenarios[0].steps[0].timeoutMs, 5000);
   });
 
+  test("press 步骤缺键名当场拒绝（空按键没有意义，不该在回放中途静默按空）", () => {
+    const base = {
+      format: REPLAY_FORMAT,
+      version: REPLAY_VERSION,
+    };
+    for (const [i, step] of [
+      { kind: "press", step: null, locator: null },
+      { kind: "press", step: null, key: "   ", locator: null },
+    ].entries()) {
+      const p = join(dir, `bad-press-${i}.json`);
+      writeFileSync(
+        p,
+        JSON.stringify({
+          ...base,
+          scenarios: [{ name: "A1", caseSteps: [], steps: [step] }],
+        }),
+      );
+      assert.throws(() => loadReplayScript(p), /缺少键名/);
+    }
+    // 有键名则正常加载，且不需要升脚本版本号（与 wait_for 同一条规则）
+    const ok = join(dir, "ok-press.json");
+    writeFileSync(
+      ok,
+      JSON.stringify({
+        ...base,
+        scenarios: [
+          {
+            name: "A1",
+            caseSteps: [],
+            steps: [{ kind: "press", step: 1, key: "Enter", locator: null }],
+          },
+        ],
+      }),
+    );
+    const loaded = loadReplayScript(ok);
+    assert.equal(loaded.scenarios[0].steps[0].key, "Enter");
+    assert.equal(loaded.version, REPLAY_VERSION);
+  });
+
+  test("assert_network 步骤缺 url 当场拒绝（空 url 会匹配任何请求，断言将永远通过）", () => {
+    const base = { format: REPLAY_FORMAT, version: REPLAY_VERSION };
+    for (const [i, step] of [
+      { kind: "assert_network", step: null },
+      { kind: "assert_network", step: null, url: "   " },
+    ].entries()) {
+      const p = join(dir, `bad-network-${i}.json`);
+      writeFileSync(
+        p,
+        JSON.stringify({
+          ...base,
+          scenarios: [{ name: "A1", caseSteps: [], steps: [step] }],
+        }),
+      );
+      assert.throws(() => loadReplayScript(p), /缺少 url/);
+    }
+    // 有 url 则正常加载，且不需要升脚本版本号（与 wait_for / press 同一条规则）
+    const ok = join(dir, "ok-network.json");
+    writeFileSync(
+      ok,
+      JSON.stringify({
+        ...base,
+        scenarios: [
+          {
+            name: "A1",
+            caseSteps: [],
+            steps: [{ kind: "assert_network", step: 1, url: "/api/x", status: "2xx" }],
+          },
+        ],
+      }),
+    );
+    const loaded = loadReplayScript(ok);
+    assert.equal(loaded.scenarios[0].steps[0].url, "/api/x");
+    assert.equal(loaded.version, REPLAY_VERSION);
+  });
+
   test("一处写法里的多个占位符取值都能还原（不止第一个）", () => {
     const p = join(dir, "multi-placeholder.json");
     writeFileSync(
@@ -1106,9 +1328,12 @@ describe("回放脚本文件", () => {
       "download",
       "hover",
       "scroll",
+      "press",
       "wait",
       "wait_for",
       "assert_text",
+      "assert_no_console_error",
+      "assert_network",
     ];
     const steps = kinds.map((kind) => {
       switch (kind) {
@@ -1118,6 +1343,12 @@ describe("回放脚本文件", () => {
         case "hover":
         case "scroll":
           return { kind, step: null, target: "@e1", locator: null };
+        case "press":
+          return { kind, step: null, key: "Enter", locator: null };
+        case "assert_no_console_error":
+          return { kind, step: null, ignore: ["favicon"], warnings: true };
+        case "assert_network":
+          return { kind, step: null, url: "/api/x", status: "2xx", method: "POST" };
         case "fill":
           return { kind, step: null, target: "@e1", locator: null, value: "x" };
         case "select_option":

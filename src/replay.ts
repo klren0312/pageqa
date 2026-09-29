@@ -76,9 +76,12 @@ export type ReplayStepKind =
   | "download"
   | "hover"
   | "scroll"
+  | "press"
   | "wait"
   | "wait_for"
-  | "assert_text";
+  | "assert_text"
+  | "assert_no_console_error"
+  | "assert_network";
 
 /** 需要定位元素的步骤（click/hover/scroll 共用）。 */
 export interface ReplayTargetStep {
@@ -150,6 +153,29 @@ export interface ReplayUploadStep {
  * 与 upload 同构（都由工具自己点触发元素），差别在于它**同时是断言**：
  * 捕获不到就是 FAIL，不像普通动作那样可以跳过。
  */
+/**
+ * 按键步骤：真实键盘按键（可选先聚焦到某元素）。
+ *
+ * 与其它动作的差别是它的「目标」是**键名**而不是元素：`target`/`locator` 只在录制时
+ * 明确指定过聚焦元素时才出现，多数时候（输入框里回车提交）按的是当前焦点。
+ *
+ * 为什么记成一步而不是展开成 fill+click：`Enter` 提交依赖**焦点恰好在那个输入框上**，
+ * 而焦点是上一步 fill 留下的状态——回放时按同一个键名重走，语义与录制时一致。
+ */
+export interface ReplayPressStep {
+  kind: "press";
+  step: number | null;
+  /** 键名（Enter / Escape / Tab / Ctrl+A…）。 */
+  key: string;
+  /** 录制时指定的聚焦元素；未指定则按在当前焦点上。 */
+  target?: string;
+  locator: Locator | null;
+  /** 修饰键（原样保留录制时的写法，如 "Ctrl,Shift"）；未给则不附加修饰键。 */
+  modifiers?: string;
+  /** 按住多少毫秒再松开；未给则不保持。 */
+  holdMs?: number;
+}
+
 export interface ReplayDownloadStep {
   kind: "download";
   step: number | null;
@@ -214,17 +240,51 @@ export interface ReplayAssertStep {
   semantic?: boolean;
 }
 
+/**
+ * 「页面没有 JS 报错」断言：回放时**重新读一遍 console 缓冲**再判。
+ *
+ * 录的是判定条件（看哪一级、放行哪些噪音），不是这一次的结果——把「这次恰好没报错」
+ * 冻结成常数，等于让这条断言在回放里永远通过。
+ */
+export interface ReplayConsoleAssertStep {
+  kind: "assert_no_console_error";
+  step: number | null;
+  /** 放行的已知噪音（子串，忽略大小写）。 */
+  ignore?: string[];
+  /** 是否把 warning 级消息也算失败。 */
+  warnings?: boolean;
+}
+
+/**
+ * 「某个请求发生了，且状态符合期望」断言：回放时重新读网络缓冲再判。
+ *
+ * 与 `assert_text` 同构（都是「读当下的状态 + 判定」），只是读的不是页面文字。
+ */
+export interface ReplayNetworkAssertStep {
+  kind: "assert_network";
+  step: number | null;
+  /** 请求地址的一段（子串匹配、忽略大小写）。 */
+  url: string;
+  /** 状态码期望：`200` 或 `2xx`。 */
+  status?: string;
+  /** HTTP 方法（已统一大写）；未给则不限制。 */
+  method?: string;
+}
+
 export type ReplayStep =
   | ReplayTargetStep
   | ReplayFillStep
   | ReplaySelectOptionStep
   | ReplayPickDateStep
   | ReplayUploadStep
+  | ReplayPressStep
   | ReplayDownloadStep
   | ReplayNavigateStep
   | ReplayWaitStep
   | ReplayWaitForStep
-  | ReplayAssertStep;
+  | ReplayAssertStep
+  | ReplayConsoleAssertStep
+  | ReplayNetworkAssertStep;
 
 /** 一个场景的录制结果（套件模式下每个 `## 场景` 一条）。 */
 export interface ScenarioRecording {
@@ -375,6 +435,20 @@ export function loadReplayScript(path: string): ReplayScript {
           throw new Error(t("replay.err.badWaitFor", { path }));
         }
       }
+      // 按键步骤的键名是这一步的全部内容：空键名等于「按了一个不知道什么的键」，
+      // 与其在回放中途静默按空，不如在加载时就说清楚（与 badWaitFor 同一条理由）。
+      if (st?.kind === "press") {
+        if (typeof st.key !== "string" || !st.key.trim()) {
+          throw new Error(t("replay.err.pressNoKey", { path }));
+        }
+      }
+      // 网络断言的 url 是这一步**全部**的判定依据：空的 url 会匹配上任何请求，
+      // 一条本该严格的断言会变成永远通过——比报错危险得多，加载时就拦下。
+      if (st?.kind === "assert_network") {
+        if (typeof st.url !== "string" || !st.url.trim()) {
+          throw new Error(t("replay.err.networkNoUrl", { path }));
+        }
+      }
     }
   }
   // 旧版本生成的脚本可能在定位符/用例原文里残留录制当次写死的取值；加载时就地还原，
@@ -397,9 +471,12 @@ const REPLAY_STEP_KINDS: ReadonlySet<string> = new Set<ReplayStepKind>([
   "download",
   "hover",
   "scroll",
+  "press",
   "wait",
   "wait_for",
   "assert_text",
+  "assert_no_console_error",
+  "assert_network",
 ]);
 
 /** 形如 `${name}` 或 `${name:fmt}` 的运行时变量占位符。 */
@@ -525,9 +602,15 @@ export function normalizePlaceholderLiterals(script: ReplayScript): string[] {
           // 还原成占位符，回放时才能重新展开新时间戳（与 locator.name 同一条规则）。
           if (st.text) st.text = apply(st.text);
           break;
+        case "assert_network":
+          // 断言的目标地址里也可能带动态片段（如 /api/order/202609210905）：
+          // 还原成占位符，回放时重新展开，否则下一次运行里那条路径根本不存在。
+          st.url = apply(st.url);
+          break;
         case "click":
         case "hover":
         case "scroll":
+        case "press":
         case "upload":
         case "download":
           applyLocator(st);
@@ -842,6 +925,32 @@ async function resolveStepTarget(
   throw new LocatorMissError(t("replay.locate.missRef", { target }));
 }
 
+/**
+ * 操作层的结构化断言结果 → 回放的断言记录。
+ *
+ * 取不到结论时按「不成立」并说明原因：宁可报一条看不懂的 FAIL，也不能因为「结果没拿到」
+ * 静默算通过——假通过比报错危险得多，断言型工具尤其如此。
+ */
+function assertionFromOps(
+  ops: BskOps,
+  text: string,
+  fallbackExpectation: string,
+): AssertionResult {
+  const outcome = ops.lastAssert();
+  if (!outcome) {
+    return {
+      expectation: fallbackExpectation,
+      verdict: "fail",
+      evidence: t("replay.assert.unparsed", { out: text }),
+    };
+  }
+  return {
+    expectation: outcome.expectation,
+    verdict: outcome.pass ? "pass" : "fail",
+    evidence: outcome.evidence,
+  };
+}
+
 /** 执行单个回放步骤；断言步骤额外返回解析好的断言结果。 */
 async function runStep(
   ops: BskOps,
@@ -871,6 +980,22 @@ async function runStep(
           await resolveStepTarget(ops, step.target, step.locator, expand, locate),
         ),
       };
+    case "press": {
+      // `target` 的语义是「先聚焦到谁」而不是「按键的目标」：没给就按在当前焦点上
+      // （通常是上一步 fill 过的那个输入框，这正是「输入后回车搜索」的常规写法）。
+      const target = step.target
+        ? await resolveStepTarget(ops, step.target, step.locator, expand, locate)
+        : undefined;
+      return {
+        text: await ops.press(expand(step.key), {
+          ...(target ? { target } : {}),
+          ...(step.modifiers ? { modifiers: step.modifiers } : {}),
+          ...(typeof step.holdMs === "number" && step.holdMs > 0
+            ? { holdMs: step.holdMs }
+            : {}),
+        }),
+      };
+    }
     case "fill":
       return {
         text: await ops.fill(
@@ -965,6 +1090,30 @@ async function runStep(
           step.timeoutMs,
         ),
       };
+    case "assert_no_console_error": {
+      // 与录制时同一条路径：重新读一遍当下的 console 缓冲再判，不把这次的结果写死。
+      const out = await ops.assertNoConsoleError({
+        ...(step.ignore ? { ignore: step.ignore } : {}),
+        warnings: step.warnings === true,
+      });
+      // 兜底期望只在「操作层没给出结构化结果」时用得上（几乎不会发生），
+      // 用与工具层同一套 i18n key 组装，不新增一套措辞。
+      const fallback = t("bsk.console.expectation", {
+        scope: t(step.warnings ? "bsk.console.scopeWarnings" : "bsk.console.scopeErrors"),
+      });
+      return { text: out, assertion: assertionFromOps(ops, out, fallback) };
+    }
+    case "assert_network": {
+      const url = expand(step.url);
+      const out = await ops.assertNetwork(url, {
+        ...(step.status ? { status: expand(step.status) } : {}),
+        ...(step.method ? { method: step.method } : {}),
+      });
+      const fallback = step.status
+        ? t("bsk.network.expectationStatus", { url, status: expand(step.status) })
+        : t("bsk.network.expectationAny", { url });
+      return { text: out, assertion: assertionFromOps(ops, out, fallback) };
+    }
     case "assert_text": {
       const expectation = expand(step.expectation);
       // 方向按脚本原样回放（缺省 = 正向），不在这里重新判断用例语义：
