@@ -1,10 +1,10 @@
 {
   "format": "pageqa-replay",
   "version": 1,
-  "recordedAt": "2026-09-28T08:38:53.489Z",
+  "recordedAt": "2026-09-29T07:06:03.635Z",
   "source": {
-    "path": "examples/smoke.md",
-    "hash": "0ecb1b58de665e97"
+    "path": ".\\examples/smoke.md",
+    "hash": "4eef45f9c15430f0"
   },
   "scenarios": [
     {
@@ -19,9 +19,19 @@
           "url": "https://example.com"
         },
         {
+          "kind": "wait_for",
+          "step": 1,
+          "text": "Example Domain"
+        },
+        {
+          "kind": "wait_for",
+          "step": 1,
+          "text": "permission"
+        },
+        {
           "kind": "assert_text",
           "step": 1,
-          "expectation": "Example Domain"
+          "expectation": "Example"
         }
       ]
     },
@@ -35,6 +45,11 @@
           "kind": "navigate",
           "step": 1,
           "url": "https://example.com"
+        },
+        {
+          "kind": "wait_for",
+          "step": 1,
+          "text": "Learn more"
         },
         {
           "kind": "click",
@@ -51,11 +66,6 @@
           }
         },
         {
-          "kind": "wait",
-          "step": 1,
-          "ms": 3000
-        },
-        {
           "kind": "assert_text",
           "step": 1,
           "expectation": "IANA"
@@ -63,9 +73,9 @@
       ]
     },
     {
-      "name": "A3 失败场景（断言不存在文本）",
+      "name": "A3 判断不存在文本",
       "caseSteps": [
-        "打开 https://example.com 并断言页面包含 'THIS_TEXT_SHOULD_NOT_EXIST_XYZ'"
+        "打开 https://example.com 并断言页面不包含 'THIS_TEXT_SHOULD_NOT_EXIST_XYZ'"
       ],
       "steps": [
         {
@@ -74,9 +84,15 @@
           "url": "https://example.com"
         },
         {
+          "kind": "wait_for",
+          "step": 1,
+          "text": "Example Domain"
+        },
+        {
           "kind": "assert_text",
           "step": 1,
-          "expectation": "THIS_TEXT_SHOULD_NOT_EXIST_XYZ"
+          "expectation": "THIS_TEXT_SHOULD_NOT_EXIST_XYZ",
+          "absent": true
         }
       ]
     }

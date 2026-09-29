@@ -219,7 +219,7 @@ export async function runSuiteInChildren(
     number,
     { reason: ScenarioFailureReason; detail: string }
   >();
-  const childScripts: ReplayScript[] = [];
+  const childScripts = new Map<number, ReplayScript>();
   /**
    * 模型/环境级故障的判定：它不只影响一个场景，而是「继续派发没有意义」。
    * 记下来、停止派发后续场景，最后在「一条都没跑成」时用它走既有的干净报错路径。
@@ -289,7 +289,7 @@ export async function runSuiteInChildren(
 
       if (outcome.report) {
         reports.set(i, outcome.report);
-        if (outcome.script) childScripts.push(outcome.script);
+        if (outcome.script) childScripts.set(i, outcome.script);
         info(
           t("log.suiteScenarioEnd", {
             i: i + 1,
@@ -377,6 +377,7 @@ export async function runSuiteInChildren(
     const summary = summarizeSuite(members);
     summary.durationMs = Date.now() - startedAt;
     if (opts.reportedScriptPath) summary.script = opts.reportedScriptPath;
+    // 键是场景序号：合并顺序因此恒等于用例原文顺序，与谁先跑完无关（见 mergeScripts）。
     const script = opts.wantScript ? mergeScripts(childScripts) : null;
 
     return {
@@ -967,19 +968,30 @@ function recordingsFromScript(script: ReplayScript): ScenarioRecording[] {
 }
 
 /**
- * 把各子进程写出的临时脚本合并成一份。
+ * 把各子进程写出的临时脚本合并成一份（键 = 场景序号，从 0 起）。
+ *
+ * 顺序按**场景序号**排，不按交卷先后：并行跑时先结束的场景先把脚本交上来，
+ * 按到达顺序合并就等于把「创建 → 编辑 → 删除」演成乱序回放
+ * （实测一份两场景脚本里 S2 排在 S1 前面）。
  *
  * 一个源用例 = 一份脚本是不变量（ADR-0001）：脚本内部本来就有 `scenarios[]`，
  * 拆成「一个场景一份」会让 `--replay <整份用例>` 失去对应文件。
- * `source` 取第一份即可——每个子进程读的是同一份源用例，hash 必然一致。
+ * `source` 取序号最小的一份即可——每个子进程读的是同一份源用例，hash 必然一致。
+ *
+ * 导出是为了让单测能把「合并顺序 = 用例原文顺序」这条契约钉死，不需要真起浏览器。
  */
-function mergeScripts(scripts: ReplayScript[]): ReplayScript | null {
-  if (scripts.length === 0) return null;
+export function mergeScripts(
+  scripts: Map<number, ReplayScript>,
+): ReplayScript | null {
+  const ordered = [...scripts.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, script]) => script);
+  if (ordered.length === 0) return null;
   return {
     format: REPLAY_FORMAT,
     version: REPLAY_VERSION,
     recordedAt: new Date().toISOString(),
-    source: scripts[0].source,
-    scenarios: scripts.flatMap((s) => s.scenarios),
+    source: ordered[0].source,
+    scenarios: ordered.flatMap((s) => s.scenarios),
   };
 }

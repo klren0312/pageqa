@@ -578,6 +578,10 @@ const catalogs: Record<Locale, Catalog> = {
     "report.assertIncompleteEvidence1":
       "解析到的断言少于用例声明的数量：可能某条「断言」仅被 snapshot 肉眼确认、未真正调用 assert_text/download 工具，导致该断言未被工具记录（步骤本身可能已跑完）",
     "report.assertIncompleteEvidence2": "最后进展：{note}",
+    "report.assertNotRun":
+      "断言由工具执行（用例声明 {expected} 条，工具记录 0 条）",
+    "report.assertNotRunEvidence1":
+      "这次运行没有任何 assert_text/download 的结构化结果：正文里写的「成立」不算执行过（模型可能把工具调用写成了文本伪代码，浏览器其实一步没动）",
     "report.stepsIncomplete": "全部步骤执行完成（{done}/{total}）",
     "report.stepsIncompleteEvidence1": "agent 自报的步骤完成度不足",
     "report.stepsIncompleteEvidence2": "最后进展：{note}",
@@ -1471,6 +1475,10 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "report.assertIncompleteEvidence1":
       "fewer assertions recorded than declared in the case: some 'assert' step may have only been visually confirmed via snapshot without an actual assert_text/download tool call, so it was not recorded (the steps themselves may have finished)",
     "report.assertIncompleteEvidence2": "last progress: {note}",
+    "report.assertNotRun":
+      "assertions executed through tools ({expected} declared, 0 recorded)",
+    "report.assertNotRunEvidence1":
+      "this run produced no assert_text/download structured result: 'holds' written in the answer text is not execution (the model may have emitted tool calls as plain text while the browser never moved)",
     "report.stepsIncomplete": "all steps executed completely ({done}/{total})",
     "report.stepsIncompleteEvidence1":
       "agent self-reported step completeness is insufficient",

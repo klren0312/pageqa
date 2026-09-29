@@ -222,6 +222,9 @@ export class Recorder {
           step,
           expectation,
           ...(expectation !== raw ? { recordedExpectation: raw } : {}),
+          // 反向断言（断言页面不包含）必须原样录进脚本：回放若按正向的字符串匹配做，
+          // 一条本该通过的断言会必然失败——方向丢了，脚本就跑错了意思。
+          ...(p["absent"] === true ? { absent: true } : {}),
           // 靠 Jev 语义复核才成立的断言，回放的字符串匹配必然不成立，
           // 标记出来供回放给出提示（字面命中的断言则无需标记）。
           ...(event.semantic ? { semantic: true } : {}),

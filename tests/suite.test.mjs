@@ -13,6 +13,7 @@ import {
   isConcurrencySessionConflict,
   mapWithConcurrency,
   MAX_CONCURRENCY,
+  mergeScripts,
   parseUsageLine,
   resolveCliEntry,
   runScenarioChild,
@@ -530,6 +531,53 @@ describe("并发调度（ADR-0013 决策三）", () => {
 
   test("上限常量就是 8（超过由 CLI 报错，不静默截断）", () => {
     assert.equal(MAX_CONCURRENCY, 8);
+  });
+});
+
+// 合并脚本的顺序：并行时**谁先跑完谁先交脚本**，若按交卷顺序合并，
+// `--replay` 就会把「创建 → 编辑 → 删除」演成乱序（实测 S2 排在 S1 之前）。
+describe("子进程脚本合并顺序", () => {
+  const childScript = (name) => ({
+    format: "pageqa-replay",
+    version: 1,
+    recordedAt: "2026-09-29T00:00:00.000Z",
+    source: { path: "case.md", hash: "abc" },
+    scenarios: [
+      {
+        name,
+        caseSteps: ["打开页面"],
+        steps: [{ kind: "navigate", step: 1, url: "https://example.com" }],
+      },
+    ],
+  });
+
+  test("按场景序号排，不按交卷先后", () => {
+    // Map 的插入顺序故意是「后一个场景先完成」
+    const merged = mergeScripts(
+      new Map([
+        [1, childScript("S2 删除")],
+        [0, childScript("S1 创建")],
+      ]),
+    );
+    assert.deepEqual(
+      merged.scenarios.map((s) => s.name),
+      ["S1 创建", "S2 删除"],
+    );
+    assert.equal(merged.source.path, "case.md", "source 取序号最小那份");
+  });
+
+  test("中间场景缺失（子进程没交回脚本）时不塞空位", () => {
+    const merged = mergeScripts(
+      new Map([
+        [2, childScript("S3")],
+        [0, childScript("S1")],
+      ]),
+    );
+    assert.deepEqual(merged.scenarios.map((s) => s.name), ["S1", "S3"]);
+  });
+
+  test("一条脚本都没交回 → null（与「不产出脚本」的历史行为一致）", () => {
+    assert.equal(mergeScripts(new Map()), null);
   });
 });
 

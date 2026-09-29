@@ -196,6 +196,8 @@ export function buildReport(
     toolAssertions && toolAssertions.length > 0
       ? toolAssertions.map((a) => ({ ...a }))
       : parseAssertions(transcript);
+  /** 断言结果里有没有「工具落过的结构化结果」——决定条数能不能当作执行过的证据。 */
+  const toolBacked = (toolAssertions?.length ?? 0) > 0;
   const { steps } = numberSteps(input);
   const trace = extractTrace(transcript);
   const lastNote = lastStepNote(trace);
@@ -216,7 +218,7 @@ export function buildReport(
   // 中止时它们必然不成立——塞进来就等于把「我不想等了」记成「这条用例挂了」，
   // 让退出码与报告一起说谎（ADR-0002 决策五）。
   if (opts.cancelled) {
-    const progress = parseProgress(transcript);
+    const progress = alignProgress(parseProgress(transcript), steps.length);
     return {
       status: "cancelled",
       cancelReason: progress
@@ -236,16 +238,26 @@ export function buildReport(
   // 完整性校验：用例里写了 N 条断言，就应当看到 N 条结果；
   // 少了解析结果说明 agent 只跑了其中一部分（长流程最容易半途结束）。
   const expected = countAssertions(input);
-  if (expected > 0 && assertions.length < expected) {
+  // agent 这一侧**永远会传** `toolAssertions`（一条没跑就是空数组），没传的是旧调用方与
+  // 纯文本回退。所以「传了但为空」是一个有意义的信号：这次一条断言工具都没执行。
+  // 不拦住就会被文本凑数——实测模型把 `assert_text(...)` 写进正文伪代码（零工具调用），
+  // 结论文本里的「成立」刚好补齐了条数，于是报告给出 PASS（用例其实一步没跑）。
+  const notRunAtAll =
+    toolAssertions !== undefined && toolAssertions.length === 0 && expected > 0;
+  if (expected > 0 && (assertions.length < expected || notRunAtAll)) {
     status = "fail";
     assertions.push({
-      expectation: t("report.assertIncomplete", {
-        got: assertions.length,
-        expected,
-      }),
+      expectation: notRunAtAll
+        ? t("report.assertNotRun", { expected })
+        : t("report.assertIncomplete", {
+            got: assertions.length,
+            expected,
+          }),
       verdict: "fail",
       evidence: [
-        t("report.assertIncompleteEvidence1"),
+        notRunAtAll
+          ? t("report.assertNotRunEvidence1")
+          : t("report.assertIncompleteEvidence1"),
         lastNote ? t("report.assertIncompleteEvidence2", { note: lastNote }) : null,
         tailTextOf(trace, 3),
       ]
@@ -255,7 +267,7 @@ export function buildReport(
   }
 
   // agent 自报的步骤进度未跑满，同样判失败；并指出「下一步该做哪一步」，便于据此改用例。
-  const progress = parseProgress(transcript);
+  const progress = alignProgress(parseProgress(transcript), steps.length);
   if (progress && progress.done < progress.total) {
     status = "fail";
     const nextStep =
@@ -400,6 +412,24 @@ export function parseProgress(
   if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0)
     return null;
   return { done, total };
+}
+
+/**
+ * 把 agent 自报的步骤总数夹到用例的真实步骤数。
+ * 模型会照抄提示词里的示例总数：只有一步的用例自报「步骤完成：1/7」。拿 7 当真实总数，
+ * 续跑循环就会追着要根本不存在的第 2~7 步（模型只能反问或罢工），报告也会误判「没跑满」。
+ *
+ * 只往下夹，不往上抬：对齐后 `done >= total` 就是「自报跑满」，判定沿用 agent 的说法。
+ * 反过来若把总数抬到用例条数（1/2 的用例里模型报 1/9 就改判成 1/2 之外更严的口径），
+ * 等于凭行数制造出一条 agent 并未承认没做完的失败。
+ */
+export function alignProgress(
+  progress: { done: number; total: number } | null,
+  caseSteps: number,
+): { done: number; total: number } | null {
+  if (!progress || caseSteps <= 0) return progress;
+  const total = Math.min(progress.total, caseSteps);
+  return { done: Math.min(progress.done, total), total };
 }
 
 export function parseAssertions(text: string): AssertionResult[] {
