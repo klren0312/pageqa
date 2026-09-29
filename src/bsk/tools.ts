@@ -682,6 +682,35 @@ export interface BskOps {
     options?: { fullPage?: boolean; target?: string; out?: string },
     signal?: AbortSignal,
   ): Promise<string>;
+  /**
+   * 派发一次**真实滚轮事件**。
+   *
+   * 和 `scroll(target)` 不是一回事：那个是 `scroll-to`（把元素滚进视口，**不产生滚动事件**），
+   * 而这个走 CDP 的 wheel 输入——页面的 `scroll` 监听、无限加载的触底回调、
+   * 横向滚动容器认的都是它。
+   */
+  wheel(
+    options?: { target?: string; deltaX?: number; deltaY?: number; modifiers?: string },
+    signal?: AbortSignal,
+  ): Promise<string>;
+  /**
+   * 让元素获得 / 失去焦点。
+   *
+   * 表单校验常挂在 blur 上（值填完了但错误提示不出来，就是还没触发失焦），而「点一下别处」
+   * 会顺带触发那个元素的点击副作用；想干净地只改焦点就用这两个。
+   */
+  focus(target: string, signal?: AbortSignal): Promise<string>;
+  blur(target: string, signal?: AbortSignal): Promise<string>;
+  /**
+   * 取原始 DOM HTML（可选只取某个 `@eN` 子树）。
+   *
+   * 补的是 snapshot 的盲区：快照是 aria 树 + 可见文本，看不到**属性**
+   * （class / data-* / value / href / disabled），长文本还会被截断。
+   */
+  getHtml(
+    options?: { target?: string; maxBytes?: number; out?: string },
+    signal?: AbortSignal,
+  ): Promise<string>;
   wait(ms: number, signal?: AbortSignal): Promise<string>;
   /**
    * 等页面稳定下来：没有正在播的动画、且 DOM 已经安静一小会儿；已经是稳定状态时立刻返回。
@@ -915,6 +944,42 @@ interface BskScreenshotJson {
   capture_unavailable?: string;
 }
 
+/** `bsk get-html --json` 回传的字段（用到哪几个就声明哪几个）。 */
+interface BskGetHtmlJson {
+  tab_id?: number;
+  html?: string;
+  /** 未截断时的原始字节数（截断后它仍是原始长度）。 */
+  byte_size?: number;
+  truncated?: boolean;
+}
+
+/**
+ * `get_html` 默认给模型多少 HTML：约 4–5K token 的体量，够看清属性，又不至于挤掉上下文。
+ */
+const HTML_BUDGET_DEFAULT = 16 * 1024;
+
+/** `get_html` 允许内联的最大体量：再大就该走 `out` 落盘，而不是塞进模型上下文。 */
+const HTML_BUDGET_MAX = 64 * 1024;
+
+/**
+ * 收敛 `get_html` 的字节预算。
+ *
+ * 为什么由工具这边管死：HTML 是**原样进模型上下文**的东西。bsk 自己的默认预算是 512KiB，
+ * 折合十几万 token，一次调用就能把上下文冲爆——而模型多半只是想确认某个 class 在不在。
+ * 要更大的范围就走 `out` 落盘（那条路径不设预算，返回的是路径而不是正文）。
+ *
+ * 超出上限时**报错而不是静默改小**：静默截断会让模型以为自己看到了完整 DOM，
+ * 由此得出的「页面里没有这个属性」是假的。
+ */
+function clampHtmlBudget(requested: number | undefined): number {
+  if (requested === undefined || !Number.isFinite(requested)) return HTML_BUDGET_DEFAULT;
+  const n = Math.floor(requested);
+  if (n < 1 || n > HTML_BUDGET_MAX) {
+    throw new Error(t("bsk.getHtml.badBudget", { max: HTML_BUDGET_MAX }));
+  }
+  return n;
+}
+
 /** console 的读取上限：与扩展侧的缓冲上限（`MAX_CONSOLE_BUFFER = 200`）一致，一次拿全。 */
 const CONSOLE_LIMIT = 200;
 
@@ -986,6 +1051,21 @@ export function statusMatches(status: number | undefined, spec: StatusSpec): boo
   return "exact" in spec
     ? status === spec.exact
     : status >= spec.from && status <= spec.to;
+}
+
+/**
+ * 取必填的 `target` 参数；缺失或为空时在**本地**报错。
+ *
+ * 与 wait_for 同一条规则：用法错误不消耗一次浏览器往返，这次失败也不会被录进回放脚本
+ * （录制层只记成功的操作）。
+ */
+function requiredTarget(params: unknown, tool: string): string {
+  const p = params as { target?: unknown } | null | undefined;
+  const target = typeof p?.target === "string" ? p.target.trim() : "";
+  if (!target) {
+    throw new Error(`${tool} 需要给出 target（要操作的元素：@eN 引用或 CSS 选择器）`);
+  }
+  return target;
 }
 
 /** 把一段文本压成单行短句（证据要进报告，不能让它整段吞掉输出）。 */
@@ -1874,6 +1954,81 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       );
     },
 
+    async wheel(
+      options?: { target?: string; deltaX?: number; deltaY?: number; modifiers?: string },
+      signal?: AbortSignal,
+    ): Promise<string> {
+      const target = options?.target?.trim();
+      const deltaX =
+        typeof options?.deltaX === "number" && Number.isFinite(options.deltaX)
+          ? options.deltaX
+          : 0;
+      const deltaY =
+        typeof options?.deltaY === "number" && Number.isFinite(options.deltaY)
+          ? options.deltaY
+          : 0;
+      // 两个增量都是 0 的滚轮事件没有意义（bsk 也拒绝）：在本地拦下，省一次浏览器往返。
+      if (deltaX === 0 && deltaY === 0) throw new Error(t("bsk.wheel.needDelta"));
+      const landed = target ? checkRef("wheel", target) : "";
+      markStale();
+      const args = ["wheel", "--delta-x", String(deltaX), "--delta-y", String(deltaY)];
+      if (target) args.push(target);
+      const modifiers = options?.modifiers?.trim();
+      if (modifiers) args.push("--modifiers", modifiers);
+      args.push(...quiet);
+      const out = await bsk(args, signal);
+      return `已滚动（delta ${deltaX}, ${deltaY}）${landed}\n${out}`;
+    },
+
+    async focus(target: string, signal?: AbortSignal): Promise<string> {
+      const landed = checkRef("focus", target);
+      markStale();
+      const out = await bsk(["focus", target, ...quiet], signal);
+      return `已聚焦 ${target}${landed}\n${out}`;
+    },
+
+    async blur(target: string, signal?: AbortSignal): Promise<string> {
+      const landed = checkRef("blur", target);
+      markStale();
+      const out = await bsk(["blur", target, ...quiet], signal);
+      return `已失焦 ${target}${landed}\n${out}`;
+    },
+
+    async getHtml(
+      options?: { target?: string; maxBytes?: number; out?: string },
+      signal?: AbortSignal,
+    ): Promise<string> {
+      const target = options?.target?.trim();
+      // 协议侧只认 `@eN` 引用（没有 selector 入口）：给 CSS 就当场说清楚，别让模型以为
+      // 「传了选择器就等于取到了那块 DOM」。
+      if (target && !looksLikeRef(target)) {
+        throw new Error(t("bsk.getHtml.refOnly", { target }));
+      }
+      const landed = target ? checkRef("getHtml", target) : "";
+      const outPath = options?.out?.trim();
+      const args = ["get-html", "--json", ...quiet];
+      if (target) args.push("--ref", target);
+      if (outPath) {
+        // 落盘时不设预算：bsk 自己有 512KiB 的默认上限，而这条路径本来就是为了
+        // 「别把 HTML 灌进模型上下文」——再压一次预算只会让人拿到半截文件。
+        args.push("--out", outPath);
+      } else {
+        args.push("--max-bytes", String(clampHtmlBudget(options?.maxBytes)));
+      }
+      const raw = await bsk(args, signal);
+      const meta = parseBskJson<BskGetHtmlJson>(raw);
+      if (!meta || typeof meta.html !== "string") {
+        throw new Error(t("bsk.getHtml.unreadable"));
+      }
+      const bytes = typeof meta.byte_size === "number" ? meta.byte_size : meta.html.length;
+      const summary =
+        `tab=${meta.tab_id ?? "?"} bytes=${bytes}` +
+        (meta.truncated === true ? " truncated=true" : "");
+      if (outPath) return `已保存页面 HTML：${outPath}（${summary}）${landed}`;
+      const note = meta.truncated === true ? t("bsk.getHtml.truncated", { bytes }) : "";
+      return `${summary}${landed}\n${meta.html}${note}`;
+    },
+
     wait: doWait,
 
     settle: doSettle,
@@ -2703,6 +2858,126 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     },
   };
 
+  const wheel: AgentTool = {
+    name: "wheel",
+    label: "Wheel",
+    description:
+      "派发一次**真实滚轮事件**（CDP 的 wheel 输入）。" +
+      "**和 scroll 不是一回事，别混用**：`scroll` 是 `scroll-to`（把某个元素滚进视口、**不产生滚动事件**）；" +
+      "页面的 scroll 监听、**无限加载的触底回调**、横向滚动容器只认这个 wheel。" +
+      "deltaY：向下为正、向上为负（一次一屏大约 600–800）；deltaX 同理，向右为正；两个不能同时为 0。" +
+      "target 可选：给了就滚那个元素所在的区域（@eN 或 CSS 选择器），不给就滚视口中心。" +
+      "**注意它会真的滚动页面**：无限加载是异步的，滚完要断言就先用 wait_for 等目标内容出现，" +
+      "别滚完立刻断言。",
+    parameters: paramsOf({
+      deltaY: {
+        type: "number",
+        description: "垂直增量（CSS 像素）：向下为正、向上为负；一次一屏约 600–800",
+      },
+      deltaX: { type: "number", description: "水平增量（CSS 像素）：向右为正" },
+      target: {
+        type: "string",
+        description: "可选：滚动的落点元素（@eN 或 CSS 选择器）；不给则滚视口中心",
+      },
+      modifiers: {
+        type: "string",
+        description: "可选：逗号分隔的修饰键（Ctrl / Shift / Alt / Meta）",
+      },
+    }),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = (params as WheelParams) ?? {};
+      const options = {
+        ...(p.target ? { target: p.target } : {}),
+        ...(typeof p.deltaY === "number" ? { deltaY: p.deltaY } : {}),
+        ...(typeof p.deltaX === "number" ? { deltaX: p.deltaX } : {}),
+        ...(p.modifiers ? { modifiers: p.modifiers } : {}),
+      };
+      return exec("wheel", { ...options }, (s) => ops.wheel(options, s), signal);
+    },
+  };
+
+  const focus: AgentTool = {
+    name: "focus",
+    label: "Focus",
+    description:
+      "让某个元素获得焦点（不点击、不输入）。" +
+      "**用它的时机**：验证 `:focus` 样式、把焦点挪到某个元素后再用 press 按键、" +
+      "或者为紧接着的一次 blur 做准备。" +
+      "注意多数情况下不必显式调它——`fill` 会自己聚焦到目标输入框。" +
+      "target 必填（@eN 或 CSS 选择器）。",
+    parameters: paramsOf(
+      {
+        target: { type: "string", description: "要聚焦的元素（@eN 或 CSS 选择器）" },
+      },
+      ["target"],
+    ),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const target = requiredTarget(params, "focus");
+      return exec("focus", { target }, (s) => ops.focus(target, s), signal);
+    },
+  };
+
+  const blur: AgentTool = {
+    name: "blur",
+    label: "Blur",
+    description:
+      "让某个元素**失去焦点**。" +
+      "**用它的时机**：大量表单校验挂在 blur 上——值填完了但错误提示不出来，" +
+      "就是因为还没触发失焦；「填完 → 失焦 → 断言报错提示」是页面测试里的常规链路。" +
+      "比「点一下别处」干净：不会顺带触发那个元素的点击副作用（用 blur 只改焦点）。" +
+      "target 必填（@eN 或 CSS 选择器）。",
+    parameters: paramsOf(
+      {
+        target: { type: "string", description: "要失焦的元素（@eN 或 CSS 选择器）" },
+      },
+      ["target"],
+    ),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const target = requiredTarget(params, "blur");
+      return exec("blur", { target }, (s) => ops.blur(target, s), signal);
+    },
+  };
+
+  const getHtml: AgentTool = {
+    name: "get_html",
+    label: "Get HTML",
+    description:
+      "取页面的**原始 DOM HTML**（可选只取某个 @eN 子树）。" +
+      "**它补的是 snapshot 的盲区**：快照是 aria 树 + 可见文本，看不到**属性**——" +
+      "class / data-* / value / href / disabled / name 这些一个都拿不到，长文本还会被截断。" +
+      "需要确认「这个类名在不在」「data-id 是多少」「原生 select 每个 option 的 value 是什么」时用它。" +
+      "**别拿它当常规手段**：绝大多数断言用 assert_text 看可见文本就够了。" +
+      "target 可选，**只支持 @eN 引用**（bsk 侧没有选择器入口）。" +
+      "maxBytes 可选，默认 16384、上限 65536——HTML 是原样进上下文的，别贪大；" +
+      "要看更大的范围就传 out 落盘（那时结果只回路径与字节数，不带 HTML 正文）。" +
+      "结果第一行是 `tab=… bytes=… truncated=…`：truncated=true 说明你看到的不是全部，" +
+      "据此说「页面里没有某某」之前先想清楚。",
+    parameters: paramsOf({
+      target: {
+        type: "string",
+        description: "可选：只取这个元素的子树（@eN 引用；**不支持 CSS 选择器**）",
+      },
+      maxBytes: {
+        type: "number",
+        description: "可选：最多返回多少字节 HTML（默认 16384，上限 65536）",
+      },
+      out: {
+        type: "string",
+        description:
+          "可选：把 HTML 写到这个文件；结果只回路径与字节数，不受 maxBytes 限制",
+      },
+    }),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = (params as GetHtmlParams) ?? {};
+      const options = {
+        ...(p.target ? { target: p.target } : {}),
+        ...(typeof p.maxBytes === "number" ? { maxBytes: p.maxBytes } : {}),
+        ...(p.out ? { out: p.out } : {}),
+      };
+      return exec("get_html", { ...options }, (s) => ops.getHtml(options, s), signal);
+    },
+  };
+
   const screenshot: AgentTool = {
     name: "screenshot",
     label: "Screenshot",
@@ -2968,6 +3243,10 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     hover,
     scroll,
     press,
+    wheel,
+    focus,
+    blur,
+    getHtml,
     screenshot,
     wait,
     waitFor,
@@ -3000,6 +3279,24 @@ interface PressParams {
   /** 可选：按住多少毫秒再松开。 */
   holdMs?: number;
   showPage?: boolean;
+}
+interface WheelParams {
+  /** 滚轮落点（@eN 或 CSS 选择器）；不给则视口中心。 */
+  target?: string;
+  /** 垂直增量：向下为正。 */
+  deltaY?: number;
+  /** 水平增量：向右为正。 */
+  deltaX?: number;
+  /** 逗号分隔的修饰键。 */
+  modifiers?: string;
+}
+interface GetHtmlParams {
+  /** 只取该 `@eN` 子树（协议侧没有选择器入口）。 */
+  target?: string;
+  /** 内联返回的字节预算。 */
+  maxBytes?: number;
+  /** 落盘路径（给了就不返回正文）。 */
+  out?: string;
 }
 interface ScreenshotParams {
   /** 整页截图（与 `target` 互斥）。 */

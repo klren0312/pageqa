@@ -225,6 +225,8 @@ const catalogs: Record<Locale, Catalog> = {
     "replay.err.badWaitFor":
       "回放脚本里的 wait_for 步骤必须**恰好**带一个条件（text / selector / gone 三选一）：{path}",
     "replay.err.pressNoKey": "回放脚本里的 press 步骤缺少键名（key）：{path}",
+    "replay.err.focusNoTarget":
+      "回放脚本里的 focus / blur 步骤缺少目标（target）：没有目标就不知道要动谁的焦点：{path}",
     "replay.err.networkNoUrl":
       "回放脚本里的 assert_network 步骤缺少 url：空 url 会匹配上任何请求，这条断言将永远通过：{path}",
     "replay.normalized":
@@ -357,6 +359,17 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.screenshot.refOnly":
       "元素截图只支持 @eN 引用（bsk 的 screenshot 没有 CSS 选择器入口），收到的是「{target}」。请先 snapshot 取编号再截。",
     "bsk.screenshot.onFailure": "（已自动截图：{path}）",
+    // wheel / get-html（src/bsk/tools.ts 的 wheel 与 get_html 工具）
+    "bsk.wheel.needDelta":
+      "wheel 需要至少一个非 0 的增量：deltaY（向下为正）或 deltaX（向右为正）。两个都是 0 的滚轮事件没有意义。",
+    "bsk.getHtml.refOnly":
+      "get_html 的 target 只支持 @eN 引用（bsk 的 get-html 没有选择器入口），收到的是「{target}」。要按选择器取 DOM 请改用 evaluate。",
+    "bsk.getHtml.unreadable":
+      "读不到 HTML：bsk 返回的内容无法解析。请确认当前 bsk 版本支持 get-html 命令（`bsk get-html --help`）。",
+    "bsk.getHtml.truncated":
+      "（已按 maxBytes 截断：完整 HTML 有 {bytes} 字节，你看到的不是全部——要全文就传 out 落盘）",
+    "bsk.getHtml.badBudget":
+      "maxBytes 只接受 1–{max}（默认 16384）。更大范围的 HTML 请传 out 落盘，不要塞进上下文。",
     "bsk.screenshot.unavailable":
       "这次截图没成（bsk 报的原因：{reason}）。页面可能处于隐藏状态，或目标本身读不到——不要把它当成「已经留了证据」。",
     "log.sideOutputScreenshot": "截图: {path}",
@@ -1153,6 +1166,8 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "a wait_for step in the replay script must carry exactly one condition (text / selector / gone): {path}",
     "replay.err.pressNoKey":
       "a press step in the replay script is missing its key name (key): {path}",
+    "replay.err.focusNoTarget":
+      "a focus / blur step in the replay script is missing its target: without one there is no element whose focus to change: {path}",
     "replay.err.networkNoUrl":
       "an assert_network step in the replay script is missing its url: an empty url matches any request, so the assertion would always pass: {path}",
     "replay.normalized":
@@ -1288,6 +1303,17 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "bsk.screenshot.refOnly":
       'element screenshots only accept an @eN ref (bsk\'s screenshot has no CSS selector entry); got "{target}". Call snapshot for a ref first.',
     "bsk.screenshot.onFailure": " (screenshot captured automatically: {path})",
+    // wheel / get-html (the `wheel` and `get_html` tools in src/bsk/tools.ts)
+    "bsk.wheel.needDelta":
+      "wheel needs at least one non-zero delta: deltaY (positive = down) or deltaX (positive = right). A wheel event with both at 0 does nothing.",
+    "bsk.getHtml.refOnly":
+      'get_html only accepts an @eN ref (bsk\'s get-html has no selector entry); got "{target}". Use evaluate if you need to read DOM by selector.',
+    "bsk.getHtml.unreadable":
+      "could not read HTML: bsk returned an unrecognised payload. Check that this bsk version supports the get-html command (`bsk get-html --help`).",
+    "bsk.getHtml.truncated":
+      " (truncated to maxBytes: the full HTML is {bytes} bytes, so this is not all of it — pass out to write it to a file)",
+    "bsk.getHtml.badBudget":
+      "maxBytes must be within 1–{max} (default 16384). For larger HTML pass out and write it to a file instead of into the context.",
     "bsk.screenshot.unavailable":
       "the screenshot did not happen (bsk reported: {reason}). The page may be hidden, or the target is unreadable — do not treat this as evidence captured.",
     "log.sideOutputScreenshot": "screenshot: {path}",

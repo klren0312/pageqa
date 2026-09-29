@@ -45,7 +45,7 @@ _Avoid_：中断、中止、跳过
 _Avoid_：指令、命令行
 
 **动作（Action）**：
-一次浏览器操作（navigate / click / fill / select_option / pick_date / upload / download / hover / scroll / press / wait / wait_for），是回放脚本的最小执行单位。
+一次浏览器操作（navigate / click / fill / select_option / pick_date / upload / download / hover / scroll / press / wheel / focus / blur / wait / wait_for），是回放脚本的最小执行单位。
 _Avoid_：操作指令、tool call
 
 **断言（Assertion）**：

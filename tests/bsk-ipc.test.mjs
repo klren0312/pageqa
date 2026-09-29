@@ -259,6 +259,104 @@ describe("planIpcCall：argv → RPC", () => {
     );
   });
 
+  test("wheel：增量走 --delta-x/--delta-y，落点是可选的位置参数", () => {
+    const plan = planIpcCall(["wheel", "@e3", "--delta-y", "600", "--session", "s1"]);
+    assert.equal(plan.method, "tool.wheel");
+    assert.deepEqual(plan.params, { session_id: "s1", ref: "@e3", delta_y: 600 });
+    assert.equal(plan.mutating, true);
+
+    // 不给落点是**合法**用法（滚视口中心）：params 里不该出现任何 target 字段
+    const center = planIpcCall([
+      "wheel",
+      "--delta-y",
+      "-120",
+      "--delta-x",
+      "40.5",
+      "--session",
+      "s1",
+    ]);
+    assert.deepEqual(center.params, { session_id: "s1", delta_y: -120, delta_x: 40.5 });
+
+    const bySelector = planIpcCall([
+      "wheel",
+      "--selector",
+      "#panel",
+      "--delta-y",
+      "600",
+      "--modifiers",
+      "Shift",
+      "--session",
+      "s1",
+    ]);
+    assert.deepEqual(bySelector.params, {
+      session_id: "s1",
+      selector: "#panel",
+      delta_y: 600,
+      modifiers: ["shift"],
+    });
+  });
+
+  test("wheel 的行格式与 CLI 一致（取不到落点时是 viewport-center，不是共用的 ?）", () => {
+    const plan = planIpcCall(["wheel", "--delta-y", "600", "--session", "s1"]);
+    assert.equal(
+      plan.render({ tab_id: 4, x: 700, y: 400, delta_x: 0, delta_y: 600 }),
+      "wheel ok tab=4 target=viewport-center at=(700, 400) delta=(0, 600)",
+    );
+    assert.equal(
+      plan.render({ tab_id: 4, used_ref: "@e3", x: 10, y: 20, delta_x: 0, delta_y: -120 }),
+      "wheel ok tab=4 target=@e3 at=(10, 20) delta=(0, -120)",
+    );
+  });
+
+  test("wheel 认不出的形状一律退回 CLI（由 bsk 报它自己那句）", () => {
+    // 两个增量都是 0：bsk 的 validate_deltas 明确拒绝
+    assert.equal(planIpcCall(["wheel", "--delta-y", "0", "--session", "s1"]), null);
+    assert.equal(planIpcCall(["wheel", "--session", "s1"]), null);
+    assert.equal(planIpcCall(["wheel", "--delta-y", "abc", "--session", "s1"]), null);
+    assert.equal(planIpcCall(["wheel", "--delta-y", "", "--session", "s1"]), null);
+    // 落点给了两个
+    assert.equal(
+      planIpcCall(["wheel", "@e1", "--selector", "#a", "--delta-y", "600", "--session", "s1"]),
+      null,
+    );
+    assert.equal(
+      planIpcCall(["wheel", "--delta-y", "600", "--modifiers", "garbage", "--session", "s1"]),
+      null,
+    );
+    assert.equal(planIpcCall(["wheel", "--delta-y", "600"]), null);
+  });
+
+  test("focus / blur：目标是必需的，行格式与 CLI 一致", () => {
+    const f = planIpcCall(["focus", "@e3", "--session", "s1"]);
+    assert.equal(f.method, "tool.focus");
+    assert.deepEqual(f.params, { session_id: "s1", ref: "@e3" });
+    assert.equal(f.mutating, true);
+    assert.equal(
+      f.render({ tab_id: 4, used_ref: "@e3", focused: true }),
+      "focus ok tab=4 target=@e3 focused=true",
+    );
+
+    const b = planIpcCall(["blur", "#kw", "--session", "s1"]);
+    assert.equal(b.method, "tool.blur");
+    assert.deepEqual(b.params, { session_id: "s1", selector: "#kw" });
+    assert.equal(
+      b.render({ tab_id: 4, used_selector: "#kw", was_focused: true, focused: false }),
+      "blur ok tab=4 target=#kw was_focused=true focused=false",
+    );
+  });
+
+  test("focus / blur：缺目标退回 CLI，结果缺字段算传输问题（不编默认值）", () => {
+    assert.equal(planIpcCall(["focus", "--session", "s1"]), null);
+    assert.equal(planIpcCall(["blur", "--session", "s1"]), null);
+    assert.equal(planIpcCall(["focus", "--ref", "", "--session", "s1"]), null);
+    assert.equal(planIpcCall(["focus", "@e1", "--session", "s1"]) !== null, true);
+
+    const f = planIpcCall(["focus", "@e3", "--session", "s1"]);
+    assert.throws(() => f.render({ tab_id: 4 }), /focused/);
+    const b = planIpcCall(["blur", "@e3", "--session", "s1"]);
+    assert.throws(() => b.render({ tab_id: 4, focused: false }), /was_focused/);
+  });
+
   test("不认识的形状一律拒绝（退回 CLI），绝不猜", () => {
     assert.equal(planIpcCall(["navigate", "https://example.com", "--session", "s1"]), null);
     assert.equal(planIpcCall(["snapshot", "--session", "s1", "--json"]), null);

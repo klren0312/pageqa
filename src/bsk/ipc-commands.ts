@@ -49,12 +49,20 @@ const VALUE_FLAGS = new Set([
   "settle",
   "await-promise",
   "return-by-value",
-  // press 专用：按键目标与修饰键。`--ref`/`--selector` 是「聚焦到哪个元素再按键」，
-  // 与位置参数里的 target 不是一回事（press 的位置参数是**键名**）。
+  // 目标与修饰键：press / wheel / focus / blur 共用。
+  // 注意它们在 press 上的语义特殊——press 的位置参数是**键名**，元素目标只能走这两个 flag。
   "modifiers",
   "ref",
   "selector",
   "hold-ms",
+  // wheel 的滚轮增量（f64：可为负、可为小数）。
+  "delta-x",
+  "delta-y",
+  // get-html 的字节预算与落盘路径。get-html 本身不走 IPC（见 planIpcCall 注释），
+  // 登记在这里是为了让 parseArgs 认得出它们的值——否则 `--max-bytes 1024` 里的
+  // `1024` 会被当成位置参数。
+  "max-bytes",
+  "out",
 ]);
 
 /** 布尔参数（不带值）。 */
@@ -184,20 +192,73 @@ function parseModifierList(input: string): string[] | null {
   return out;
 }
 
+/**
+ * 目标的三条来源（位置参数 / `--ref` / `--selector`）→ `{ref}` / `{selector}`。
+ *
+ * 三个都不给是**合法**的（`wheel` 不指定目标时打视口中心），返回空对象。给了多个、
+ * 或给的是空串，一律返回 null 退回 CLI——那两种都是用法错误，由 bsk 的 `split_target`
+ * 报出它自己那句话，这里不发明措辞（与 press 同一条规则）。
+ */
+function optionalTarget(
+  flags: Map<string, string | true>,
+  positional?: string,
+): Record<string, unknown> | null {
+  const sources: string[] = [];
+  for (const value of [positional, flags.get("ref"), flags.get("selector")]) {
+    if (value === undefined) continue;
+    // 非字符串（flag 漏了值）与空串都不接受。
+    if (typeof value !== "string" || !value.trim()) return null;
+    sources.push(value);
+  }
+  if (sources.length > 1) return null;
+  return sources.length === 0 ? {} : targetParams(sources[0]);
+}
+
+/**
+ * `wheel` 的滚轮增量（CLI 侧是 f64：允许负数、可为小数、默认 0）。
+ *
+ * 解析不出来的值、以及「两个增量都是 0」都返回 null 退回 CLI——后者正是 bsk 的
+ * `validate_deltas` 明确拒绝的形状（一个 0 增量的滚轮事件没有意义），
+ * 让它报自己那句比在这里另写一句准确。
+ */
+function wheelDeltas(flags: Map<string, string | true>): Record<string, unknown> | null {
+  const out: Record<string, unknown> = {};
+  for (const [flag, key] of [
+    ["delta-x", "delta_x"],
+    ["delta-y", "delta_y"],
+  ] as const) {
+    const raw = flags.get(flag);
+    if (raw === undefined) continue;
+    if (typeof raw !== "string" || !raw.trim()) return null;
+    const n = Number(raw.trim());
+    if (!Number.isFinite(n)) return null;
+    out[key] = n;
+  }
+  const dx = typeof out.delta_x === "number" ? out.delta_x : 0;
+  const dy = typeof out.delta_y === "number" ? out.delta_y : 0;
+  if (dx === 0 && dy === 0) return null;
+  return out;
+}
+
 /** 数字渲染成 Rust `{}` 的样子（整数值不带 `.0`）；不是数字时给 `?`。 */
 function num(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "?";
 }
 
-/** `target=` 的渲染规则（CLI 的 `format_used_target`）：引用加 `@` 前缀，取不到时 `?`。 */
-function usedTarget(result: Record<string, unknown>): string {
+/**
+ * `target=` 的渲染规则（CLI 的 `format_used_target`）：引用加 `@` 前缀，取不到时给 `fallback`。
+ *
+ * 之所以要 `fallback`：bsk 给 `wheel` 单独写了一份 `format_used_target`，取不到目标时打的是
+ * `viewport-center`（那个命令允许不指定目标），而不是共用的 `?`。
+ */
+function usedTarget(result: Record<string, unknown>, fallback = "?"): string {
   const usedRef = result.used_ref;
   if (typeof usedRef === "string" && usedRef) {
     return usedRef.startsWith("@") ? usedRef : `@${usedRef}`;
   }
   const usedSelector = result.used_selector;
   if (typeof usedSelector === "string" && usedSelector) return usedSelector;
-  return "?";
+  return fallback;
 }
 
 /**
@@ -378,6 +439,77 @@ export function planIpcCall(args: string[]): IpcPlan | null {
               ? ` modifiers=[${r.modifiers.map((m) => String(m)).join(",")}]`
               : "";
           return `press ok tab=${num(r.tab_id)} key=${r.key} code=${r.code}${mods}`;
+        },
+      };
+    }
+
+    case "wheel": {
+      if (typeof session !== "string" || !session) return null;
+      if (positionals.length > 1) return null;
+      const target = optionalTarget(flags, positionals[0]);
+      if (!target) return null;
+      const deltas = wheelDeltas(flags);
+      if (!deltas) return null;
+      const rawModifiers = flags.get("modifiers");
+      let modifiers: string[] | null = null;
+      if (typeof rawModifiers === "string" && rawModifiers.trim()) {
+        modifiers = parseModifierList(rawModifiers);
+        if (modifiers === null) return null;
+      }
+      return {
+        method: "tool.wheel",
+        params: {
+          session_id: session,
+          ...target,
+          ...deltas,
+          ...(modifiers ? { modifiers } : {}),
+          ...tabId(flags),
+          ...timeoutMs(flags),
+        },
+        sessionKey,
+        // 滚轮真的会滚动页面（触发 scroll 事件、可能触发无限加载）：请求已发出后出错
+        // 不能退回 CLI 重跑，理由与 click 相同。
+        mutating: true,
+        render: (result) => {
+          const r = asRecord(result, "tool.wheel");
+          return (
+            `wheel ok tab=${num(r.tab_id)} target=${usedTarget(r, "viewport-center")}` +
+            ` at=(${num(r.x)}, ${num(r.y)})` +
+            ` delta=(${num(r.delta_x)}, ${num(r.delta_y)})`
+          );
+        },
+      };
+    }
+
+    case "focus":
+    case "blur": {
+      if (typeof session !== "string" || !session) return null;
+      if (positionals.length > 1) return null;
+      const target = optionalTarget(flags, positionals[0]);
+      if (!target) return null;
+      // 这两条命令的目标是**必需**的（没有「默认聚焦到某处」这回事）：目标为空就退回
+      // CLI，由它报那条 missing target 的错。
+      if (Object.keys(target).length === 0) return null;
+      const method = command === "focus" ? "tool.focus" : "tool.blur";
+      return {
+        method,
+        params: {
+          session_id: session,
+          ...target,
+          ...tabId(flags),
+          ...timeoutMs(flags),
+        },
+        sessionKey,
+        // 焦点变化会触发页面自己的 focus/blur 处理（表单校验、联动下拉都挂在这上面）：
+        // 重跑一次不等于「什么都没发生过」。
+        mutating: true,
+        render: (result) => {
+          const r = asRecord(result, method);
+          if (typeof r.focused !== "boolean") throw badShape(method, "缺少 focused");
+          const head = `${command} ok tab=${num(r.tab_id)} target=${usedTarget(r)}`;
+          if (command === "focus") return `${head} focused=${r.focused}`;
+          if (typeof r.was_focused !== "boolean") throw badShape(method, "缺少 was_focused");
+          return `${head} was_focused=${r.was_focused} focused=${r.focused}`;
         },
       };
     }
