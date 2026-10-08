@@ -411,7 +411,8 @@ bsk wait-for-element [TARGET] [--ref @eN | --selector CSS] --state <visible|hidd
 | `cargo test -p bsk --lib` | 369 项通过（含新增的 `--state` / 时长解析与用法错误本地拦截） |
 | 扩展 vitest（`wait_for.test.ts`） | 8 项通过 |
 | 扩展全量 vitest | 2348 通过 / 2 失败，两个失败在 `human-loop.test.ts` 与 `long-screenshot/exports.test.ts`，**单独跑该两文件全通过**——是全量并行下的子进程超时抖动，与本次改动无关 |
-| 起 daemon 的 Rust 集成测试 | **本机跑不了**：`create first named-pipe instance \\.\pipe\bsk-daemon-…` 返回「拒绝访问 (os error 5)」，是这台机器对命名管道的限制。所以 `wait-for-element` 的**真机端到端路径未验证**，需要上游 CI（Linux/macOS）或解除该限制的机器 |
+| 起 daemon 的 Rust 集成测试 | **本机跑不了**：`create first named-pipe instance \\.\pipe\bsk-daemon-…` 返回「拒绝访问 (os error 5)」，是这台机器对命名管道的限制 |
+| **真机端到端** | **已验证**（2026-10-08）：`pageqa/scripts/verify-bsk-wait-for-element.ps1` 驱动真实浏览器，10 项全通过（特性分支已 rebase 到最新 main `5adf917`，rebase 后 Rust 与扩展测试复验全绿）——立即可见 7ms；缺席即 `detached` 2ms；**「在 DOM 但不可见」超时且证据为 `attached=true / visible=false`**（`hidden` 与 `detached` 分开设计的价值所在）；延迟出现 887ms 被等到（注入延迟 800ms）；延迟移除 656ms 被等到（注入延迟 600ms）；`@eN` ref 路径可用且回显裸编号 `e1`；human 模式超时退出码仍为 0 |
 | `tsc --noEmit`（扩展 compile） | **仓库既有环境问题**：`tsconfig.json` 继承 `./.wxt/tsconfig.json`，需先跑 `wxt prepare` 生成；生成后仍有一批来自 `node_modules` 与 `packages/i18n` 的 lib/moduleResolution 报错，与本次改动无关（报错列表里没有本次新增/修改的文件） |
 
 结论：**Rust 侧与扩展侧的单元/协议层验证充分，端到端（经真实 daemon + 浏览器）未验证**。提 PR 时应说明这一点。
