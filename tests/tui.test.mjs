@@ -1,9 +1,14 @@
-import { test, describe } from "node:test";
+import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
+import {
+  KeybindingsManager,
+  TUI_KEYBINDINGS,
+  sliceByColumn,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
 import { splitScenarios } from "../dist/agent.js";
 import { debugLog, info, setDebug, setSink } from "../dist/log.js";
 import {
@@ -34,6 +39,14 @@ import {
   scenarioNameFromBody,
   scenariosFromInput,
 } from "../dist/tui/writeback.js";
+import {
+  MARQUEE_FRAME_MS,
+  MARQUEE_GAP_COLUMNS,
+  MARQUEE_HOLD_FRAMES,
+  MarqueeScroller,
+  marqueePeriod,
+  marqueeWindow,
+} from "../dist/tui/marquee.js";
 
 // 纯单元测试：不依赖浏览器、LLM 与真实 TTY。
 
@@ -182,7 +195,11 @@ describe("日志视口的滚动设置", () => {
   test("翻页与首尾仍归视口（回归保护：这两个键是「日志能滚」的底线）", () => {
     assert.deepEqual(kb.getKeys("tui.altScreen.pageUp"), ["pageUp"]);
     assert.deepEqual(kb.getKeys("tui.altScreen.pageDown"), ["pageDown"]);
-    assert.deepEqual(kb.getKeys("tui.altScreen.bottom"), ["end"]);
+    // 首尾归 Ctrl+Home / Ctrl+End：pi-tui 1.1.0 把它们从 Home/End 挪开了，因为 Home/End
+    // 是输入框的光标键，全局绑给视口滚动会让「在输入框里按 End」变得含义不明。
+    // 这里跟随上游默认值——它既保住了「跳到首尾」，又不跟编辑器抢键。
+    assert.deepEqual(kb.getKeys("tui.altScreen.top"), ["ctrl+home"]);
+    assert.deepEqual(kb.getKeys("tui.altScreen.bottom"), ["ctrl+end"]);
   });
 
   test("我们自己的键位之间不冲突（同键双绑会让按键归属含糊）", () => {
@@ -893,5 +910,128 @@ describe("报告标注场景来源", () => {
     const text = renderSuiteText(summary, members, [{ name: "A" }]);
     assert.match(text, /--- 场景 1\/1：A \[PASS\] ---/);
     assert.doesNotMatch(text, /来源/);
+  });
+});
+
+/**
+ * 选择器里选中超长名称时向左循环滚（见 src/tui/marquee.ts）。
+ *
+ * `/model` 给名字留的那一列只有 30 列宽，而模型 id（`anthropic/claude-3-5-sonnet-20241022`）
+ * 常常更长：光标停在某一条上时看不到全名，正是这个功能要解决的问题。
+ *
+ * 滚动必须**循环**：滚到名字末尾再跳回开头，在屏幕上就是整行瞬间平移几十列——那一下闪动
+ * 比看不到全名更烦人。因此这里的断言大多围着「每一帧只错开一列」转。
+ * 用真的 pi-tui `sliceByColumn` / `visibleWidth` 当替身，好让「宽度不超过列宽」这条
+ * 不变量按真实实现校验。
+ */
+describe("选中项超长时向左循环滚（跑马灯）", () => {
+  const LONG = "anthropic/claude-3-5-sonnet-20241022";
+  const win = (text, width, offset) =>
+    marqueeWindow(text, width, offset, visibleWidth, sliceByColumn);
+  const cycleOf = (text) => text + " ".repeat(MARQUEE_GAP_COLUMNS);
+
+  test("放得下就原样返回：不滚（一轮列数为 0）", () => {
+    assert.equal(win("gpt-4o", 30, 0), "gpt-4o");
+    assert.equal(marqueePeriod(6, 30), 0);
+  });
+
+  test("offset 为 0 时与普通截断逐字同形（未选中项不因这次改动变样）", () => {
+    assert.equal(win(LONG, 20, 0), sliceByColumn(LONG, 0, 20, true));
+  });
+
+  test("循环无缝：任意偏移都是「名字 + 空隙」长串上的滑窗，相邻帧只错开一列", () => {
+    const width = 20;
+    const period = marqueePeriod(visibleWidth(LONG), width);
+    assert.equal(period, visibleWidth(LONG) + MARQUEE_GAP_COLUMNS);
+    const rep = cycleOf(LONG) + cycleOf(LONG);
+    for (let offset = 0; offset < period; offset++) {
+      assert.equal(
+        win(LONG, width, offset),
+        sliceByColumn(rep, offset, width, true),
+        `offset=${offset} 不是滑窗`,
+      );
+      assert.ok(visibleWidth(win(LONG, width, offset)) <= width);
+    }
+    // 滚过一轮的边界与滚到中间没有区别：不会「跳回开头」——那一下就是闪动
+    assert.equal(win(LONG, width, period), win(LONG, width, 0));
+    assert.equal(
+      win(LONG, width, period - 1).slice(1),
+      sliceByColumn(rep, period, width - 1, true),
+      "跨过一轮边界时只该错开一列",
+    );
+  });
+
+  test("滚一整圈，名字的结尾总会露出来（不会永远留在窗外）", () => {
+    const width = 20;
+    const period = marqueePeriod(visibleWidth(LONG), width);
+    const frames = Array.from({ length: period }, (_, offset) =>
+      win(LONG, width, offset),
+    );
+    assert.ok(frames.some((f) => f.includes(LONG.slice(-10))));
+    assert.ok(frames.some((f) => f.includes(" ".repeat(MARQUEE_GAP_COLUMNS))));
+  });
+
+  test("宽字符（CJK）不会被切半格，也不顶破列宽", () => {
+    const text = "模型名称".repeat(6);
+    const width = 11;
+    const period = marqueePeriod(visibleWidth(text), width);
+    for (let offset = 0; offset < period; offset++) {
+      assert.ok(
+        visibleWidth(win(text, width, offset)) <= width,
+        `offset=${offset} 顶破了列宽`,
+      );
+    }
+  });
+
+  test("推进器：起点先停几帧，之后一圈一圈地绕，换一条重新开始", () => {
+    const m = new MarqueeScroller(() => {});
+    try {
+      m.setSelection("a", 3);
+      // 选中项刚出现时不立刻滚走：否则用户看到的第一眼是名字中段
+      for (let i = 0; i < MARQUEE_HOLD_FRAMES; i++) m.advance();
+      assert.equal(m.offset, 0);
+      m.advance();
+      assert.equal(m.offset, 1);
+      m.advance();
+      assert.equal(m.offset, 2);
+      m.advance();
+      assert.equal(m.offset, 0, "一轮走完接下一轮：不停顿、也不回头");
+      // 换一条（哪怕还是超长）也从起点重新开始
+      m.advance();
+      m.setSelection("b", 3);
+      assert.equal(m.offset, 0);
+    } finally {
+      m.dispose();
+    }
+  });
+
+  test("不需要滚就不开表：一轮列数为 0 时不推进、也不请求重绘", () => {
+    let frames = 0;
+    const m = new MarqueeScroller(() => frames++);
+    try {
+      m.setSelection("short", 0);
+      for (let i = 0; i < 10; i++) m.advance();
+      assert.equal(m.offset, 0);
+      assert.equal(frames, 0);
+    } finally {
+      m.dispose();
+    }
+  });
+
+  test("定时器只在需要滚的时候请求重绘，dispose 之后彻底停掉", () => {
+    mock.timers.enable({ apis: ["setInterval"] });
+    try {
+      let frames = 0;
+      const m = new MarqueeScroller(() => frames++);
+      m.setSelection("long", 5);
+      mock.timers.tick(MARQUEE_FRAME_MS * (MARQUEE_HOLD_FRAMES + 1));
+      assert.ok(frames >= 1, "停顿结束后应该请求重绘");
+      m.dispose();
+      const settled = frames;
+      mock.timers.tick(MARQUEE_FRAME_MS * 20);
+      assert.equal(frames, settled, "dispose 之后不该再有帧（否则进程退不出去）");
+    } finally {
+      mock.timers.reset();
+    }
   });
 });

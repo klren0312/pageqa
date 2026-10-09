@@ -20,9 +20,11 @@ import {
   readSavedLocale,
   readScenarioTimeoutMs,
   readSideOutputPrefs,
+  SIDE_OUTPUTS_DISABLED,
   type SideOutputPrefs,
 } from "./config.js";
 import { downloadedFiles } from "./downloads.js";
+import { formatLintReport, lintCase, type LintResult } from "./lint.js";
 import { collectScreenshots, type TestReport, type TokenUsage } from "./report.js";
 import {
   ConcurrencySessionConflictError,
@@ -32,6 +34,7 @@ import {
 } from "./suite.js";
 import {
   emitSideOutputs,
+  reportDisabledByFlag,
   writeReportSideOutput,
   type ScriptOutcome,
 } from "./side-outputs.js";
@@ -53,8 +56,16 @@ import {
   VAR_HELP,
   type RunVarValue,
 } from "./vars.js";
-import { info, setDebug } from "./log.js";
+import { info, setDebug, debugLog } from "./log.js";
 import { parseLocale, setLocale, t } from "./i18n.js";
+import {
+  describeProxyRules,
+  ensureProxyConfigFile,
+  installProxyRouting,
+  PROXY_CONFIG_PATH,
+  proxyStatus,
+  reloadProxyConfig,
+} from "./proxy.js";
 import { packageVersion } from "./version.js";
 
 interface CliArgs {
@@ -123,8 +134,29 @@ interface CliArgs {
   locale: string;
   /** 参数解析错误（如带值选项缺少参数）；有值时 main 会提示并退出。 */
   error?: string;
+  /**
+   * `--no-lint`：跳过「跑用例前的格式预检」。
+   *
+   * 预检只提示、不拦（能跑的用例就该让它跑），但确实会往 stderr 多打几行；
+   * 已经用 `pageqa lint` 管住格式、不想在 CI 日志里重复看的人可以关掉它。
+   */
+  noLint: boolean;
   /** `sessions` 子命令：起本地查询服务（与「跑用例」是两种模式，单独一条解析路径）。 */
   sessions?: SessionsArgs;
+  /** `lint` 子命令：静态校验用例格式（同样单独一条解析路径）。 */
+  lint?: LintArgs;
+}
+
+/** `pageqa lint` 的选项。 */
+export interface LintArgs {
+  /** 待校验的用例文件（可以有多个，与「跑用例」只收一个输入不同）。 */
+  files: string[];
+  /** `--json`：以 JSON 输出结果（CI 消费）。 */
+  json: boolean;
+  /** `--strict`：告警也算失败（退出码非零）。 */
+  strict: boolean;
+  /** `lint --help`：打印子命令帮助。 */
+  help: boolean;
 }
 
 /** `pageqa sessions` 的选项。 */
@@ -156,6 +188,7 @@ function emptyCliArgs(): CliArgs {
     noTui: false,
     noSideOutputs: false,
     usageStream: false,
+    noLint: false,
     locale: "",
   };
 }
@@ -166,6 +199,9 @@ export function parseArgs(argv: string[]): CliArgs {
   // 主选项循环里每个位置参数都是「用例输入」，混进去会让 `pageqa sessions` 看起来像
   // 「去跑一条叫 sessions 的用例」——那正是它以前的行为。
   if (argv[0] === "sessions") return parseSessionsArgs(argv.slice(1));
+  // 子命令：`pageqa lint <用例文件…>`。同理单独一条路径——它收**多个**位置参数，
+  // 而主循环把第二个位置参数当「多余输入」直接报错。
+  if (argv[0] === "lint") return parseLintArgs(argv.slice(1));
   const args: CliArgs = emptyCliArgs();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -216,6 +252,9 @@ export function parseArgs(argv: string[]): CliArgs {
       }
       case "--no-side-outputs":
         args.noSideOutputs = true;
+        break;
+      case "--no-lint":
+        args.noLint = true;
         break;
       case "--usage-stream":
         args.usageStream = true;
@@ -411,6 +450,124 @@ function parseSessionsArgs(rest: string[]): CliArgs {
     }
   }
   return args;
+}
+
+/**
+ * 解析 `pageqa lint <用例文件…>` 的选项。
+ *
+ * 与 `sessions` 同一条口径：坏值、未知选项当场报错。差别只有一个——位置参数可以有**多个**
+ * （一次校验一批用例），而且第一个位置参数不会被当成「用例输入」去跑。
+ */
+function parseLintArgs(rest: string[]): CliArgs {
+  const args = emptyCliArgs();
+  const lint: LintArgs = { files: [], json: false, strict: false, help: false };
+  args.lint = lint;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a.startsWith("--locale=")) {
+      const v = a.slice("--locale=".length);
+      args.locale = v;
+      setLocale(parseLocale(v));
+      continue;
+    }
+    switch (a) {
+      case "-h":
+      case "--help":
+        lint.help = true;
+        break;
+      case "--json":
+        lint.json = true;
+        break;
+      case "--strict":
+        lint.strict = true;
+        break;
+      case "--locale": {
+        const v = rest[++i];
+        if (v === undefined || v.startsWith("-")) {
+          args.error = t("err.localeRequired", { arg: "--locale" });
+          return args;
+        }
+        args.locale = v;
+        setLocale(parseLocale(v));
+        break;
+      }
+      default:
+        if (a.startsWith("-")) {
+          args.error = t("err.unknownOption", { a });
+          return args;
+        }
+        lint.files.push(a);
+    }
+  }
+  return args;
+}
+
+/**
+ * `pageqa lint`：静态校验用例格式，**不开浏览器、不调模型**。
+ *
+ * 报告走 stdout（与其它模式的报告同一条口径），参数/文件读写的错误走 stderr。
+ * 退出码即门槛：`error` 非零；`--strict` 时 `warn` 也算失败——CI 与提交钩子据此拦。
+ */
+function runLint(lint: LintArgs): number {
+  if (lint.help) {
+    process.stdout.write(t("help.lint") + "\n");
+    return 0;
+  }
+  if (lint.files.length === 0) {
+    process.stderr.write(t("err.param", { msg: t("err.lintNeedsFile") }) + "\n\n");
+    process.stdout.write(t("help.lint") + "\n");
+    return 1;
+  }
+  const checked: { path: string; result: LintResult }[] = [];
+  for (const path of lint.files) {
+    let text: string;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch (err) {
+      // 目录会抛 EISDIR。区分开来说：把目录当成「路径写错」会让人反复检查拼写。
+      const code = (err as NodeJS.ErrnoException).code;
+      process.stderr.write(
+        (code === "EISDIR"
+          ? t("err.lintDir", { path })
+          : t("err.lintNotFound", { path })) + "\n",
+      );
+      return 1;
+    }
+    checked.push({ path, result: lintCase(text) });
+  }
+
+  const errors = checked.reduce((n, c) => n + c.result.errors, 0);
+  const warnings = checked.reduce((n, c) => n + c.result.warnings, 0);
+  const ok = errors === 0 && (!lint.strict || warnings === 0);
+
+  if (lint.json) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          files: checked.map((c) => ({
+            path: c.path,
+            ...c.result.counts,
+            errors: c.result.errors,
+            warnings: c.result.warnings,
+            issues: c.result.issues,
+          })),
+          errors,
+          warnings,
+          ok,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  } else {
+    const blocks = checked.map((c) => formatLintReport(c.path, c.result));
+    process.stdout.write(blocks.join("\n\n") + "\n");
+    // 单文件时上面那块里已经报过总数，多一行就是重复。
+    if (checked.length > 1) {
+      process.stdout.write(t("lint.total", { errors, warnings }) + "\n");
+    }
+  }
+  return ok ? 0 : 1;
 }
 
 /**
@@ -641,8 +798,12 @@ async function interactiveMode(
   }
 
   // ── 旁路产物：测试报告与回放脚本；显式 --emit-script 优先于 /setting 的开关 ──
-  const prefs = readSideOutputPrefs();
-  const reportOutcome = writeReportSideOutput(result.report, prefs);
+  // `--no-side-outputs` 三种模式口径一致（批处理 / 回放 / 交互都认），关掉时如实说明是
+  // 命令行标志，而不是把锅甩给 /setting（面板里那个开关其实还是开的）。
+  const prefs = args.noSideOutputs ? SIDE_OUTPUTS_DISABLED : readSideOutputPrefs();
+  const reportOutcome = args.noSideOutputs
+    ? reportDisabledByFlag()
+    : writeReportSideOutput(result.report, prefs);
   let scriptError: string | undefined;
   let scriptOutcome: ScriptOutcome;
   if (args.emitScript || prefs.replayScript) {
@@ -657,7 +818,7 @@ async function interactiveMode(
       scriptOutcome = { kind: "failed", error: scriptError };
     }
   } else {
-    scriptOutcome = { kind: "off" };
+    scriptOutcome = { kind: "off", reason: args.noSideOutputs ? "flag" : undefined };
   }
 
   const out = args.json ? result.json : result.text;
@@ -732,11 +893,13 @@ async function replayMode(args: CliArgs): Promise<number> {
     // 否则看 /setting 里的开关。回放模式此前**漏了这一层**：无论开关怎么说都照写 HTML 报告，
     // 于是「零模型的 CI 回放」每次都在工作区留下一份报告文件（ADR-0011 决策三）。
     const prefs: SideOutputPrefs = args.noSideOutputs
-      ? { htmlReport: false, replayScript: false }
+      ? SIDE_OUTPUTS_DISABLED
       : readSideOutputPrefs();
     // 回放用的是现成的脚本、不产出脚本：清单里不列脚本行（ADR-0011 决策五）。
     emitSideOutputs(
-      writeReportSideOutput(result.report, prefs),
+      args.noSideOutputs
+        ? reportDisabledByFlag()
+        : writeReportSideOutput(result.report, prefs),
       { kind: "na" },
       downloadedFiles(),
       collectScreenshots(result.report),
@@ -752,6 +915,49 @@ async function replayMode(args: CliArgs): Promise<number> {
   }
 }
 
+/**
+ * 把当前的代理路由现状打进调试日志（只在 `--debug` 时出现）。
+ *
+ * 刻意不进常规日志：代理默认就装着一层「先直连、失败再走代理」的兜底，
+ * 每次运行都多打一行只会稀释真正要看的进度。而「配了代理为什么没走」这类问题，
+ * `--debug` 一行就能答：这里给出总开关、模式、代理地址与命中的规则数。
+ */
+function reportProxyRouting(): void {
+  const status = proxyStatus();
+  if (!status.active) {
+    debugLog(
+      t("log.proxyOff", {
+        reason: status.bypassed ? "session" : "config",
+        path: PROXY_CONFIG_PATH,
+      }),
+    );
+    return;
+  }
+  debugLog(
+    t("log.proxyOn", {
+      proxy: status.config.proxy,
+      mode: status.config.mode,
+      rules: status.config.rules.length,
+      path: PROXY_CONFIG_PATH,
+    }),
+  );
+}
+
+/** 把 `pageqa sessions` 之外的另一件事说清楚：代理配置文件落在哪、里面是什么。 */
+function printProxyConfig(): void {
+  const { path, created } = ensureProxyConfigFile();
+  process.stdout.write(
+    (created ? t("config.proxyCreated", { path }) : t("config.proxyExists", { path })) +
+      "\n",
+  );
+  const cfg = reloadProxyConfig();
+  process.stdout.write(
+    describeProxyRules(cfg)
+      .map((line) => "  " + line)
+      .join("\n") + "\n",
+  );
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   // 语种优先级：CLI `--locale` > 环境变量 `PAGEQA_LOCALE` > 配置文件里保存的 > 默认 zh。
@@ -759,10 +965,25 @@ async function main(): Promise<number> {
   setLocale(
     parseLocale(args.locale || process.env.PAGEQA_LOCALE || readSavedLocale()),
   );
+  // 代理路由必须在任何一次模型请求之前装好：内置 provider（anthropic / openai / …）
+  // 与自定义端点的 SDK 客户端都由 pi-ai 在每次请求时构造，取的是当时的
+  // `globalThis.fetch`，因此这里替换一次就够（理由见 proxy.ts 与 llm.ts）。
+  // 装不上不是致命错误——代理配错不该让 pageqa 起不来，因此这里只把现状说清楚，
+  // 请求失败时按网络错误照常浮现。
+  //
+  // setDebug 提到这里：代理现状要与 `--debug` 一起判定，否则这行永远打不出来
+  // （各分支末尾虽也会 setDebug，但那时这行早就过去了）。
+  setDebug(args.debug);
+  installProxyRouting();
+  reportProxyRouting();
   if (args.error) {
     process.stderr.write(t("err.param", { msg: args.error }) + "\n\n");
     process.stdout.write(
-      (args.sessions ? t("help.sessions") : buildHelp()) + "\n",
+      (args.sessions
+        ? t("help.sessions")
+        : args.lint
+          ? t("help.lint")
+          : buildHelp()) + "\n",
     );
     return 1;
   }
@@ -778,6 +999,8 @@ async function main(): Promise<number> {
       open: !args.sessions.noOpen,
     });
   }
+  // ── `lint` 子命令：静态校验用例格式（只读文本，不碰浏览器与模型，可直接接 CI）──
+  if (args.lint) return runLint(args.lint);
   if (args.version) {
     // 只打「pageqa <版本>」：脚本要的是版本号本身，不需要帮助文本那套排版。
     process.stdout.write(`pageqa ${packageVersion()}\n`);
@@ -795,6 +1018,8 @@ async function main(): Promise<number> {
       t("config.current", { json: JSON.stringify(loadConfig(), null, 2) }) +
         "\n",
     );
+    // 代理配置是另一份文件、另一套问题（网络环境），单独一段说清楚它落在哪。
+    printProxyConfig();
     return 0;
   }
   // ── 并发上限：CLI > PAGEQA_CONCURRENCY > 配置文件 > 1（逐个跑）──
@@ -862,6 +1087,32 @@ async function main(): Promise<number> {
     return 1;
   }
   const sourceText = isFile ? readFileSync(rawInput, "utf8") : rawInput;
+  /**
+   * 跑用例前的格式预检：只提示、不拦。
+   *
+   * 真正跑一次要开浏览器、调模型、十几分钟，而格式写歪往往以「假失败」收场
+   * （最典型的是解释性文字被当成步骤、断言数对不上）。这里用与运行时**同一份口径**
+   * 先扫一遍（见 src/lint.ts），把问题摆在开跑之前。
+   *
+   * 刻意不拦：能跑起来的用例就该让它跑完，真失败比格式告警值钱；要设门槛就把
+   * `pageqa lint` 接进 CI（它的退出码可判）。`--no-lint` 可整体跳过。
+   */
+  const lintPreflight = () => {
+    if (args.noLint) return;
+    const result = lintCase(sourceText);
+    if (result.issues.length > 0) {
+      info(formatLintReport(isFile ? rawInput : null, result, 5));
+      info(t("lint.hint"));
+    } else {
+      debugLog(
+        t("lint.preflightClean", {
+          scenarios: result.counts.scenarios,
+          steps: result.counts.steps,
+          assertions: result.counts.assertions,
+        }),
+      );
+    }
+  };
   // 展开占位符与「反查占位符」必须共用同一时刻：
   // 生成回放脚本时才能把模型看到的具体值（202609191146）还原成 ${timestamp}。
   const now = new Date();
@@ -902,7 +1153,7 @@ async function main(): Promise<number> {
 
   // ── 旁路产物：`--no-side-outputs` 关掉「默认产出」，但显式 --emit-script 仍然生效 ──
   const prefs: SideOutputPrefs = args.noSideOutputs
-    ? { htmlReport: false, replayScript: false }
+    ? SIDE_OUTPUTS_DISABLED
     : readSideOutputPrefs();
   // 显式 --emit-script 永远先生效（ADR-0011 决策三）；否则看 /setting 的开关。
   // 默认生成时只贴「当前打开的用例文件」：内联文本没有落点，不生成（决策四）。
@@ -919,6 +1170,8 @@ async function main(): Promise<number> {
     return 1;
   }
   if (interactive.run) {
+    // 交互模式：预检在 TUI 接管屏幕之前打出去（此后 stderr 会被界面视口接管）。
+    lintPreflight();
     return await runInteractiveSafely(
       { path: isFile ? rawInput : undefined, text: sourceText },
       args,
@@ -951,6 +1204,7 @@ async function main(): Promise<number> {
     info(t("log.scriptWillEmit", { path: scriptPath }));
   }
   if (args.noSideOutputs) info(t("log.sideOutputsOff"));
+  lintPreflight();
 
   // 用量流水线：把「已经烧了多少」按行打到 stderr。自己跑（单场景 / `--only`）时
   // 直接回调；子进程跑时由子进程回调、父进程原样转出来（ADR-0013 第二步）。
@@ -1037,7 +1291,7 @@ async function main(): Promise<number> {
       // 开关开着却没有落点（内联文本）：说清楚为什么没有，别让「默认开着却没有」像坏了。
       scriptOutcome = prefs.replayScript
         ? { kind: "no-target", count: 1 }
-        : { kind: "off" };
+        : { kind: "off", reason: args.noSideOutputs ? "flag" : undefined };
     }
     const out = args.json ? result.json : result.text;
     if (args.out) {
@@ -1045,7 +1299,9 @@ async function main(): Promise<number> {
     }
     process.stdout.write(out + "\n");
     emitSideOutputs(
-      writeReportSideOutput(result.report, prefs),
+      args.noSideOutputs
+        ? reportDisabledByFlag()
+        : writeReportSideOutput(result.report, prefs),
       scriptOutcome,
       downloadedFiles(),
       collectScreenshots(result.report),

@@ -1,6 +1,6 @@
 # ADR-0004：交互模式的模型切换与登录
 
-- 状态：采纳（2026-09）
+- 状态：采纳（2026-09）；**决策四已被 ADR-0015 取代**（`/model` 选中即写回 config.json，不再需要 Ctrl+S），决策六中关于 `Ctrl+S` 截获的部分随之失效。其余决策仍然有效。
 - 背景：用户希望 `pageqa --tui` 能像 pi-coding-agent 那样，在交互界面里切换模型、登录内置 provider，而不必退出终端改 `config.json` 或敲环境变量。
 - 范围：仅交互模式（`tui/app.ts`）的 `/model`、`/login`、`/logout` 命令与底层模型目录（`models.ts`）、凭据存储（`auth.ts`）。批处理/管道模式行为不变。
 

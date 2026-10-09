@@ -8,18 +8,21 @@
  * 失败原因（见 log.ts 的口径：stderr 是给人看的进度，不是档案），`--debug` 也只够眼看着
  * 滚过去、事后无从翻查。
  *
- * 存储走 pi 官方的 SQLite session 后端（`@earendil-works/pi-session-backend-sqlite-node`），
- * 全部运行落在 `~/.pageqa/sessions/sessions.sqlite` 这一个容器里：
- * - 一次运行 = 一个 Session（id 就是运行 id）；
- * - 参数快照、列表摘要与终态 = Session 的 `Value`（命名空间 `pageqa`）；
- * - 每轮上下文与每次工具调用 = Session 的 `ValueList`。
+ * 存储走 pi 官方的 `@earendil-works/pi-durable`，全部运行落在
+ * `~/.pageqa/sessions/sessions.sqlite` 这一个容器里。我们只用它的 **Session + 文档**这一层
+ * （`createSession` + SQLite storage），不牵进 Harness / 模型 / 工具运行时——存档是旁路记录，
+ * 不该把 agent 的执行引擎也拖进来：
+ * - 一次运行 = 文档族 `pageqa.archive` 的一个成员，**键就是运行 id**（所以按 id 取存档是一次
+ *   直接查表，不必扫一遍别的运行）；
+ * - 列表页要的摘要 = 单例文档 `pageqa.index`，一次读就能列全，且不必把每份档案的轮次与工具
+ *   调用都读出来。
  *
- * 用它的 `Value`/`ValueList`、而不是继续自造 JSON 文件，换来的是：**事务写入**（一次运行
- * 的参数/轮次/工具调用要么整条落库、要么一条都不落，不会留下半截档案）、schema 迁移由
- * 后端负责、以及不必再自己维护「一运行两个文件 + 清理」这套文件账。
+ * 一次运行就是**一次提交**：档案与索引要么一起落库、要么都不落，不会留下「列表上有、点开缺
+ * 东西」的半截记录（排查时最怕的正是这种「看着有、实际缺」）。schema 版本与迁移交给文档定义
+ * 自己管，我们只声明 `version`，字段形状变了递增 `SESSION_VERSION` 即可。
  *
- * 刻意**没有**用它的 Branch / Entry / fork 等会话语义：我们记的是运行档案（只写一次、
- * 之后只读），不是可续跑的对话；把档案塞进对话树只会让两边都别扭。
+ * 刻意**没有**用它的 Conversation / Entry / Task 等会话语义：那些是「可续跑的对话」，
+ * 我们记的是运行档案（只写一次、之后只读），把档案塞进对话树只会让两边都别扭。
  *
  * 采集与落盘**绝不影响测试结论**：它是一次旁路记录，写失败只提示、不改退出码
  * （与 side-outputs.ts 同一条口径）。因此 `SessionCollector` 的方法都不抛错。
@@ -27,19 +30,17 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { JsonValue } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
-  appendList,
-  BACKGROUND_CONTEXT,
-  list,
-  sessionName,
-  setValue,
-  value,
-  type Context,
-} from "@earendil-works/pi-agent-core";
-import {
-  createNodeSqliteFactory,
-  SqliteSessionRepo,
-} from "@earendil-works/pi-session-backend-sqlite-node";
+  createSession,
+  defineDoc,
+  defineDocFamily,
+  type Session,
+  type SessionDocToken,
+  type SessionDocFamilyToken,
+} from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CONFIG_DIR } from "./config.js";
 import type { RawUsage, TokenUsage } from "./report.js";
 
@@ -52,20 +53,57 @@ export const SESSIONS_DATABASE = "sessions.sqlite";
 /**
  * 存档结构标识与版本。
  *
- * 与容器自身的 schema 版本（后端管的 `storageVersion`）是两件事：这个版本说的是
- * 「`pageqa` 命名空间下那几份 Value/ValueList 的形状」。改动它们的字段时递增，
+ * 与容器自身的 schema 版本（durable 管的存储版本）是两件事：这个版本说的是
+ * 「`pageqa.archive` 文档与 `pageqa.index` 文档的形状」。改动它们的字段时递增，
  * 读端据此拒绝比自己新的档案，而不是把字段对不上的档案当成能读的。
  */
 export const SESSION_FORMAT = "pageqa-session";
 export const SESSION_VERSION = 1;
 
-/** 存档在 Session 里占用的命名空间与键名（改名等于换存档格式，需同步 SESSION_VERSION）。 */
-const NS = "pageqa";
-const K_PARAMS = "params";
-const K_SUMMARY = "summary";
-const K_RESULT = "result";
-const K_TURNS = "turns";
-const K_TOOLS = "toolCalls";
+/**
+ * 一份存档在 durable 里就是文档族 `pageqa.archive` 的一个成员，键为运行 id。
+ *
+ * 字段用 `JsonValue` 而不是直接用 `SessionArchive`：存档里有 `unknown`（工具入参、工具
+ * schema），而 durable 的文档必须是纯 JSON。读写两端各过一次 `asJson`/`fromJson`，
+ * 转换只发生在边界上，对外的类型仍然是 `SessionArchive`。
+ */
+type StoredArchive = {
+  format: string;
+  version: number;
+  startedAt: string;
+  endedAt?: string;
+  status?: string;
+  note?: string;
+  params: JsonValue;
+  turns: JsonValue;
+  toolCalls: JsonValue;
+  usage?: JsonValue;
+};
+
+/** 列表索引：按开始时间倒序的摘要（最新的一条在数组开头）。 */
+type StoredIndex = {
+  runs: JsonValue;
+};
+
+const ArchiveDoc: SessionDocFamilyToken<StoredArchive, StoredArchive> =
+  defineDocFamily<StoredArchive, StoredArchive>({
+    kind: "pageqa.archive",
+    version: SESSION_VERSION,
+    family: true,
+    scope: "session",
+    // 整份档案一次写入，之后只按 id 读回来，所以 seed 就是它本身。
+    initial: (seed) => seed,
+  });
+
+const IndexDoc: SessionDocToken<StoredIndex> = defineDoc<StoredIndex>({
+  kind: "pageqa.index",
+  version: SESSION_VERSION,
+  scope: "session",
+  initial: () => ({ runs: [] }),
+  // 索引每次写入都是整份重排。让它每次都存成完整基线，而不是攒一长串增量：
+  // 索引很小（上限几百条摘要），攒增量只会让「读一次列表」越来越贵。
+  checkpointWhen: () => true,
+});
 
 /**
  * 单段文本的保存上限（消息、工具结果、系统提示）。
@@ -183,8 +221,13 @@ export interface SessionArchive {
   usage?: TokenUsage;
 }
 
-/** 列表页用的摘要（`<id>.meta.json` 的内容）。 */
-export interface SessionSummary {
+/**
+ * 列表页用的摘要（索引文档 `pageqa.index` 的一个元素）。
+ *
+ * 写成 `type` 而不是 `interface`：摘要要整体存进 durable 的 JSON 文档，而 TypeScript 只给
+ * 对象**类型别名**隐式索引签名（interface 没有），否则 `SessionSummary[]` 存不进 `JsonValue`。
+ */
+export type SessionSummary = {
   id: string;
   startedAt: string;
   endedAt?: string;
@@ -200,7 +243,7 @@ export interface SessionSummary {
   turns: number;
   /** 调用过模型则为 true（用于区分「一条都没跑」的存档）。 */
   called: boolean;
-}
+};
 
 /** 把长文本压到上限内；返回值同时带上原始长度，便于在界面上如实标注「截断了多少」。 */
 export function clipText(
@@ -425,34 +468,55 @@ export function databasePath(dir: string = SESSIONS_DIR): string {
 }
 
 /**
- * 开一个仓库、跑一段操作、**必定关闭**它。
+ * 开一个 Session、跑一段操作、**必定关闭**它。
  *
- * 读写都走这一个口子：`SqliteSessionRepo` 持有数据库句柄（单容器模式下就是同一个文件），
- * 忘了关会一直占着它——查询服务是常驻进程，跑一次用例又是另一个进程，句柄漏出去的代价
- * 是下一方打不开。因此这里用 finally 兜底，而不是指望每个调用点自己记得。
+ * 读写都走这一个口子：`Session` 持有 SQLite 句柄（单容器模式下就是同一个文件），忘了关会
+ * 一直占着它——查询服务是常驻进程，跑一次用例又是另一个进程，句柄漏出去的代价是下一方打不开
+ * （`Session.close()` 会连底层 storage 一起关）。因此这里用 finally 兜底，而不是指望每个调用
+ * 点自己记得。
  */
-async function withRepo<T>(
+async function withSession<T>(
   dir: string,
-  fn: (repo: SqliteSessionRepo, ctx: Context) => Promise<T>,
+  fn: (session: Session) => Promise<T>,
 ): Promise<T> {
-  const repo = new SqliteSessionRepo({
-    directory: dir,
-    // 单容器：所有运行共用一个 .sqlite，列表与详情都不必逐个文件去开。
-    databasePath: databasePath(dir),
-    databaseFactory: createNodeSqliteFactory(),
-  });
+  const storage = await openNodeSqliteStorage(databasePath(dir));
+  const session = createSession(storage);
   try {
-    return await fn(repo, BACKGROUND_CONTEXT);
+    return await fn(session);
   } finally {
-    await repo.close(BACKGROUND_CONTEXT);
+    await session.close(BACKGROUND_CONTEXT);
   }
 }
 
+/** JSON 边界：存档里存着 `unknown`（工具入参、工具 schema），落库前统一收成纯 JSON。 */
+function asJson(value: unknown): JsonValue {
+  return value as JsonValue;
+}
+
+/** JSON 边界的反向：把存回来的 JSON 认回存档的类型。 */
+function fromJson<T>(value: JsonValue): T {
+  return value as T;
+}
+
+/** 取出索引里的摘要数组（文档不存在时是空列表，而不是一次异常）。 */
+async function readIndex(session: Session): Promise<SessionSummary[]> {
+  const stored = await session.snapshot(IndexDoc, BACKGROUND_CONTEXT);
+  if (!stored || !Array.isArray(stored.runs)) return [];
+  return stored.runs as SessionSummary[];
+}
+
+/** 摘要倒序（同一时刻的按 id 兜底）：索引写入时就按这个顺序，读端再排一次以防旧档案。 */
+function byStartedAtDesc(a: SessionSummary, b: SessionSummary): number {
+  return a.startedAt === b.startedAt
+    ? b.id.localeCompare(a.id)
+    : b.startedAt.localeCompare(a.startedAt);
+}
+
 /**
- * id 只允许 `[A-Za-z0-9._-]`：它既是 Session 的 id，也是查询服务 URL 的一部分。
+ * id 只允许 `[A-Za-z0-9._-]`：它既是存档文档的键，也是查询服务 URL 的一部分。
  *
- * 存储换成 SQLite 之后它不再被拼进文件路径，但校验照旧：`pageqa sessions` 接的是浏览器
- * 请求，让任意字符串进到「按 id 取一条记录」这条路里没有任何好处。
+ * 它不再被拼进文件路径，但校验照旧：`pageqa sessions` 接的是浏览器请求，让任意字符串进到
+ * 「按 id 取一条记录」这条路里没有任何好处。
  */
 export function assertSafeId(id: string): string {
   if (!/^[A-Za-z0-9._-]+$/.test(id) || id.includes("..")) {
@@ -479,34 +543,26 @@ export function summarizeArchive(archive: SessionArchive): SessionSummary {
   };
 }
 
-/** 终态与总量（存在 Session 的 `result` 值里；`startedAt` 也放这里，让档案自描述）。 */
-interface ResultPayload {
-  startedAt: string;
-  endedAt?: string;
-  status?: SessionArchive["status"];
-  note?: string;
-  usage?: TokenUsage;
-}
-
-/** 容器里一条 Session 的元数据（`open` 要的是它，而不是光一个 id）。 */
-type SessionMeta = Awaited<ReturnType<SqliteSessionRepo["list"]>>[number];
-
-/** 按 id 找元数据；找不到就抛出（调用方决定是翻成 404 还是跳过）。 */
-async function findMeta(
-  repo: SqliteSessionRepo,
-  ctx: Context,
-  id: string,
-): Promise<SessionMeta> {
-  const meta = (await repo.list(undefined, ctx)).find((m) => m.id === id);
-  if (!meta) throw new Error(`找不到运行存档：${id}`);
-  return meta;
+/** 档案落库前的形状（`format`/`version` 一并存进去，读端据此认出「这是 pageqa 的存档」）。 */
+function toStored(archive: SessionArchive): StoredArchive {
+  return {
+    format: archive.format,
+    version: archive.version,
+    startedAt: archive.startedAt,
+    ...(archive.endedAt ? { endedAt: archive.endedAt } : {}),
+    ...(archive.status ? { status: archive.status } : {}),
+    ...(archive.note ? { note: archive.note } : {}),
+    params: asJson(archive.params),
+    turns: asJson(archive.turns),
+    toolCalls: asJson(archive.toolCalls),
+    ...(archive.usage ? { usage: asJson(archive.usage) } : {}),
+  };
 }
 
 /**
- * 落盘一份存档：参数、每轮上下文、每次工具调用、终态与列表摘要，**一次事务**写进去。
+ * 落盘一份存档：参数、每轮上下文、每次工具调用、终态与列表摘要，**一次提交**写进去。
  *
- * 用一次 `commit` 而不是逐条 `setValue`/`appendList`，是为了让「这次运行的档案」要么整条
- * 可读、要么一条都不存在：中途失败留下的半截档案会让列表页列出一条点开却缺东西的记录
+ * 档案与索引在同一个 `commit` 里：中途失败不会留下「列表页列得出、点开却缺东西」的半截记录
  * ——排查时最怕的正是这种「看着有、实际缺」。
  *
  * 任何失败都抛给调用方（由 agent 侧吞掉并记日志），失败语义与退出码无关。
@@ -515,34 +571,20 @@ export async function writeArchive(
   archive: SessionArchive,
   dir: string = SESSIONS_DIR,
 ): Promise<string> {
+  assertSafeId(archive.id);
   const summary = summarizeArchive(archive);
-  const result: ResultPayload = {
-    startedAt: archive.startedAt,
-    ...(archive.endedAt ? { endedAt: archive.endedAt } : {}),
-    ...(archive.status ? { status: archive.status } : {}),
-    ...(archive.note ? { note: archive.note } : {}),
-    ...(archive.usage ? { usage: archive.usage } : {}),
-  };
-  return await withRepo(dir, async (repo, ctx) => {
-    const session = await repo.create({ id: archive.id }, ctx);
-    try {
-      const writes = [
-        setValue(value(NS, K_PARAMS), archive.params),
-        // 摘要单独存一份：列表页只取它，不必把每份档案的轮次与工具调用都读出来。
-        setValue(value(NS, K_SUMMARY), summary),
-        setValue(value(NS, K_RESULT), result),
-        // `sessionName` 是后端的内置值（就是「会话名」）：点开一条空档案时，它至少还留着
-        // 一行「这次跑的是哪条用例」的线索。
-        setValue(sessionName, summary.casePreview),
-        ...archive.turns.map((turn) => appendList(list(NS, K_TURNS), turn)),
-        ...archive.toolCalls.map((call) => appendList(list(NS, K_TOOLS), call)),
-      ];
-      await session.mutate((mutator, inner) => mutator.commit(writes, inner), ctx);
-    } finally {
-      await session.close(ctx);
-    }
-    return databasePath(dir);
+  await withSession(dir, async (session) => {
+    await session.commit(async (tx) => {
+      await tx.doc(ArchiveDoc, archive.id, toStored(archive));
+      // 索引里同一个 id 只留一条：重跑一次覆盖，而不是在列表页里出现两行。
+      const index = await tx.doc(IndexDoc);
+      const runs = (index.runs as SessionSummary[]).filter(
+        (item) => item?.id !== archive.id,
+      );
+      index.runs = [summary, ...runs].sort(byStartedAtDesc);
+    }, BACKGROUND_CONTEXT);
   });
+  return databasePath(dir);
 }
 
 /** 读一份完整存档；找不到或读不出来时抛错（调用方决定怎么呈现）。 */
@@ -551,96 +593,54 @@ export async function readArchive(
   dir: string = SESSIONS_DIR,
 ): Promise<SessionArchive> {
   assertSafeId(id);
-  // 容器还不存在时直接报「没有这条」：`SqliteSessionRepo` 的 open 是**建库**打开，
+  // 容器还不存在时直接报「没有这条」：打开 SQLite 存储是**建库**操作，
   // 为了查一个不存在的 id 在磁盘上留一个空数据库，不是查询该有的副作用。
   if (!existsSync(databasePath(dir))) throw new Error(`找不到运行存档：${id}`);
-  return await withRepo(dir, async (repo, ctx) => {
-    const meta = await findMeta(repo, ctx, id);
-    const session = await repo.open(meta, ctx);
-    try {
-      const storedParams = await session.getValue<SessionParams>(
-        value(NS, K_PARAMS),
-        ctx,
-      );
-      if (!storedParams) throw new Error(`运行存档缺少参数：${id}`);
-      const turns = await session.readList<SessionTurn>(
-        list(NS, K_TURNS),
-        undefined,
-        ctx,
-      );
-      const tools = await session.readList<SessionToolCall>(
-        list(NS, K_TOOLS),
-        undefined,
-        ctx,
-      );
-      const payload = (
-        await session.getValue<ResultPayload>(value(NS, K_RESULT), ctx)
-      )?.value;
-      return {
-        format: SESSION_FORMAT,
-        version: SESSION_VERSION,
-        id,
-        // 终态里有更准的开始时间（采集器建档案的那一刻）；没有就退回 Session 的创建时间。
-        startedAt: payload?.startedAt ?? new Date(meta.createdAt).toISOString(),
-        ...(payload?.endedAt ? { endedAt: payload.endedAt } : {}),
-        ...(payload?.status ? { status: payload.status } : {}),
-        ...(payload?.note ? { note: payload.note } : {}),
-        ...(payload?.usage ? { usage: payload.usage } : {}),
-        params: storedParams.value,
-        turns: turns.map((row) => row.value),
-        toolCalls: tools.map((row) => row.value),
-      };
-    } finally {
-      await session.close(ctx);
+  return await withSession(dir, async (session) => {
+    const stored = await session.snapshot(ArchiveDoc, id, BACKGROUND_CONTEXT);
+    // 文档存在但不是 pageqa 写的（同一容器里的其它写入者）：如实说读不出来，
+    // 而不是把一个形状对不上的东西当成能读的档案返回。
+    if (!stored || stored.format !== SESSION_FORMAT) {
+      throw new Error(`找不到运行存档：${id}`);
     }
+    return {
+      format: SESSION_FORMAT,
+      version: SESSION_VERSION,
+      id,
+      startedAt: stored.startedAt,
+      ...(stored.endedAt ? { endedAt: stored.endedAt } : {}),
+      ...(stored.status ? { status: stored.status as SessionArchive["status"] } : {}),
+      ...(stored.note ? { note: stored.note } : {}),
+      ...(stored.usage ? { usage: fromJson<TokenUsage>(stored.usage) } : {}),
+      params: fromJson<SessionParams>(stored.params),
+      turns: fromJson<SessionTurn[]>(stored.turns),
+      toolCalls: fromJson<SessionToolCall[]>(stored.toolCalls),
+    };
   });
 }
 
 /**
  * 列出全部存档摘要，按开始时间**倒序**（同一时刻的按 id 兜底）。
  *
- * 摘要存在每条 Session 自己的 `summary` 值里，所以列表要逐个 open 去取——单容器模式下
- * 每次 open 只是同一个文件上的一次读，代价远小于「为列一屏条目把每份档案的轮次与工具
- * 调用全读出来」。取不到摘要的 Session（写了一半、或别的程序往同一容器里塞过东西）直接
- * 跳过：列出一条点开缺东西的记录，比少列一条更糟。
+ * 摘要全在 `pageqa.index` 这一份文档里，所以列一屏条目是一次读——不必像「每条运行各存一份
+ * 摘要」那样逐个去打开。索引里没有的文档（别的写入者塞进来的）自然不在列表里：列出一条点开
+ * 缺东西的记录，比少列一条更糟。
  */
 export async function listArchives(
   dir: string = SESSIONS_DIR,
 ): Promise<SessionSummary[]> {
-  // 目录或容器还不存在时不去开仓库：`SqliteSessionRepo` 会顺手把容器建出来，而
+  // 目录或容器还不存在时不去开存储：打开 SQLite 存储会顺手把容器（连目录）建出来，而
   // 「看一眼列表」不该在磁盘上留下一个新数据库文件。
   if (!existsSync(databasePath(dir))) return [];
-  const found = await withRepo(dir, async (repo, ctx) => {
-    const out: SessionSummary[] = [];
-    for (const meta of await repo.list(undefined, ctx)) {
-      try {
-        const session = await repo.open(meta, ctx);
-        try {
-          const stored = await session.getValue<SessionSummary>(
-            value(NS, K_SUMMARY),
-            ctx,
-          );
-          if (stored?.value && typeof stored.value.id === "string") {
-            out.push(stored.value);
-          }
-        } finally {
-          await session.close(ctx);
-        }
-      } catch {
-        // 单条读不出来就跳过它，别让一条坏记录拖垮整个列表页。
-      }
-    }
-    return out;
-  });
-  return found.sort((a, b) =>
-    a.startedAt === b.startedAt
-      ? b.id.localeCompare(a.id)
-      : b.startedAt.localeCompare(a.startedAt),
-  );
+  const found = await withSession(dir, readIndex);
+  return found.slice().sort(byStartedAtDesc);
 }
 
 /**
- * 清掉超出上限的旧存档（保留最近 keep 条，按容器里的创建时间倒序数）。
+ * 清掉超出上限的旧存档（保留最近 keep 条，按开始时间倒序数）。
+ *
+ * 一次提交里既缩索引、又`retireDoc` 掉被淘汰的档案文档，所以「列表里没有」与「详情也读不回来」
+ * 始终是同一件事。
  *
  * 返回实际删掉的条数。**不抛错**：清理是维护动作，它失败不该冒泡成「这次运行出错了」；
  * 真失败的后果只是磁盘上多留几条旧档案。
@@ -651,16 +651,19 @@ export async function pruneArchives(
 ): Promise<number> {
   if (keep <= 0 || !existsSync(databasePath(dir))) return 0;
   try {
-    return await withRepo(dir, async (repo, ctx) => {
-      const metas = (await repo.list(undefined, ctx)).sort(
-        (a, b) => b.createdAt - a.createdAt,
-      );
-      let removed = 0;
-      for (const meta of metas.slice(keep)) {
-        await repo.delete(meta, ctx);
-        removed += 1;
-      }
-      return removed;
+    return await withSession(dir, async (session) => {
+      const runs = (await readIndex(session)).slice().sort(byStartedAtDesc);
+      const dropped = runs.slice(keep);
+      if (dropped.length === 0) return 0;
+      const kept = runs.slice(0, keep);
+      await session.commit(async (tx) => {
+        const index = await tx.doc(IndexDoc);
+        index.runs = kept;
+        for (const summary of dropped) {
+          await tx.retireDoc(ArchiveDoc, summary.id);
+        }
+      }, BACKGROUND_CONTEXT);
+      return dropped.length;
     });
   } catch {
     return 0;

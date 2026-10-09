@@ -9,10 +9,16 @@ import {
   hasProvider,
   loadBuiltinProviders,
   probeModel,
+  refreshFreeProviders,
   resolveModel,
   type ModelCatalog,
   type ModelChoice,
 } from "./models.js";
+import {
+  createOpencodeFreeGateTools,
+  isFreeProvider,
+  OPENCODE_FREE_PROVIDER_ID,
+} from "./free-providers.js";
 import {
   captureSessionScreenshot,
   closeSession,
@@ -190,7 +196,8 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "- 用例中每一处「断言」都必须对应一次工具调用：一条「断言 …」= 一次 assert_text（校验下载用 download）。即使断言与操作写在同一行（如「打开页面并断言标题包含 X」），也要在操作完成后单独调用一次 assert_text；仅凭 snapshot 肉眼确认、在文字里写「成立」不算执行断言，报告会按「断言数不足」判 FAIL。",
   "- 严禁在步骤未执行完的情况下给出「测试通过」结论；宁可报告某步骤失败，也不要静默省略步骤。",
   "- 不要编造未观察到的内容；若元素不存在、导航失败或页面未打开，明确说明。",
-  "- **@eN 元素编号随页面变动而失效，禁止跨动作沿用**：任何会改动页面的动作（navigate / click / fill / select_option / hover / scroll / pick_date / upload 等）之后，页面会重新编号；接下来若要再定位或操作某个元素，**必须先重新 snapshot 拿到新的 @eN**，不得沿用动作之前的旧编号。沿用过期编号会被工具拒绝（报「@eN 引用已失效」），只会多一轮失败重试——想省快照就改用目标元素的稳定特征（文本、字段 label、CSS selector）去定位，而不是记一个会过期的序号。",
+  "- **@eN 元素编号随页面变动而失效，禁止跨动作沿用**：任何会改动页面的动作（navigate / click / fill / select_option / hover / scroll / pick_date / upload 等）之后，页面会重新编号；接下来若要再定位或操作某个元素，**必须先拿到新的 @eN**，不得沿用动作之前的旧编号。沿用过期编号会被工具拒绝（报「@eN 引用已失效」），只会多一轮失败重试——想省快照就改用目标元素的稳定特征（文本、字段 label、CSS selector）去定位，而不是记一个会过期的序号。" +
+  "- **select_option / pick_date 的结果里默认就附了「动作后的可交互元素」清单（含新编号）**：紧接着要操作页面时，直接从那里面取新编号，**不要再单独调用 snapshot**。其它动作（click / fill / hover / wait_for 等）要一次拿到新编号就传 showPage: true，否则它们的返回里没有清单。",
   "- 断言的期望值必须严格来自「用例显式写明的断言内容」（如「接收人 0227054520211299」「日志编号」）或「页面上真实观察到的文本」（如表头、具体字段值）。**严禁编造用例里没有的额外断言**：用例写了几条「断言 …」，就只调几次 assert_text，不要自己加戏。典型错误有两种：(1) 臆测总数——从别的场景/快照看到「共 22 条」就拿它当本场景的断言目标；(2) 用例说「确认有数据 / 表格无数据则 FAIL」，却额外去断言「暂无数据」这类占位文案——那正是用例没要求的断言。要表达「有数据」，直接断言一个确定会出现的正面标记（如「编号」表头或某条具体记录值）即可。",
   "- 用例写的是「断言页面**不包含** X」（或「X 不应出现 / 看不到 X」）时，用一次 `assert_text(expectation=\"X\", absent=true)` 表达：expectation 里只放 X 本身，**不要把「不包含」这类否定字眼写进文本**。反向断言与正向断言一样必须真的发起工具调用，不要因为「本来就没看到」就跳过它、或在文字里写一句「成立」——那样报告会按「断言数不足」判 FAIL。",
   "- 涉及文件上传时必须用 upload 工具：原生系统文件选择框无法被自动化点击，直接 click 上传按钮会卡住流程。",
@@ -519,6 +526,9 @@ export async function probeModelReachable(): Promise<void> {
   if (!hasProvider(catalog, choice.provider)) {
     await loadBuiltinProviders(catalog);
   }
+  if (isFreeProvider(choice.provider)) {
+    await refreshFreeProviders(catalog);
+  }
   const model = resolveModel(catalog, choice);
   if (!model) {
     throw new Error(
@@ -566,6 +576,12 @@ async function initializeAgent(
     log("[runAgent] 注册内置 provider（选择=" + choice.provider + "）...");
     await loadBuiltinProviders(catalog);
   }
+  // 免费网关的目录随上游变动，配置里存的那个模型 id 可能还没进快照：刷一次再解析。
+  // 刷新失败不阻断（refreshFreeProviders 不抛），最坏情况是沿用快照。
+  if (isFreeProvider(choice.provider)) {
+    log("[runAgent] 刷新免费网关目录（选择=" + choice.provider + "）...");
+    await refreshFreeProviders(catalog, { signal: opts.abortSignal });
+  }
   const model = resolveModel(catalog, choice);
   if (!model) {
     throw new Error(
@@ -607,20 +623,27 @@ async function initializeAgent(
   const recorder = new Recorder(opts.vars ?? []);
   // 断言结果由工具层逐条上报（见 bsk/tools.ts 的 onExec），报告不再依赖模型措辞。
   const assertions: AssertionResult[] = [];
-  const tools = createBskTools({
-    session,
-    jevClient,
-    onExec: (event) => {
-      recorder.noteTool(event);
-      if (event.assert) {
-        assertions.push({
-          expectation: event.assert.expectation,
-          verdict: event.assert.pass ? "pass" : "fail",
-          evidence: event.assert.evidence,
-        });
-      }
-    },
-  });
+  const tools = [
+    ...createBskTools({
+      session,
+      jevClient,
+      onExec: (event) => {
+        recorder.noteTool(event);
+        if (event.assert) {
+          assertions.push({
+            expectation: event.assert.expectation,
+            verdict: event.assert.pass ? "pass" : "fail",
+            evidence: event.assert.evidence,
+          });
+        }
+      },
+    }),
+    // Zen 的免费层要求请求里带五个工具名，否则 403（见 free-providers.ts）。
+    // 只在这一条车道上补桩：别的 provider 不该为一次「过门禁」多背五个无用声明。
+    ...(choice.provider === OPENCODE_FREE_PROVIDER_ID
+      ? createOpencodeFreeGateTools()
+      : []),
+  ];
   log(
     "[runAgent] 工具数=" +
       tools.length +

@@ -47,12 +47,19 @@
  * - 队列里还有在跑/待办的场景时拒绝执行（不静默丢掉「已提交但没跑」的场景）；
  * - 落点不跟着换（静默丢落点会让之后敲下的用例不再写回文件）。
  *
- * 模型切换与登录（见 ADR-0004）：
- * - `/model` 打开模型选择器：`Enter` 本次会话生效、`Ctrl+S` 同时设为启动默认（写回 config.json）；
+ * 模型切换与登录（见 ADR-0004、ADR-0015）：
+ * - `/model` 打开模型选择器：`Enter` 即选中——同时切换本次会话并写回 config.json 作为启动默认；
+ *   模型 id 常比列表那一列宽，因此**选中项会自己向左循环滚**，好把整个 id 看全（见 `./marquee.ts`）；
  * - `/login` 登录一个内置 provider（API Key 或订阅 OAuth），凭据写入 `~/.pageqa/auth.json`；
  * - `/logout` 移除某个 provider 的本地凭据。
  * 选择器与登录提问都复用底部输入区（浮层负责选项，输入框负责文本/密钥），
  * 因此「跑场景」与「改配置」用的是同一套输入路径，不需要第二套按键。
+ *
+ * 模型请求的代理（见 ADR-0016）：
+ * - `/proxy` 打开代理路由面板：开关（写回 `~/.pageqa/proxy.json`）、本次会话临时直连
+ *   （不落盘）、重新加载配置、查看统计与规则。
+ * - 路由本体在 `../proxy.ts`：进程启动时装配一次，自定义端点另有一条显式注入的 fetch
+ *   （内置 provider 的客户端由 pi-ai 内部构造，pageqa 拿不到注入位，只能靠全局替换）。
  */
 import {
   ModelUnreachableError,
@@ -81,6 +88,7 @@ import type { ScenarioRecording } from "../replay.js";
 import type {
   Component,
   SelectItem,
+  SelectListLayoutOptions,
   SlashCommand,
   StackChild,
 } from "@earendil-works/pi-tui";
@@ -104,6 +112,7 @@ import {
   KEYBINDINGS,
   WHEEL_SCROLL_LINES,
 } from "./keys.js";
+import { MarqueeScroller, marqueePeriod, marqueeWindow } from "./marquee.js";
 import {
   appendScenarioToCaseFile,
   loadCaseScenarios,
@@ -127,11 +136,20 @@ import {
 } from "../config.js";
 import { AUTH_PATH } from "../auth.js";
 import {
+  describeProxyRules,
+  PROXY_CONFIG_PATH,
+  proxyStatus,
+  reloadProxyConfig,
+  setProxyBypassed,
+  setProxyEnabled,
+} from "../proxy.js";
+import {
   createModelCatalog,
   listLoginOptions,
   listLogoutOptions,
   listModelOptions,
   loadBuiltinProviders,
+  refreshFreeProviders,
   resolveModel,
   PAGEQA_PROVIDER_ID,
   type LogoutOption,
@@ -140,6 +158,7 @@ import {
   type ModelChoice,
   type ModelOption,
 } from "../models.js";
+import { isFreeProvider } from "../free-providers.js";
 // 仅类型导入（编译期擦除）：TUI 路径不需要为 pi-ai 的运行时代码付出加载开销
 // （真正的模型目录由 models.ts 按需动态加载）。
 import type { AuthEvent, AuthPrompt, AuthType } from "@earendil-works/pi-ai";
@@ -222,6 +241,14 @@ const PICK_TIMEOUT_MS = 20_000;
  * 因此低于此宽度直接不渲染看板、整片留给日志视口（见 ADR-0010 决策三）。
  */
 const KANBAN_MIN_WIDTH = 90;
+
+/**
+ * 免费网关目录刷新的上限（见 `refreshFreeCatalog`）。
+ *
+ * 比 `PICK_TIMEOUT_MS` 短：刷新是「锦上添花」，用户等它的时候选择器还开不了，
+ * 因此宁可超时回落快照，也不要让一个慢网关把 `/model` 拖到超时。
+ */
+const FREE_CATALOG_TIMEOUT_MS = 8_000;
 
 /** 用户主动取消交互（Esc / Ctrl+C）时用的哨兵错误，与真正的失败区分开。 */
 const CANCELLED = "__cancelled__";
@@ -317,6 +344,7 @@ export async function runInteractive(
     isKeyRelease,
     matchesKey,
     setKeybindings,
+    sliceByColumn,
     truncateToWidth,
     visibleWidth,
   } = await import("@earendil-works/pi-tui");
@@ -385,8 +413,8 @@ export async function runInteractive(
   /**
    * 浮层根组件：负责「标题 + （搜索框）+ 列表 + 提示」的布局，加一圈边框，并把按键转交内部。
    *
-   * `searchInput` 存在时进入「可搜索」模式：方向键 / Enter / Esc / Ctrl+S 交给列表
-   * （导航、确认、取消、设为默认），其余按键（打字、退格、左右移光标）交给搜索框，
+   * `searchInput` 存在时进入「可搜索」模式：方向键 / Enter / Esc 交给列表
+   * （导航、确认、取消），其余按键（打字、退格、左右移光标）交给搜索框，
    * 每敲一下就重算过滤。这样上百条模型 / provider 也能即时筛出想要的。
    */
   class SelectorOverlay extends OverlayFrame {
@@ -405,8 +433,7 @@ export async function runInteractive(
           matchesKey(data, "up") ||
           matchesKey(data, "down") ||
           matchesKey(data, "enter") ||
-          matchesKey(data, "escape") ||
-          matchesKey(data, "ctrl+s")
+          matchesKey(data, "escape")
         ) {
           this.list.handleInput(data);
           return;
@@ -542,7 +569,7 @@ export async function runInteractive(
   const catalog = await createModelCatalog();
   /** 本次会话当前使用的模型：每个场景开跑时取值，切换只影响之后的场景。 */
   let currentChoice: ModelChoice = { ...catalog.defaultChoice };
-  /** 配置里保存的启动默认（Ctrl+S 会更新它）。 */
+  /** config.json 里保存的启动默认（选中即写盘；写失败时它与 currentChoice 会短暂不一致）。 */
   let defaultChoice: ModelChoice = { ...catalog.defaultChoice };
   /**
    * 本次会话的并发度（1..8）。
@@ -584,12 +611,33 @@ export async function runInteractive(
   }
 
   /**
-   * 校正启动时的模型选择。
+   * 免费网关的目录刷新（只在真的要看到/用它们时才做，见 free-providers.ts）。
+   *
+   * 一次刷新是几个网关的 `/v1/models` 并发请求，因此设上限：某个网关慢不能把 `/model` 卡住。
+   * 失败一律静默——「沿用内置快照继续用」本身就是正确行为，报错只会让用户以为功能坏了。
+   */
+  async function refreshFreeCatalog(signal?: AbortSignal): Promise<void> {
+    const timeout = AbortSignal.timeout(FREE_CATALOG_TIMEOUT_MS);
+    try {
+      await refreshFreeProviders(catalog, {
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      });
+    } catch {
+      // 刷新失败等价于「这次没拿到新目录」，不是错误。
+    }
+  }
+
+  /**
+   * 校正启动时的模型选择，**并把纠正结果写回配置**。
    *
    * 配置里可能留着「上次登录过的 provider」（例如 anthropic），但那台机器后来
    * 清了凭据、或该模型已下线。此时若不做处理，每个场景都会以「模型不存在」失败，
    * 用户看到的是「工具坏了」而不是「换个模型就好」——因此这里如实告警并退回自定义
    * 端点的第一个模型，让本次会话仍然可用。
+   *
+   * 退回后**顺手把 config.json 改成这个可用值**（ADR-0015 决策二）：配置里留着一个已知
+   * 不可用的值，等于每次启动都重演同一个警告；而既然「选中即写盘」已经是常态，这里的
+   * 自愈只是同一条规则的延伸。写不回就算了——本次会话照样能跑，只是下次还会再警告一次。
    */
   async function resolveInitialChoice(): Promise<void> {
     if (currentChoice.provider === PAGEQA_PROVIDER_ID) return;
@@ -598,27 +646,57 @@ export async function runInteractive(
     } catch {
       // 内置 provider 加载失败：下面统一按「不可用」兜底。
     }
+    // 免费网关的目录可能已经变了（配置里那个模型 id 是上次选的），刷一次再判断可用性。
+    if (isFreeProvider(currentChoice.provider)) {
+      await refreshFreeCatalog();
+    }
     if (resolveModel(catalog, currentChoice)) return;
     const fallback = catalog.models.getModels(PAGEQA_PROVIDER_ID)[0];
+    if (!fallback) {
+      append(
+        warn(
+          t("tui.model.fallback", {
+            provider: currentChoice.provider,
+            model: currentChoice.model,
+            next: "-",
+          }),
+        ),
+      );
+      return;
+    }
+    currentChoice = { provider: PAGEQA_PROVIDER_ID, model: fallback.id };
+    let healed = false;
+    try {
+      saveModelSelection(currentChoice.provider, currentChoice.model);
+      defaultChoice = { ...currentChoice };
+      healed = true;
+    } catch {
+      // 写不回去就只告警：本次会话已经能跑了，不该因为存盘失败而退出。
+    }
     append(
       warn(
         t("tui.model.fallback", {
-          provider: currentChoice.provider,
-          model: currentChoice.model,
-          next: fallback?.id ?? "-",
+          provider: catalog.defaultChoice.provider,
+          model: catalog.defaultChoice.model,
+          next: fallback.id,
+          healed: healed ? t("tui.model.fallbackHealed") : t("tui.model.fallbackKept"),
         }),
       ),
     );
-    if (fallback) {
-      currentChoice = { provider: PAGEQA_PROVIDER_ID, model: fallback.id };
-    }
   }
 
-  /** 选择器的返回值：`save` 表示用户按的是 Ctrl+S（设为启动默认）。 */
+  /** 选择器的返回值：被选中项的编码值（`provider\0model`）。 */
   interface SelectorPick {
     value: string;
-    save: boolean;
   }
+
+  /**
+   * 选中项超长时的横向滚动（见 `./marquee.ts`）。
+   *
+   * 全局一个就够：浮层是模态的，同一时刻只有一个选择器在用方向键。**关浮层与收尾时都要停**——
+   * 它是个 `setInterval`，不停会一直请求重绘、并把进程吊在事件循环里退不出去。
+   */
+  const marquee = new MarqueeScroller(() => tui.requestRender());
 
   /**
    * 打开一个选择器浮层并等待选择结果。
@@ -630,7 +708,6 @@ export async function runInteractive(
     titleText: string,
     items: SelectItem[],
     opts: {
-      allowSaveDefault?: boolean;
       hint?: string;
       searchable?: boolean;
     } = {},
@@ -644,16 +721,43 @@ export async function runInteractive(
             noMatch: (): string => dim(t("tui.select.noMatch")),
           }
         : editorTheme.selectList;
+      // 名字比那一列宽时，选中项向左循环滚出头来（未选中项照旧按宽度截断）：
+      // `truncatePrimary` 是 SelectList 逐项渲染时调用的钩子，滚到哪由此刻的 offset 决定，
+      // 推进 offset 与请求重绘归上面的 marquee 管。
+      const truncateForList = (
+        text: string,
+        maxWidth: number,
+        isSelected: boolean,
+        value: string,
+      ): string => {
+        if (!isSelected) {
+          return marqueeWindow(text, maxWidth, 0, visibleWidth, sliceByColumn);
+        }
+        marquee.setSelection(value, marqueePeriod(visibleWidth(text), maxWidth));
+        return marqueeWindow(
+          text,
+          maxWidth,
+          marquee.offset,
+          visibleWidth,
+          sliceByColumn,
+        );
+      };
+      const listLayout: SelectListLayoutOptions = {
+        truncatePrimary: ({ text, maxWidth, isSelected, item }) =>
+          truncateForList(text, maxWidth, isSelected, item.value),
+      };
       const list = searchable
         ? new LabelFilterSelectList(
             items,
             Math.min(14, Math.max(3, items.length)),
             listTheme,
+            listLayout,
           )
         : new SelectList(
             items,
             Math.min(14, Math.max(3, items.length)),
             editorTheme.selectList,
+            listLayout,
           );
 
       const searchInput = searchable
@@ -663,9 +767,7 @@ export async function runInteractive(
           })
         : undefined;
 
-      const baseHint =
-        opts.hint ??
-        (opts.allowSaveDefault ? t("tui.model.hint") : t("tui.select.hint"));
+      const baseHint = opts.hint ?? t("tui.select.hint");
       const hint = searchable
         ? baseHint + "  ·  " + t("tui.select.searchHint")
         : baseHint;
@@ -693,11 +795,10 @@ export async function runInteractive(
       });
 
       let settled = false;
-      let removeListener: (() => void) | undefined;
       const close = (): void => {
         if (settled) return;
         settled = true;
-        removeListener?.();
+        marquee.dispose();
         handle.hide();
         tui.setFocus(editor);
         tui.requestRender();
@@ -705,26 +806,12 @@ export async function runInteractive(
 
       list.onSelect = (item) => {
         close();
-        resolve({ value: item.value, save: false });
+        resolve({ value: item.value });
       };
       list.onCancel = () => {
         close();
         resolve(undefined);
       };
-      if (opts.allowSaveDefault) {
-        // Ctrl+S 是「设为启动默认」：SelectList 自己不认识这个键，因此在全局输入
-        // 监听里截获（监听先于聚焦组件执行，所以这里能抢在列表处理之前拿到）。
-        removeListener = tui.addInputListener((data) => {
-          if (!matchesKey(data, "ctrl+s")) return undefined;
-          const selected = list.getSelectedItem();
-          if (selected) {
-            const value = selected.value;
-            close();
-            resolve({ value, save: true });
-          }
-          return { consume: true };
-        });
-      }
     });
   }
 
@@ -847,11 +934,15 @@ export async function runInteractive(
     }
   }
 
-  /** 应用一次模型选择（`persist` 为真时同时写回配置作为启动默认）。 */
-  async function applyModel(
-    choice: ModelChoice,
-    persist: boolean,
-  ): Promise<void> {
+  /**
+   * 应用一次模型选择：**同时**切换本次会话并写回 config.json 作为启动默认。
+   *
+   * 「当前用哪个」与「下次默认哪个」不再是两个意图（ADR-0015）：选中即两处一起变。
+   * 写盘失败**不回滚**内存——用户当下要的是这条场景跑得起来，配置文件不可写不该拦住
+   * 一次运行；代价是内存与 config 暂时不一致，如实说出来（`defaultChoice` 保持旧值，
+   * 面板上的「默认」徽章因此仍指向真正落盘的那个）。
+   */
+  async function applyModel(choice: ModelChoice): Promise<void> {
     try {
       await ensureBuiltins();
     } catch {
@@ -869,30 +960,33 @@ export async function runInteractive(
       return;
     }
     currentChoice = { ...choice };
-    append(
-      accent(
-        t("tui.model.switched", {
-          provider: choice.provider,
-          model: choice.model,
-        }),
-      ),
-    );
-    if (persist) {
-      try {
-        saveModelSelection(choice.provider, choice.model);
-        defaultChoice = { ...choice };
-        append(
-          ok(
-            t("tui.model.savedDefault", {
-              provider: choice.provider,
-              model: choice.model,
-              path: CONFIG_PATH,
-            }),
-          ),
-        );
-      } catch (err2) {
-        append(err(t("tui.model.saveDefaultFailed", { msg: msgOf(err2) })));
+    try {
+      saveModelSelection(choice.provider, choice.model);
+      defaultChoice = { ...choice };
+      append(
+        ok(
+          t("tui.model.applied", {
+            provider: choice.provider,
+            model: choice.model,
+            path: CONFIG_PATH,
+          }),
+        ),
+      );
+      // 环境变量优先级高于 config：写了 config 却仍被 env 压住时如实点破，
+      // 否则「我明明改了怎么没变」会变成一个查不到出处的疑问（ADR-0015 决策三）。
+      if (process.env.PAGEQA_LLM_MODEL || process.env.PAGEQA_LLM_PROVIDER) {
+        append(warn(t("tui.model.envOverride")));
       }
+    } catch (err2) {
+      append(
+        err(
+          t("tui.model.saveDefaultFailed", {
+            provider: choice.provider,
+            model: choice.model,
+            msg: msgOf(err2),
+          }),
+        ),
+      );
     }
     updateStatus();
   }
@@ -1030,6 +1124,123 @@ export async function runInteractive(
     }
   }
 
+  /**
+   * `/proxy`：模型请求的代理路由面板（开关 / 会话临时直连 / 重载 / 查看统计与规则）。
+   *
+   * 面板里每一项都是**当场生效**的动作，因此关掉面板不需要「保存」——和 `/setting`
+   * 那种「改完写盘」的偏好不同：代理是网络环境，眼睛看到的状态就是真实状态。
+   * 只有「启用/关闭」会写回 `~/.pageqa/proxy.json`（下次启动仍是这个选择），
+   * 「本次会话先全部直连」刻意不落盘——它针对的是「这台机器此刻的网络」，
+   * 存成默认值等于替用户把下一次的运行也一起关掉。
+   */
+  async function openProxyPanel(): Promise<void> {
+    for (;;) {
+      const status = proxyStatus();
+      const stateText = status.active
+        ? t("tui.proxy.on")
+        : t("tui.proxy.off");
+      const items: SelectItem[] = [
+        {
+          value: "toggle",
+          label: status.config.enabled
+            ? t("tui.proxy.disable")
+            : t("tui.proxy.enable"),
+          description: status.config.enabled
+            ? t("tui.setting.on")
+            : t("tui.setting.off"),
+        },
+        {
+          value: "bypass",
+          label: status.bypassed
+            ? t("tui.proxy.unbypass")
+            : t("tui.proxy.bypass"),
+          description: status.bypassed
+            ? t("tui.proxy.on")
+            : t("tui.setting.off"),
+        },
+        { value: "reload", label: t("tui.proxy.reload"), description: PROXY_CONFIG_PATH },
+        { value: "stats", label: t("tui.proxy.stats"), description: "" },
+      ];
+      const pick = await openSelector(
+        t("tui.proxy.title", {
+          version: packageVersion(),
+          state: stateText,
+        }),
+        items,
+        {
+          hint: t("tui.proxy.hint", {
+            path: PROXY_CONFIG_PATH,
+            proxy: status.config.proxy,
+            mode: status.config.mode,
+          }),
+        },
+      );
+      if (!pick) return;
+      if (pick.value === "stats") {
+        const s = proxyStatus();
+        append(t("tui.proxy.statsLine", { ...s.stats }));
+        append(t("tui.proxy.state", {
+          state: s.active ? t("tui.proxy.on") : t("tui.proxy.off"),
+          proxy: s.config.proxy,
+          mode: s.config.mode,
+        }));
+        append(t("tui.proxy.rulesTitle"));
+        for (const line of describeProxyRules(s.config)) append(dim(line));
+        // 环境变量能把文件里的值压掉：只在这里说一句，用户下次看到就明白为什么改了没用。
+        if (
+          process.env.PAGEQA_PROXY_URL ||
+          process.env.PAGEQA_PROXY_ENABLED ||
+          process.env.PAGEQA_PROXY_MODE
+        ) {
+          append(warn(t("tui.proxy.envOverride")));
+        }
+        continue;
+      }
+      if (pick.value === "reload") {
+        const cfg = reloadProxyConfig();
+        append(
+          ok(
+            t("tui.proxy.reloadOk", {
+              path: PROXY_CONFIG_PATH,
+              state: cfg.enabled ? t("tui.proxy.on") : t("tui.proxy.off"),
+              proxy: cfg.proxy,
+              mode: cfg.mode,
+            }),
+          ),
+        );
+        continue;
+      }
+      if (pick.value === "bypass") {
+        const next = !status.bypassed;
+        setProxyBypassed(next);
+        append(
+          next
+            ? warn(t("tui.proxy.bypassed"))
+            : ok(
+                t("tui.proxy.unbypassed", {
+                  state: t("tui.proxy.on"),
+                  proxy: status.config.proxy,
+                }),
+              ),
+        );
+        continue;
+      }
+      try {
+        const cfg = setProxyEnabled(!status.config.enabled);
+        append(
+          ok(
+            t("tui.proxy.saved", {
+              state: cfg.enabled ? t("tui.proxy.on") : t("tui.proxy.off"),
+              path: PROXY_CONFIG_PATH,
+            }),
+          ),
+        );
+      } catch (err2) {
+        append(err(t("tui.proxy.failed", { msg: msgOf(err2) })));
+      }
+    }
+  }
+
   /** `/model`：列出可用模型并切换。 */
   async function openModelSelector(): Promise<void> {
     append(dim(t("tui.model.loading")));
@@ -1039,6 +1250,8 @@ export async function runInteractive(
       append(err(t("tui.model.loadFailed", { msg: msgOf(err2) })));
       return;
     }
+    // 免费网关的目录随上游变动，开选择器时刷一次（失败静默回落快照）。
+    await refreshFreeCatalog();
     let options: ModelOption[];
     try {
       options = await listModelOptions(catalog);
@@ -1058,6 +1271,7 @@ export async function runInteractive(
       if (o.provider === currentChoice.provider && o.model === currentChoice.model) {
         badges.push(t("tui.model.badgeCurrent"));
       }
+      if (o.free) badges.push(t("tui.model.badgeFree"));
       return {
         value: encodeValue(o.provider, o.model),
         label: o.model + (badges.length > 0 ? `  [${badges.join(" / ")}]` : ""),
@@ -1067,11 +1281,11 @@ export async function runInteractive(
     const pick = await openSelector(
       t("tui.model.title", { current: modelLabel(currentChoice) }),
       items,
-      { allowSaveDefault: true, searchable: true },
+      { hint: t("tui.model.hint"), searchable: true },
     );
     if (!pick) return;
     const [provider, model] = decodeValue(pick.value);
-    await applyModel({ provider, model }, pick.save);
+    await applyModel({ provider, model });
   }
 
   /** `/login`：选 provider/登录方式，然后跑登录流程。 */
@@ -1484,6 +1698,7 @@ export async function runInteractive(
       { name: "login", description: t("tui.cmd.login") },
       { name: "logout", description: t("tui.cmd.logout") },
       { name: "setting", description: t("tui.cmd.setting") },
+      { name: "proxy", description: t("tui.cmd.proxy") },
       { name: "help", description: t("tui.cmd.help") },
       { name: "exit", description: t("tui.cmd.exit") },
     ];
@@ -1789,6 +2004,9 @@ export async function runInteractive(
       case "logout":
         void openLogoutSelector();
         break;
+      case "proxy":
+        void openProxyPanel();
+        break;
       case "exit":
       case "quit":
         requestShutdown(t("tui.exitReason"));
@@ -1848,6 +2066,8 @@ export async function runInteractive(
     }
 
     clearInterval(ticker);
+    // 跑马灯的定时器同理：收尾时若浮层还开着，不主动停它就退不出进程。
+    marquee.dispose();
     teardown = true;
     tui.stop();
     setSink(null);

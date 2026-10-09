@@ -90,9 +90,10 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 | `/status` | View the run queue (one line per scenario with state and origin) |
 | `/cancel <n>` | Cancel the not-yet-started queued scenario #n |
 | `/new` | New session: clears viewport and queue, resets token counter, but **archives the previous batch** (still in the exit report and replay script). Refuses while something is running/pending |
-| `/model` | Switch this session's model (`Enter` applies now, `Ctrl+S` also saves as the startup default) |
+| `/model` | Switch this session's model (`Enter` applies now, `Ctrl+S` also saves as the startup default). The list ships with a set of **free gateways** carrying a `free` badge — see [Free model gateways](#free-model-gateways) |
 | `/login` · `/logout` | Sign in / remove a provider's local credentials (`~/.pageqa/auth.json`) |
 | `/setting` | Persistent prefs: test report (HTML) / replay script toggles, language, **concurrency** (1/2/3/4/6/8) |
+| `/proxy` | Proxy routing for model requests: on/off (saved to `~/.pageqa/proxy.json`), bypass for this session, reload the file, show counters and rules — see [Proxy for model requests](#proxy-for-model-requests) |
 | `/help` · `/exit` | Help / finish and exit (`/quit` is an alias) |
 
 ### Keybindings
@@ -178,6 +179,29 @@ Unrecognized placeholders (e.g. `${PATH}`) are kept as-is.
 
 **File upload**: write "click the upload button to upload the local file `<absolute path>`" and the agent calls `upload` (enable "Allow access to file URLs" on the bsk extension first). **File download/export**: write "click export, confirm in the dialog, verify the file was downloaded" and the agent calls `download` (`target` is the element that triggers the download, `expectName` matches the filename with a glob like `*.xls`). Downloaded files are auto-cleaned after a passing assertion (disable via `downloadCleanup` in config).
 
+### Format lint: `pageqa lint`
+
+Those conventions are easy to forget, and breaking one usually only shows up **ten minutes into a run** — often as a **false failure** ("assertions incomplete", "steps incomplete"). `pageqa lint` moves the same checks in front of the run: it reads text only — **no browser, no model** — and reports "which line, which rule, why" in a second:
+
+```bash
+pageqa lint examples/smoke-test.md                            # for humans
+pageqa lint --json examples/smoke.md examples/smoke-test.md   # for machines (CI)
+pageqa lint --strict cases/login.md                           # warnings fail too (pre-commit)
+```
+
+Step and assertion counts come from the very code the runtime uses (`numberSteps` / `countAssertions`), so a clean lint never turns into an "assertions incomplete" failure at run time.
+
+| Severity | Rules |
+| --- | --- |
+| `error` (exit code 1) | text before the first `## ` (dropped), empty scenario, duplicate scenario title, `@e3` snapshot ref, `打开`/`open` without http/https, unknown placeholder (`${PATH}` is kept verbatim), upload without an absolute path |
+| `warn` (non-zero under `--strict`) | fixed `wait N seconds`, a dropdown written as "fill in", a separate "assert the filename…" line after a download, prose mistaken for a step, a scenario with no assertion, **an assertion with no literal text to match** ("the table has rows", "the dialog is open") |
+
+Exit code: `0` clean; `1` has an `error` (or a `warn` under `--strict`).
+
+**Runs pre-check automatically too**: before every run (batch / interactive / `--only`) the same rules are applied and any findings are printed to stderr (at most 5 expanded). It is **advisory and never blocks** — a case that can run should run, a real failure is worth more than a format warning; to gate on it, wire `pageqa lint` into CI. Pass `--no-lint` to skip it.
+
+> Turning the intro text of `examples/smoke.md` into a `>` line is not pedantry: that text is dropped entirely, yet it still counted toward the step total — its only effect was making n one larger than the steps the model could actually run.
+
 ---
 
 ## Config & optional enhancements
@@ -186,7 +210,84 @@ Unrecognized placeholders (e.g. `${PATH}`) are kept as-is.
 - **Parallelism (optional)**: `concurrency` or `PAGEQA_CONCURRENCY` (**default 1** = one at a time, capped at 8). Parallelism is a claim that the scenarios are independent, hence off by default; the value is literally how many browser windows are open at once.
 - **Per-scenario execution limit (optional)**: `scenarioTimeoutMs` or `PAGEQA_SCENARIO_TIMEOUT` (milliseconds, **unlimited by default**). In suite mode a scenario that exceeds it has its child process killed, is recorded as failed (`reason: "timeout"` in the report), and **the following scenarios still run**. Off by default: ten-plus-minute flows are normal here, so an assumed default would just be a new source of failures — set it explicitly when CI needs a gate.
 - **Jev semantic assertion (optional)**: add a `jev` field to config (or `PAGEQA_JEV_*` env vars) for a semantic re-check when a literal match misses, correcting false FAILs from synonyms/near-synonyms/formatting; on API failure it degrades back to string match automatically.
+- **Turning the endpoint's thinking off (optional)**: hybrid reasoning models (Hunyuan / DeepSeek / Qwen / GLM) default to **thinking on** over OpenAI-compatible endpoints — the model emits a long reasoning passage first, which is slow, burns tokens, and muddles the agent's step numbering and conclusions. Set `thinkingFormat` (or `PAGEQA_LLM_THINKING_FORMAT`) and pageqa sends the endpoint's own off-switch on **every** request:
+
+  | `thinkingFormat` | field sent when thinking is off |
+  | --- | --- |
+  | `deepseek` / `zai` | `thinking: { "type": "disabled" }` |
+  | `qwen` | `enable_thinking: false` |
+  | `qwen-chat-template` | `chat_template_kwargs: { "enable_thinking": false, "preserve_thinking": true }` |
+  | `together` | `reasoning: { "enabled": false }` |
+  | `openrouter` | `reasoning: { "effort": "none" }` |
+  | `string-thinking` | `thinking: "none"` |
+  | `openai` / `ant-ling` / `baseten` / `chat-template` | **cannot send an off-switch** (the field only appears when a thinking level is requested), so configuring one is a no-op |
+
+  **On by default**: with nothing configured, pageqa picks the off-switch the endpoint understands from the model id (`qwen*`/`qwq*` get `enable_thinking: false`; `deepseek*`, `hunyuan*`, `hy*`, `glm*` get `thinking: {"type":"disabled"}`; anything unrecognised falls back to the deepseek convention, the most common one). Set an explicit value from the table above to change the spelling, or `none`/`off` to stop disabling thinking altogether.
+  The effective value and the field being sent are printed at startup. **If the endpoint rejects that field** (strict implementations answer 400), the probe drops it, retries once, writes the downgrade into the model object so this process never sends it again, and says so. So defaulting to off cannot break an endpoint that used to work; it costs one extra probe request only when the endpoint really is incompatible.
 - **Language**: `--locale zh|en` or `PAGEQA_LOCALE`; default `zh`. The data contract (JSON fields, exit codes) is language-neutral.
+- **Proxy for model requests (optional)**: `~/.pageqa/proxy.json` — see [Proxy for model requests](#proxy-for-model-requests) below.
+- **Free model gateways (optional)**: `/model` ships with a set of free / login-free OpenAI-compatible gateways — see [Free model gateways](#free-model-gateways) below.
+
+---
+
+## Free model gateways
+
+Alongside the custom endpoint and pi-ai's built-in providers, `/model` ships with a set of **free** OpenAI-compatible gateways (catalog data taken from [pi-free](https://github.com/apmantza/pi-free); they carry a `free` badge in `/model`):
+
+| provider | endpoint | key env var | notes |
+| --- | --- | --- | --- |
+| `cline` | `https://api.cline.bot/api/v1` | `CLINE_API_KEY` | public catalog; **chat still needs a login** (`/login cline`). Models are listed logged out and the pre-flight probe reports the real error |
+| `llm7` | `https://api.llm7.io/v1` | `LLM7_API_KEY` | two free selectors: `default` / `fast` |
+| `fastrouter` | `https://api.fastrouter.ai/api/v1` | `FASTROUTER_API_KEY` | public catalog; `:free` routes have per-minute / per-day caps |
+| `orcarouter` | `https://api.orcarouter.ai/v1` | `ORCAROUTER_API_KEY` | key required; only `-free` routes are listed |
+| `xkiro` | `https://api.xkiro.com/v1` | `XKIRO_API_KEY` | key required; only `:free` routes are listed |
+
+- **No Pi CLI needed**: pi-free itself is a Pi extension (it depends on `@earendil-works/pi-coding-agent`), so pageqa only borrows the catalog data it curated.
+- **Catalog: remote first, snapshot as fallback**: opening `/model` fetches each gateway's public `/v1/models` concurrently and keeps only the free entries; when that fails the built-in snapshot (pi-free's 2026-08-26 audit) is used, so there is always something to pick even offline. A failed refresh is silent — it just falls back.
+- **Credentials**: set the env var or use `/login <provider>`; both land in `~/.pageqa/auth.json`. `cline` / `llm7` / `fastrouter` work without a key, the other two only appear once you configure one.
+- **No guarantees**: rate limits, model retirements and catalog renames are entirely upstream's business. That is what the pre-flight probe (the `ping` before a run starts) is for — an unreachable model aborts with a readable reason instead of producing a pile of bogus scenario failures.
+- **`opencode-free` from pi-free is not ported**: OpenCode Zen's free tier fingerprints the request's tool list (it must carry `bash`/`edit`/`glob`/`grep`/`read`). pageqa's tool set is browser actions, and stuffing in five dead tools just to satisfy the fingerprint would pollute every turn. Use pi-ai's built-in `opencode` / `opencode-go` (with `OPENCODE_API_KEY`) for Zen instead.
+
+---
+
+## Proxy for model requests
+
+Some networks cannot reach a model endpoint directly, while the local endpoint on `127.0.0.1` and the bsk daemon **must** stay direct. A blanket `HTTP_PROXY` breaks the local ones (the symptom is "connected, but never answers"). So pageqa routes per domain:
+
+| Action | Meaning |
+| --- | --- |
+| `direct` | always connect directly |
+| `proxy` | always go through the proxy |
+| `fallback` | try direct first, retry through the proxy on a **network** error (default) |
+
+- **Config file**: `~/.pageqa/proxy.json` (`pageqa --init-config` writes one). Precedence: `PAGEQA_PROXY_*` env vars > file > built-in defaults.
+
+```json
+{
+  "proxy": "http://127.0.0.1:7890",
+  "enabled": true,
+  "mode": "fallback",
+  "rules": [
+    { "match": "localhost,127.0.0.1,*.local,10.*,192.168.*", "action": "direct", "comment": "local / intranet" },
+    { "match": "api.deepseek.com", "action": "proxy", "comment": "force proxy" },
+    { "match": "*", "action": "fallback", "comment": "direct first, proxy on failure" }
+  ]
+}
+```
+
+Rules are matched top-down, first match wins; anything unmatched falls back to `mode`. `rules: []` means "no rules at all, everything follows `mode`".
+
+| Pattern | Matches |
+| --- | --- |
+| `example.com` | that domain only |
+| `*.example.com` | any subdomain (and the bare domain) |
+| `10.*` · `172.2*` | an IP prefix / range (`*` may sit anywhere) |
+| `*` | everything |
+
+- **Defaults**: with no `proxy.json` at all, pageqa still routes — localhost/intranet direct, everything else `fallback`. So a local endpoint is untouched while an off-network model endpoint automatically goes through the proxy. The only behavioural change is that a failing direct request gets one extra attempt via `http://127.0.0.1:7890`; set `"enabled": false` (or `PAGEQA_PROXY_ENABLED=false`) to switch it off entirely.
+- **Env overrides** (handy in CI): `PAGEQA_PROXY_URL`, `PAGEQA_PROXY_ENABLED`, `PAGEQA_PROXY_MODE`. To reuse a shell's `HTTPS_PROXY`, pass it explicitly: `PAGEQA_PROXY_URL=$HTTPS_PROXY pageqa case.md`.
+- **Interactive mode**: `/proxy` toggles routing (saved to the file), bypasses it for the session only (not saved), reloads the file, and shows counters plus the effective rules. `--debug` prints the current state at startup.
+- Outbound Jev requests (`--semantic`) go through the same routing.
 
 ---
 
@@ -204,6 +305,8 @@ Unrecognized placeholders (e.g. `${PATH}`) are kept as-is.
 | `--emit-script [path]` | Freeze a replay script (on by default, next to the source case) |
 | `--no-side-outputs` | Write no side outputs (HTML report, default replay script); an explicit `--emit-script <path>` still wins |
 | `--usage-stream` | Print one structured LLM-usage record per call to stderr (prefix `[pageqa:usage]`); how the parent gets live usage from a child process |
+| `--no-lint` | Skip the case-format pre-check before a run (on by default; it only advises on stderr and never blocks). To gate on it use `pageqa lint` |
+| `lint` (subcommand) | `pageqa lint <case file...>`: static case-format check, no browser and no model (`--json` / `--strict`); exit code `1` means there is an `error` |
 | `--replay <file>` | Replay an existing script with zero models |
 | `--semantic` | At replay, assertions use Jev semantic judgment |
 | `--fail-fast` | At replay, stop a scenario on first failure |
@@ -217,7 +320,7 @@ Unrecognized placeholders (e.g. `${PATH}`) are kept as-is.
 
 ## Reviewing run archives (`pageqa sessions`)
 
-How much of the scene you can inspect decides whether you can debug it at all. Every run writes "what was handed to the agent" plus "the full interaction" into `~/.pageqa/sessions/sessions.sqlite` (one **SQLite container** through pi's session backend `@earendil-works/pi-session-backend-sqlite-node`: one run = one Session, with parameters/summary/verdict in `Value` and per-turn context plus tool calls in `ValueList`, written in a single transaction), and `pageqa sessions` serves them:
+How much of the scene you can inspect decides whether you can debug it at all. Every run writes "what was handed to the agent" plus "the full interaction" into `~/.pageqa/sessions/sessions.sqlite` (one **SQLite container** through pi's `@earendil-works/pi-durable`: one run is one member of the `pageqa.archive` document family, keyed by run id, while the list page's summaries live in the singleton `pageqa.index` document — archive and index are written in a single transaction), and `pageqa sessions` serves them:
 
 - **Parameters handed to the agent**: system prompt, model, tool declarations (with JSON Schema), the step-numbered case and placeholder values;
 - **Per-turn LLM context**: the messages actually sent on that turn (including context trimming) — answering "what did the model really see, and were earlier steps pushed out?";
@@ -251,8 +354,10 @@ flowchart TD
   subgraph LLMC["LLM & config"]
     MODELS["models.ts model catalog · probe · resolve"]
     LLMP["llm.ts OpenAI-compatible provider"]
+    FREE["free-providers.ts free gateway catalog (pi-free)"]
     AUTH["auth.ts credentials (~/.pageqa/auth.json)"]
     CONFIG["config.ts config (~/.pageqa/config.json)"]
+    PROXY["proxy.ts proxy routing (~/.pageqa/proxy.json)"]
     JEV["jev.ts semantic assertion (optional)"]
   end
 
@@ -300,8 +405,11 @@ flowchart TD
   RUN -->|"--emit-script"| ENGINE
 
   MODELS --> LLMP
+   MODELS --> FREE
   MODELS --> AUTH
   MODELS --> CONFIG
+  MODELS -.->|"per-request fetch"| PROXY
+  JEV -.-> PROXY
 
   TOOLS --> DIAG
   TOOLS --> SNAP
@@ -334,6 +442,7 @@ flowchart TD
 ```
 Natural-language intent
    └─> pi-agent-core agent (LLM: configurable OpenAI-compatible endpoint)
+          └─> every request goes through proxy.ts first: per-domain direct / via proxy / direct-then-proxy
           └─> bsk tools: navigate / snapshot / click / fill / select_option / pick_date / upload / download / hover / scroll / press / wheel / focus / blur / get_html / screenshot / wait / wait_for / assert_text / assert_no_console_error / assert_network
                  └─> real browser (connected by bsk)
           └─> conclusion & evidence -> report (text/JSON) + exit code
@@ -347,7 +456,9 @@ Interactive mode (pageqa --tui <case file>)
    └─> exit -> restore main screen -> summary report (stdout/--out) + exit code (cancelled not counted)
 ```
 
-Available tools (`src/bsk/tools.ts`): `navigate` opens a page; `snapshot` reads the page's aria tree and visible text (with slimming and reuse; the `refs` mode keeps only the interactive-element list); `click`/`fill`/`hover` element interactions (pass `showPage: true` to get a post-action element list appended, saving the follow-up snapshot); `select_option` picks a dropdown/cascader option in one call (open -> wait for the overlay -> match by visible text); `pick_date` picks a date in one call (open the panel -> navigate to the target month -> click the day; accepts `2026-09-29` / `today` / `+3` / `-7`; for **date ranges** pass the end date as `endDate` and it walks "pick start -> pick end -> confirm", failing loudly when the panel type and the arguments disagree instead of leaving a half-finished range); `upload` uploads a local file; `download` captures a browser download (itself an assertion); `scroll` scrolls to an element; `press` sends a **real** keyboard key (Enter to submit in an input, `Escape` to close a dialog, `Tab` through focus order; pass `target` to focus an element first, otherwise the key goes to the current focus, i.e. wherever the previous `fill` left it); `wheel` dispatches a **real wheel event** (infinite-scroll bottom callbacks and horizontal scrollers only respond to this — `scroll` is "scroll the element into view" and fires no scroll event; positive `deltaY` scrolls down, roughly 600–800 per screen); `focus`/`blur` focus and blur an element (form validation usually hangs off blur, so "fill → blur → assert the error message" is a standard chain, and blur is cleaner than clicking elsewhere); `get_html` dumps the raw DOM HTML (covers what the snapshot cannot see — `class`/`data-*`/`value` **attributes**; capped at 16 KiB inline by default, pass `out` to write a larger dump to a file); `screenshot` captures evidence (viewport by default, `fullPage: true` for the whole page, `target` with an `@eN` ref to crop to one element; images are **inlined into the HTML report** and also kept under `~/.pageqa/screenshots` — it is a read-only action that **produces no assertion**); `wait`/`wait_for` wait; `assert_text` asserts the page contains the specified text; `assert_no_console_error` asserts the page raised no JavaScript errors (uncaught exceptions plus `console.error` / browser error logs — **these never surface as page text**, so `assert_text` can never see them; `ignore` whitelists known noise and `warnings: true` counts warnings too); `assert_network` asserts a request happened and its status matches (`url` is matched as a substring, `status` takes `200` or `2xx`, and omitting `status` means "the request completed successfully").
+Available tools (`src/bsk/tools.ts`): `navigate` opens a page; `snapshot` reads the page's aria tree and visible text (with slimming and reuse; the `refs` mode keeps only the interactive-element list); `click`/`fill`/`hover` element interactions (pass `showPage: true` to get a post-action element list appended, saving the follow-up snapshot); `select_option` picks a dropdown/cascader option in one call (open -> wait for the overlay -> match by visible text; it **appends** a post-action interactive-element list by default, since such an action always changes the page and invalidates old `@eN` refs — pass `showPage: false` to opt out); `pick_date` picks a date in one call (open the panel -> navigate to the target month -> click the day; accepts `2026-09-29` / `today` / `+3` / `-7`; for **date ranges** pass the end date as `endDate` and it walks "pick start -> pick end -> confirm", failing loudly when the panel type and the arguments disagree instead of leaving a half-finished range); `upload` uploads a local file; `download` captures a browser download (itself an assertion); `scroll` scrolls to an element; `press` sends a **real** keyboard key (Enter to submit in an input, `Escape` to close a dialog, `Tab` through focus order; pass `target` to focus an element first, otherwise the key goes to the current focus, i.e. wherever the previous `fill` left it); `wheel` dispatches a **real wheel event** (infinite-scroll bottom callbacks and horizontal scrollers only respond to this — `scroll` is "scroll the element into view" and fires no scroll event; positive `deltaY` scrolls down, roughly 600–800 per screen); `focus`/`blur` focus and blur an element (form validation usually hangs off blur, so "fill → blur → assert the error message" is a standard chain, and blur is cleaner than clicking elsewhere); `get_html` dumps the raw DOM HTML (covers what the snapshot cannot see — `class`/`data-*`/`value` **attributes**; capped at 16 KiB inline by default, pass `out` to write a larger dump to a file); `screenshot` captures evidence (viewport by default, `fullPage: true` for the whole page, `target` with an `@eN` ref to crop to one element; images are **inlined into the HTML report** and also kept under `~/.pageqa/screenshots` — it is a read-only action that **produces no assertion**); `wait`/`wait_for` wait; `assert_text` asserts the page contains the specified text; `assert_no_console_error` asserts the page raised no JavaScript errors (uncaught exceptions plus `console.error` / browser error logs — **these never surface as page text**, so `assert_text` can never see them; `ignore` whitelists known noise and `warnings: true` counts warnings too); `assert_network` asserts a request happened and its status matches (`url` is matched as a substring, `status` takes `200` or `2xx`, and omitting `status` means "the request completed successfully").
+
+**Stale refs self-heal**: any action using an expired `@eN` is refused — that is what keeps it from silently clicking whatever element now holds that number (see the header of `locator.ts`) — and the error carries the **current interactive-element list** right in it, so the model retries with a fresh ref instead of spending another round trip on a snapshot (`select_option` / `pick_date` also append that list on **success**, so "select one widget, then the next" no longer costs an extra turn).
 
 Picker widgets (Element Plus and friends) use a **mixed strategy**: `.el-*` class contracts first (steadier than the aria tree), then generic ARIA selectors such as `[role=listbox]`; when neither hits, the tool fails honestly and lists the currently selectable options so the model can fall back to the generic "look at the snapshot and click" path — it **never guesses** at an element. Why a dedicated layer: on the generic path "open -> snapshot -> click the option" costs three LLM round trips, and stepping through calendar months costs one snapshot per click; collapsing that into a single call takes picking a date from over ten seconds down to a few.
 

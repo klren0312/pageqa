@@ -40,6 +40,23 @@ describe("并发量的文案两种语种都不缺", () => {
     "replay.locate.regionPresent",
     "replay.locate.regionOverlay",
     "help.full",
+    // `pageqa lint` 子命令的帮助、报错与预检提示
+    "help.lint",
+    "err.lintNeedsFile",
+    "err.lintDir",
+    "err.lintNotFound",
+    "lint.hint",
+    // 动作后附「可交互元素清单」与「引用失效自愈」用到的文案
+    "bsk.refs.afterAction",
+    "bsk.refs.forRetry",
+    "bsk.refs.failed",
+    // 思考模式开关（thinkingFormat）的启动提示
+    "log.thinkingOff",
+    "log.thinkingOffNoop",
+    "log.thinkingBad",
+    "log.thinkingAuto",
+    "log.thinkingOffExplicit",
+    "log.thinkingDowngraded",
   ];
 
   test("zh 与 en 都能渲染出文案（而不是把 key 原样返回）", () => {

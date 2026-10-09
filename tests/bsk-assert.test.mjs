@@ -5,8 +5,25 @@ import {
   isConsoleOffender,
   literalAssertion,
   parseStatusSpec,
+  resolveShowPage,
   statusMatches,
 } from "../dist/bsk/tools.js";
+import { getLocale, setLocale, t } from "../dist/i18n.js";
+
+/**
+ * `select_option` / `pick_date` 的 `showPage` **默认开**（click/fill/hover 则默认关）。
+ *
+ * 这是「每个选择动作白付一轮失败重试 + 一次全量快照」那个问题的开关：选择类操作必然
+ * 改动页面，旧 `@eN` 随即失效；默认不给清单，模型就只能走「引用被拒 → 重新 snapshot → 重试」。
+ * 默认值很容易在某次改动里被顺手翻回去，所以在这里钉住。
+ */
+describe("选择类工具的 showPage 默认值", () => {
+  test("不给就是开，只有显式 false 才关", () => {
+    assert.equal(resolveShowPage(undefined), true);
+    assert.equal(resolveShowPage(true), true);
+    assert.equal(resolveShowPage(false), false);
+  });
+});
 
 // 断言判定的字面部分是纯函数，这里直接钉住三条用真实事故换来的规则。
 // 背景（examples/smoke.md 的 A3）：用例写的是「断言页面**不包含** X」，
@@ -134,6 +151,77 @@ describe("过滤浏览器 / 扩展自己的条目", () => {
 
   test("大小写不敏感", () => {
     assert.equal(isBrowserInternalUrl("CHROME-EXTENSION://x/y.js"), true);
+  });
+});
+
+/**
+ * 方法也是匹配条件，因此必须出现在文案里。
+ *
+ * 背景（2026-10-08 实测）：用例写「断言请求 /dingtalk 返回 200，方法是 POST」，而真实请求是 GET。
+ * 地址片段其实命中了，但方法筛掉了一切，于是报出「没有匹配「/dingtalk」的请求」——
+ * 人（和模型）看到的是「地址片段写错了」，会去改那个本来就对的地方，白跑一轮。
+ */
+describe("assert_network：方法也是匹配条件，必须出现在文案里", () => {
+  test("命中 / 未命中的证据都带上方法", () => {
+    const previous = getLocale();
+    try {
+      for (const locale of ["zh", "en"]) {
+        setLocale(locale);
+        for (const key of [
+          "bsk.network.hit",
+          "bsk.network.miss",
+          "bsk.network.noMatch",
+          "bsk.network.methodMismatch",
+        ]) {
+          const text = t(key, {
+            url: "/api/x",
+            count: 2,
+            latest: "GET 200",
+            actual: "GET",
+            expected: "POST",
+            recent: "GET 200 /a",
+            note: "",
+            method: "(method GET)",
+          });
+          assert.notEqual(text, key, `${locale} 缺译：${key}`);
+          assert.match(text, /GET/, `${locale} 的 ${key} 没带上方法：${text}`);
+        }
+      }
+    } finally {
+      setLocale(previous);
+    }
+  });
+
+  test("期望原文把方法写进去（否则报告里的断言看不出还有方法约束）", () => {
+    const previous = getLocale();
+    try {
+      for (const locale of ["zh", "en"]) {
+        setLocale(locale);
+        assert.match(
+          t("bsk.network.expectationStatus", {
+            url: "/api/x",
+            status: "200",
+            method: ", method GET",
+          }),
+          /GET/,
+        );
+        assert.match(
+          t("bsk.network.expectationAny", { url: "/api/x", method: ", method GET" }),
+          /GET/,
+        );
+        // 没给方法（调用方只按 URL 匹配）时不留下多余的标点
+        assert.equal(
+          t("bsk.network.expectationStatus", {
+            url: "/api/x",
+            status: "200",
+            method: "",
+          }),
+          locale === "zh" ? "请求 /api/x 返回 200" : "request /api/x returns 200",
+        );
+      }
+    } finally {
+      setLocale(previous);
+    }
   });
 });
 

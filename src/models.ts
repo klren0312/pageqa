@@ -6,6 +6,7 @@
  * - **内置 provider 延迟加载**：`@earendil-works/pi-ai/providers/all` 会把 40 多个
  *   provider（连带各自的模型目录）拉进来，批处理跑自定义端点时完全用不上。
  *   因此只有「当前选择的 provider 不是 pageqa」或用户打开 /model、/login 时才 import。
+ *   免费网关（free-providers.ts）随同一批注册、同一批刷新。
  * - **可用性以「是否配好鉴权」为准**：与 pi-coding-agent 一致——没配鉴权的 provider
  *   不列进 /model（列出来也没法用，反而让人以为坏了）。
  * - 本模块不持有「当前模型」状态：那是会话级状态，由 TUI / agent 调用方持有并传入。
@@ -19,9 +20,21 @@ import {
   type Model,
   type MutableModels,
 } from "@earendil-works/pi-ai";
-import { loadConfig, PAGEQA_PROVIDER_ID, type PageQaConfig } from "./config.js";
+import {
+  loadConfig,
+  PAGEQA_PROVIDER_ID,
+  THINKING_OFF_FIELD,
+  type PageQaConfig,
+  type ThinkingFormat,
+} from "./config.js";
 import { FileCredentialStore } from "./auth.js";
 import { createPageqaProvider } from "./llm.js";
+import { info } from "./log.js";
+import {
+  createFreeProviders,
+  FREE_PROVIDER_IDS,
+  isFreeProvider,
+} from "./free-providers.js";
 import { t } from "./i18n.js";
 
 export { PAGEQA_PROVIDER_ID };
@@ -78,9 +91,13 @@ export async function createModelCatalog(
 }
 
 /**
- * 注册全部内置 provider（幂等）。
+ * 注册全部内置 provider 与免费网关（幂等）。
  *
  * 用动态 import：只有真正需要时才付出这份加载开销。
+ *
+ * 免费网关（见 free-providers.ts）与内置 provider 一起注册，因此它们享受同一条
+ * 「没配鉴权就不列进 /model」的规则；差别只在免费网关里允许匿名的那几个
+ * （cline / llm7 / fastrouter）——它们目录公开、聊天免密，藏起来反而没人知道它们存在。
  */
 export async function loadBuiltinProviders(
   catalog: ModelCatalog,
@@ -94,7 +111,32 @@ export async function loadBuiltinProviders(
     if (provider.id === PAGEQA_PROVIDER_ID) continue;
     catalog.models.setProvider(provider);
   }
+  for (const provider of createFreeProviders()) {
+    catalog.models.setProvider(provider);
+  }
   catalog.builtinsLoaded = true;
+}
+
+/**
+ * 刷新免费网关的动态目录。
+ *
+ * 免费网关的模型列表会变（上游加新的 `:free` 路由），快照只是兜底，因此打开 `/model`
+ * 与「启动时选中的就是免费网关」这两个时机都要刷一次。
+ *
+ * 刻意不抛错：`Models.refresh` 把失败收进 `errors`，而刷新失败后的行为就是
+ * 「沿用快照继续用」——为此打断一次 `/model` 或一次运行不值得。调用方若想知道结果，
+ * 看返回值即可。
+ */
+export async function refreshFreeProviders(
+  catalog: ModelCatalog,
+  opts: { signal?: AbortSignal } = {},
+): Promise<ReadonlyMap<string, Error>> {
+  const result = await catalog.models.refresh({
+    providers: [...FREE_PROVIDER_IDS],
+    allowNetwork: true,
+    signal: opts.signal,
+  });
+  return result.errors;
 }
 
 /** 按选择取到具体模型；未注册返回 undefined（调用方据此给出可读报错）。 */
@@ -124,6 +166,38 @@ const PROBE_TIMEOUT_MS = 20_000;
 export type ModelProbe = { ok: true } | { ok: false; reason: string };
 
 /**
+ * 这次请求是否带着「关思考」的字段（见 src/llm.ts：默认开着）。
+ *
+ * 默认关思考意味着每个请求都多一个 `thinking: {"type":"disabled"}` 之类的字段。绝大多数
+ * OpenAI 兼容端点会忽略不认识的字段，但**严格实现会直接 400**（报错就是「不认识这个参数」）。
+ * 因此探活失败时要能区分「端点挂了」与「端点不认这个字段」——不然「默认关思考」会把一个
+ * 本来能用的配置弄坏。
+ */
+/**
+ * 取模型上的 `compat.thinkingFormat`。
+ *
+ * `compat` 在 pi-ai 里是**多个 provider 的联合类型**，只有 OpenAI 兼容那一支有这个字段，
+ * 因此这里收窄一次而不是在每个使用点各写一个 as。
+ */
+function compatThinkingFormat(model: Model<Api>): ThinkingFormat | undefined {
+  return (model.compat as { thinkingFormat?: ThinkingFormat } | undefined)
+    ?.thinkingFormat;
+}
+
+function thinkingOffFieldOf(model: Model<Api>): string | null {
+  const format = compatThinkingFormat(model);
+  if (!format || model.reasoning !== true) return null;
+  return THINKING_OFF_FIELD[format] ?? null;
+}
+
+/** 去掉「关思考」的字段，得到一个「什么都不发」的等价模型（不改原对象）。 */
+function withoutThinkingOff(model: Model<Api>): Model<Api> {
+  const { thinkingFormat: _dropped, ...compat } = (model.compat ?? {}) as
+    Record<string, unknown>;
+  return { ...model, reasoning: false, compat } as Model<Api>;
+}
+
+/**
  * 探活：确认这个模型现在真的能发起一次请求。
  *
  * 刻意走**与真实运行同一条路**（同一个 provider 的 `streamSimple`，同一套鉴权、端点与
@@ -139,6 +213,26 @@ export async function probeModel(
   catalog: ModelCatalog,
   model: Model<Api>,
   opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<ModelProbe> {
+  const first = await probeOnce(catalog, model, opts);
+  if (first.ok || !thinkingOffFieldOf(model)) return first;
+  const retry = await probeOnce(catalog, withoutThinkingOff(model), opts);
+  // 两次都失败：那是端点本身的问题，报**第一次**的原始原因（更贴近真实故障）。
+  if (!retry.ok) return first;
+  // 就地降级：agent 随后用的就是这个对象（agent.ts 里 resolveModel → probe → stream 是同一个），
+  // 改它等于本进程后续每一次请求都不再带这个字段。
+  const dropped = thinkingOffFieldOf(model);
+  model.reasoning = false;
+  model.compat = { ...(model.compat ?? {}) } as Model<Api>["compat"];
+  delete (model.compat as Record<string, unknown>).thinkingFormat;
+  info(t("log.thinkingDowngraded", { field: dropped ?? "" }));
+  return { ok: true };
+}
+
+async function probeOnce(
+  catalog: ModelCatalog,
+  model: Model<Api>,
+  opts: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<ModelProbe> {
   const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
   const timeout = AbortSignal.timeout(timeoutMs);
@@ -183,6 +277,8 @@ export interface ModelOption {
   model: string;
   name: string;
   contextWindow: number;
+  /** 该模型是否来自免费网关（`/model` 里给它加一个「免费」标记）。 */
+  free: boolean;
 }
 
 /**
@@ -202,6 +298,7 @@ export async function listModelOptions(
       const configured = await checkConfigured(catalog, provider.id, opts.signal);
       if (!configured) continue;
     }
+    const free = isFreeProvider(provider.id);
     for (const model of provider.getModels()) {
       out.push({
         provider: provider.id,
@@ -209,6 +306,7 @@ export async function listModelOptions(
         model: model.id,
         name: model.name,
         contextWindow: model.contextWindow,
+        free,
       });
     }
   }

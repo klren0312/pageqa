@@ -88,9 +88,10 @@ pageqa --tui examples/smoke.md   # 显式强制进入（非 TTY 下会直接报�
 | `/status` | 查看运行队列（每场景一行带状态与来源） |
 | `/cancel <n>` | 取消队列里还没开始的第 n 个场景 |
 | `/new` | 开新会话：清空视口与队列、token 重新计，但**上一批归档**（仍进退出报告与回放脚本）。队列还有在跑/待办时拒绝 |
-| `/model` | 切换本会话模型（`Enter` 本次生效，`Ctrl+S` 同时存为启动默认） |
+| `/model` | 切换本会话模型（`Enter` 本次生效，`Ctrl+S` 同时存为启动默认）。列表自带一批**免费网关**，带「免费」标记——见[免费模型网关](#免费模型网关) |
 | `/login` · `/logout` | 登录 / 移除某 provider 的本地凭据（写入 `~/.pageqa/auth.json`） |
 | `/setting` | 改持久化偏好：测试报告(HTML) / 回放脚本 开关、语言、**并发量**（1/2/3/4/6/8） |
+| `/proxy` | 模型请求的代理路由：开关（写回 `~/.pageqa/proxy.json`）、仅本次会话直连、重新加载配置、查看统计与规则——见[模型请求的代理](#模型请求的代理) |
 | `/help` · `/exit` | 帮助 / 收工退出（`/quit` 同义） |
 
 ### 键位
@@ -176,6 +177,29 @@ pageqa --replay examples/smoke.replay.json --semantic  # 断言改用 Jev 语义
 
 **文件上传**：用例里写「点击上传按钮上传本地文件 `<绝对路径>`」，agent 调 `upload`（先给 bsk 扩展开启「允许访问文件网址」）。**文件下载/导出**：写「点击导出、在对话框确认、验证文件已下载」，agent 调 `download`（`target` 是触发下载的元素，`expectName` 用 glob 匹配文件名，如 `*.xls`）。下载断言成立后会自动清理落盘文件（可在 config 关 `downloadCleanup`）。
 
+### 格式校验：`pageqa lint`
+
+上面这些约定只靠人记不住，而且违反了往往**跑完十几分钟才说**，还常以「断言数不足」「步骤未跑满」这类**假失败**的样子出现。`pageqa lint` 把同一套口径搬到开跑之前——只读文本，**不开浏览器、不调模型**，秒级给出「第几行、哪条规则、为什么」：
+
+```bash
+pageqa lint examples/smoke-test.md                        # 人看
+pageqa lint --json examples/smoke.md examples/smoke-test.md   # 机器看（CI 消费）
+pageqa lint --strict cases/login.md                       # 告警也算失败（提交钩子用）
+```
+
+判定用的步骤数与断言数直接复用运行时那份代码（`numberSteps` / `countAssertions`），所以**不会出现「lint 说没事、一跑报断言不足」**。
+
+| 级别 | 规则 |
+| --- | --- |
+| `error`（退出码 1） | `## ` 之前的正文被丢弃、空场景、重名场景、`@e3` 快照编号、`打开` 后面缺 http/https、未知占位符（`${PATH}` 会被原样保留）、上传没给绝对路径 |
+| `warn`（`--strict` 时也非零） | `等待 N 秒` 这类固定等待、下拉框写成「填写/填入」、下载后又单写一行「断言文件名…」、说明性文字被当成步骤、整个场景没有断言、**断言里没有可字面匹配的文本**（如「存在数据行」「弹框已打开」） |
+
+退出码：`0` 没问题；`1` 有 `error`（`--strict` 时 `warn` 也算）。
+
+**跑用例时也会自动预检**：每次 `pageqa` 跑用例（批处理 / 交互模式 / `--only`）之前都用同一份口径扫一遍，把问题打在 stderr 上（最多展开 5 条）。它**只提示、不拦**——能跑起来的用例就该让它跑完，真失败比格式告警值钱；要设门槛就把 `pageqa lint` 接进 CI。不想看这段加 `--no-lint`。
+
+> `examples/smoke.md` 的 `## ` 之前的说明改成 `>` 引用行不是洁癖：那段正文会被整体丢弃，而且它还会计进「步骤总数」——留着的唯一效果是让 n 比模型实际能跑的步数多 1。
+
 ---
 
 ## 配置与可选增强
@@ -184,7 +208,84 @@ pageqa --replay examples/smoke.replay.json --semantic  # 断言改用 Jev 语义
 - **并行度（可选）**：`concurrency` 或 `PAGEQA_CONCURRENCY`（**默认 1** = 逐个跑，上限 8）。并行等于声明「这些场景互不依赖」，所以默认不开；同时开着的浏览器窗口数就等于这个值。
 - **场景级执行上限（可选）**：`scenarioTimeoutMs` 或 `PAGEQA_SCENARIO_TIMEOUT`（毫秒，**默认不限**）。套件模式下单个场景超过上限即终止它的子进程、该场景记失败（报告里带 `reason: "timeout"`）、**继续跑后面的场景**。默认关着：长流程十几分钟是常态，凭空定一个上限就是给自己造新的失败来源；CI 要门禁时显式设。
 - **Jev 语义断言（可选）**：在 config 加 `jev` 字段（或 `PAGEQA_JEV_*` 环境变量），用于字面未命中时的语义复检，纠正同义/近义/格式差异造成的假 FAIL；调用失败自动降级回字符串匹配。
+- **关闭端点的思考模式（可选）**：混元 / DeepSeek / Qwen / GLM 这类**混合推理**模型在 OpenAI 兼容端点上默认开着思考，模型会先吐一大段思考内容——慢、烧 token，还把 agent 的步骤编号与结论搅乱。配 `thinkingFormat`（或环境变量 `PAGEQA_LLM_THINKING_FORMAT`）后，pageqa 会在**每次请求**里显式带上该端点认的关闭字段：
+
+  | `thinkingFormat` | 关思考时请求体里发的字段 |
+  | --- | --- |
+  | `deepseek` / `zai` | `thinking: { "type": "disabled" }` |
+  | `qwen` | `enable_thinking: false` |
+  | `qwen-chat-template` | `chat_template_kwargs: { "enable_thinking": false, "preserve_thinking": true }` |
+  | `together` | `reasoning: { "enabled": false }` |
+  | `openrouter` | `reasoning: { "effort": "none" }` |
+  | `string-thinking` | `thinking: "none"` |
+  | `openai` / `ant-ling` / `baseten` / `chat-template` | **发不出关闭开关**（只在请求了思考档位时才带字段），配了等于没配 |
+
+  **默认就是关**：不配时按模型 id 自动判断该端点认哪个字段（`qwen*`/`qwq*` 走 `enable_thinking: false`；`deepseek*`、`hunyuan*`、`hy*`、`glm*` 走 `thinking: {"type":"disabled"}`；认不出时用最常见的 deepseek 约定）。要改写法就填上表里的取值，要「不要关」就填 `none`/`off`。
+  启动时会打印实际生效的取值与发出的字段。**万一端点不认这个字段**（严格实现会直接 400），探活会自动去掉它重试一次并把这次降级写进模型对象，本进程后续都不再发，同时打一行说明。所以「默认关闭」不会把本来能用的端点弄坏，代价只在真不兼容时多一次探活请求。
 - **语言**：`--locale zh|en` 或 `PAGEQA_LOCALE`；默认 `zh`。数据契约（JSON 字段、退出码）与语言无关。
+- **模型请求代理（可选）**：`~/.pageqa/proxy.json`，见下面的[模型请求的代理](#模型请求的代理)。
+- **免费模型网关（可选）**：`/model` 里自带一批免费/免登录的 OpenAI 兼容网关，见下面的[免费模型网关](#免费模型网关)。
+
+---
+
+## 免费模型网关
+
+`/model` 里除了自定义端点与 pi-ai 内置 provider，还自带一批**免费**网关（数据取自[pi-free](https://github.com/apmantza/pi-free) 的整理，`/model` 里带「免费」标记）：
+
+| provider | 端点 | key 环境变量 | 备注 |
+| --- | --- | --- | --- |
+| `cline` | `https://api.cline.bot/api/v1` | `CLINE_API_KEY` | 目录公开；**聊天仍需登录**（`/login cline`）。未登录时模型照常列出，探活会给出可读报错 |
+| `llm7` | `https://api.llm7.io/v1` | `LLM7_API_KEY` | 两个免费 selector：`default` / `fast` |
+| `fastrouter` | `https://api.fastrouter.ai/api/v1` | `FASTROUTER_API_KEY` | 目录公开；`:free` 路由有每分钟/每天限额 |
+| `orcarouter` | `https://api.orcarouter.ai/v1` | `ORCAROUTER_API_KEY` | 需 key；只列 `-free` 路由 |
+| `xkiro` | `https://api.xkiro.com/v1` | `XKIRO_API_KEY` | 需 key；只列 `:free` 路由 |
+
+- **不用装 Pi CLI**：pi-free 本身是 Pi 的扩展（依赖 `@earendil-works/pi-coding-agent`），pageqa 只把它整理出来的数据搬了过来。
+- **目录先远端后快照**：打开 `/model` 时并发拉各网关的公开 `/v1/models`，只保留免费条目；拉不到就用内置快照（pi-free 2026-08-26 审计的结果），因此断网也总有模型可选。刷新失败不报错，静默回落。
+- **凭据**：写环境变量或直接 `/login <provider>`，都落 `~/.pageqa/auth.json`。`cline` / `llm7` / `fastrouter` 不配也能用，其余两个必须配 key 才出现。
+- **不保证**：免费网关的限流、模型下线、目录改名都由上游说了算。探活（开跑前那次 `ping`）就是为此存在的——不通会直接中止并说明原因，不会让场景跑出一堆假失败。
+- **pi-free 里的 `opencode-free` 没有搬**：OpenCode Zen 的免费层会指纹请求里的工具列表（必须含 `bash`/`edit`/`glob`/`grep`/`read`），pageqa 的工具集是浏览器动作，为过这个指纹塞五个死工具会污染每一轮上下文。要用 Zen 就走 pi-ai 内置的 `opencode` / `opencode-go`（配 `OPENCODE_API_KEY`）。
+
+---
+
+## 模型请求的代理
+
+有的网络里模型端点直连不通，而 `127.0.0.1` 上的本地端点与 bsk daemon **必须**直连。一刀切地设 `HTTP_PROXY` 会把本地端点也塞进代理，症状是「连上了但不回话」。所以 pageqa 按域名逐条路由：
+
+| 动作 | 含义 |
+| --- | --- |
+| `direct` | 永远直连 |
+| `proxy` | 永远走代理 |
+| `fallback` | 先直连，遇到**网络层**错误再走代理重试（默认） |
+
+- **配置文件**：`~/.pageqa/proxy.json`（`pageqa --init-config` 会生成一份）。优先级：环境变量 `PAGEQA_PROXY_*` > 配置文件 > 内置默认。
+
+```json
+{
+  "proxy": "http://127.0.0.1:7890",
+  "enabled": true,
+  "mode": "fallback",
+  "rules": [
+    { "match": "localhost,127.0.0.1,*.local,10.*,192.168.*", "action": "direct", "comment": "本机 / 内网" },
+    { "match": "api.deepseek.com", "action": "proxy", "comment": "强制走代理" },
+    { "match": "*", "action": "fallback", "comment": "先直连，失败再走代理" }
+  ]
+}
+```
+
+规则自上而下匹配，第一条命中者胜；都没命中按全局 `mode` 走。`"rules": []` 表示「不设任何规则，全部按 `mode`」。
+
+| 模式 | 匹配 |
+| --- | --- |
+| `example.com` | 只匹配该域名 |
+| `*.example.com` | 任意层级子域（含裸域本身） |
+| `10.*` · `172.2*` | IP 前缀/网段（`*` 可在任意位置） |
+| `*` | 全部 |
+
+- **默认行为**：完全没有 `proxy.json` 时也会路由——本机与内网 `direct`，其余 `fallback`。因此本机端点不受影响，墙外的模型端点自动改走代理；唯一的行为变化是「直连失败的请求会多一次经 `http://127.0.0.1:7890` 的尝试」。想彻底关掉：`"enabled": false`（或 `PAGEQA_PROXY_ENABLED=false`）。
+- **环境变量覆盖**（CI 里常用）：`PAGEQA_PROXY_URL`、`PAGEQA_PROXY_ENABLED`、`PAGEQA_PROXY_MODE`。想沿用 shell 里的 `HTTPS_PROXY` 就显式传：`PAGEQA_PROXY_URL=$HTTPS_PROXY pageqa 用例.md`。
+- **交互模式**：`/proxy` 面板可开关（写回文件）、仅本次会话直连（不写盘）、重新加载文件、查看统计与规则。`--debug` 启动时会打一行当前状态。
+- Jev 语义复核（`--semantic`）的对外请求走同一套路由。
 
 ---
 
@@ -202,6 +303,8 @@ pageqa --replay examples/smoke.replay.json --semantic  # 断言改用 Jev 语义
 | `--emit-script [path]` | 固化回放脚本（默认已开，路径贴源用例） |
 | `--no-side-outputs` | 不写旁路产物（HTML 报告、默认回放脚本）；显式 `--emit-script <path>` 仍然生效 |
 | `--usage-stream` | 把 LLM 用量逐次打到 stderr（一行一次，前缀 `[pageqa:usage]`）；场景在子进程里跑时父进程靠它取实时用量 |
+| `--no-lint` | 跳过「跑用例前的格式预检」（默认开；预检只在 stderr 提示、不拦执行）。要设门槛就用 `pageqa lint` |
+| `lint`（子命令） | `pageqa lint <用例文件…>`：静态校验用例格式，不开浏览器、不调模型（`--json` / `--strict`）；退出码 `1` 表示有 `error` |
 | `--replay <file>` | 零模型回放已有脚本 |
 | `--semantic` | 回放时断言用 Jev 语义判断 |
 | `--fail-fast` | 回放时任一失败即停该场景 |
@@ -215,7 +318,7 @@ pageqa --replay examples/smoke.replay.json --semantic  # 断言改用 Jev 语义
 
 ## 查看运行存档（`pageqa sessions`）
 
-出问题时能看到多少现场，决定了能不能查下去。每次运行都会把「交给 agent 的参数」与「运行中的完整交互」写进 `~/.pageqa/sessions/sessions.sqlite`（**SQLite 单容器**，走 pi 的 session 后端 `@earendil-works/pi-session-backend-sqlite-node`：一次运行 = 一个 Session，参数/摘要/终态存 `Value`、每轮上下文与工具调用存 `ValueList`，整条档案一次事务落库），`pageqa sessions` 起一个本地服务把它们摆出来：
+出问题时能看到多少现场，决定了能不能查下去。每次运行都会把「交给 agent 的参数」与「运行中的完整交互」写进 `~/.pageqa/sessions/sessions.sqlite`（**SQLite 单容器**，走 pi 的 `@earendil-works/pi-durable`：一次运行 = 文档族 `pageqa.archive` 的一个成员（键就是运行 id），列表页的摘要存在单例文档 `pageqa.index` 里，档案与索引整条一次事务落库），`pageqa sessions` 起一个本地服务把它们摆出来：
 
 - **传给 agent 的参数**：系统提示词、模型、工具声明（含 JSON Schema）、编号后的用例与占位符取值；
 - **每轮 LLM 的上下文**：这一轮**实际发出去**的消息（含上下文裁剪的结果）——回答「模型到底看到了什么、是不是把前面的步骤挤掉了」；
@@ -249,8 +352,10 @@ flowchart TD
   subgraph LLMC["LLM 与配置"]
     MODELS["models.ts 模型目录 · 探活 · 解析"]
     LLMP["llm.ts OpenAI 兼容 provider"]
+    FREE["free-providers.ts 免费网关目录（pi-free）"]
     AUTH["auth.ts 凭据（~/.pageqa/auth.json）"]
     CONFIG["config.ts 配置（~/.pageqa/config.json）"]
+    PROXY["proxy.ts 代理路由（~/.pageqa/proxy.json）"]
     JEV["jev.ts 语义断言（可选）"]
   end
 
@@ -298,8 +403,11 @@ flowchart TD
   RUN -->|"--emit-script"| ENGINE
 
   MODELS --> LLMP
+   MODELS --> FREE
   MODELS --> AUTH
   MODELS --> CONFIG
+  MODELS -.->|"每次请求的 fetch"| PROXY
+  JEV -.-> PROXY
 
   TOOLS --> DIAG
   TOOLS --> SNAP
@@ -332,6 +440,7 @@ flowchart TD
 ```
 自然语言意图
    └─> pi-agent-core agent（LLM：可配置 OpenAI 兼容端点）
+          └─> 每次请求先过 proxy.ts：按域名决定直连 / 走代理 / 先直连后代理
           └─> bsk 工具：navigate / snapshot / click / fill / select_option / pick_date / upload / download / hover / scroll / press / wheel / focus / blur / get_html / screenshot / wait / wait_for / assert_text / assert_no_console_error / assert_network
                  └─> 真实浏览器（由 bsk 连接）
           └─> 结论与证据 → 报告（文本/JSON）+ 退出码
@@ -345,7 +454,9 @@ flowchart TD
    └─> 退出 → 还原主屏 → 汇总报告（stdout/--out）+ 退出码（已取消不计入）
 ```
 
-可用工具（`src/bsk/tools.ts`）：`navigate` 打开页面；`snapshot` 读取页面 aria 树与可见文本（含瘦身与复用，`refs` 档位只留可交互元素清单）；`click`/`fill`/`hover` 元素交互（带 `showPage: true` 时在结果里附一份动作后的元素清单，省掉紧接着的那次 snapshot）；`select_option` 一步完成下拉框/级联选择（点开 → 等浮层 → 按可见文本选中）；`pick_date` 一步完成日期选择（点开面板 → 翻到目标年月 → 点中那一天，支持 `2026-09-29` / `today` / `+3` / `-7`；**日期范围**控件把结束日期传进 `endDate`，工具按「选开始 → 选结束 → 确定」走，类型与参数不一致时明确报错而不是留下半截范围）；`upload` 上传本地文件；`download` 捕获浏览器下载（本身即一项断言）；`scroll` 滚动到元素；`press` 真实键盘按键（输入框里回车提交、`Escape` 关掉弹窗、`Tab` 走焦点顺序；传 `target` 可先聚焦某个元素，不传则按在当前焦点上，即上一步 `fill` 的位置）；`wheel` 派发**真实滚轮事件**（无限加载的触底回调、横向滚动容器只认它——`scroll` 是「把元素滚进视口」、不产生滚动事件；`deltaY` 向下为正，一屏约 600–800）；`focus`/`blur` 聚焦与失焦（表单校验大多挂在 blur 上，「填完 → 失焦 → 断言报错提示」是常规链路，比「点一下别处」干净）；`get_html` 取原始 DOM HTML（补快照的盲区——`class`/`data-*`/`value` 这些**属性**快照看不到；默认只回 16KiB，要更大范围就传 `out` 落盘）；`screenshot` 截图留证（默认截视口，`fullPage: true` 截整页，`target` 传 `@eN` 只截那个元素；**图会内联进 HTML 报告**，`~/.pageqa/screenshots` 下也留一份；它是只读动作、**不产生断言**）；`wait`/`wait_for` 等待；`assert_text` 断言页面含指定文本；`assert_no_console_error` 断言页面没有 JavaScript 报错（未捕获异常与 `console.error`/浏览器错误日志——**这类错误不体现在页面文字上**，`assert_text` 永远看不到它；`ignore` 可放行已知噪音，`warnings: true` 把警告也算失败）；`assert_network` 断言某个请求发生了且状态符合期望（`url` 按子串匹配，`status` 写 `200` 或 `2xx`，不给 `status` 表示「请求成功完成」）。
+可用工具（`src/bsk/tools.ts`）：`navigate` 打开页面；`snapshot` 读取页面 aria 树与可见文本（含瘦身与复用，`refs` 档位只留可交互元素清单）；`click`/`fill`/`hover` 元素交互（带 `showPage: true` 时在结果里附一份动作后的元素清单，省掉紧接着的那次 snapshot）；`select_option` 一步完成下拉框/级联选择（点开 → 等浮层 → 按可见文本选中；**默认附**一份动作后的可交互元素清单，因为这类操作必然改动页面、旧 `@eN` 随即失效，传 `showPage: false` 可关）；`pick_date` 一步完成日期选择（点开面板 → 翻到目标年月 → 点中那一天，支持 `2026-09-29` / `today` / `+3` / `-7`；**日期范围**控件把结束日期传进 `endDate`，工具按「选开始 → 选结束 → 确定」走，类型与参数不一致时明确报错而不是留下半截范围）；`upload` 上传本地文件；`download` 捕获浏览器下载（本身即一项断言）；`scroll` 滚动到元素；`press` 真实键盘按键（输入框里回车提交、`Escape` 关掉弹窗、`Tab` 走焦点顺序；传 `target` 可先聚焦某个元素，不传则按在当前焦点上，即上一步 `fill` 的位置）；`wheel` 派发**真实滚轮事件**（无限加载的触底回调、横向滚动容器只认它——`scroll` 是「把元素滚进视口」、不产生滚动事件；`deltaY` 向下为正，一屏约 600–800）；`focus`/`blur` 聚焦与失焦（表单校验大多挂在 blur 上，「填完 → 失焦 → 断言报错提示」是常规链路，比「点一下别处」干净）；`get_html` 取原始 DOM HTML（补快照的盲区——`class`/`data-*`/`value` 这些**属性**快照看不到；默认只回 16KiB，要更大范围就传 `out` 落盘）；`screenshot` 截图留证（默认截视口，`fullPage: true` 截整页，`target` 传 `@eN` 只截那个元素；**图会内联进 HTML 报告**，`~/.pageqa/screenshots` 下也留一份；它是只读动作、**不产生断言**）；`wait`/`wait_for` 等待；`assert_text` 断言页面含指定文本；`assert_no_console_error` 断言页面没有 JavaScript 报错（未捕获异常与 `console.error`/浏览器错误日志——**这类错误不体现在页面文字上**，`assert_text` 永远看不到它；`ignore` 可放行已知噪音，`warnings: true` 把警告也算失败）；`assert_network` 断言某个请求发生了且状态符合期望（`url` 按子串匹配，`status` 写 `200` 或 `2xx`，不给 `status` 表示「请求成功完成」）。
+
+**引用失效是自愈的**：任何动作用了过期的 `@eN` 都会被拒——这是为了防止静默点到同编号的另一个元素（见 `locator.ts` 的文件头）——而报错里会**直接附上当前页面的可交互元素清单**，模型不必再单独拍一次快照，拿新编号重试即可（`select_option` / `pick_date` 还会在**成功**结果里主动附上那份清单，「选完一个控件接着选下一个」因此不再多付一轮）。
 
 选择类控件（Element Plus 等）走**混合策略**：优先用 `.el-*` 类名契约（比 aria 树稳），命不中时退回 `[role=listbox]` 等通用 ARIA 选择器；都找不到就如实报错并列出当前可选项，让模型退回「看快照自己点」的通用路径——**绝不猜元素**。这类控件为什么单独做一层：通用路径下「点开 → 看快照 → 点选项」是三轮 LLM 往返，选日期翻月份时更是一次点击一轮快照；压成一次调用后，一次选日期的墙钟从十几秒降到几秒。
 

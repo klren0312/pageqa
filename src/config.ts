@@ -44,6 +44,21 @@ export interface PageQaConfig {
    * 交互模式里 /login 登录内置 provider 后 /model 选定，会写回这里，下次启动即生效。
    */
   modelProvider: string;
+  /**
+   * 「怎么显式关闭端点的思考模式」（pi-ai 的 `compat.thinkingFormat`）。
+   *
+   * **默认就是关**：不配时按模型 id 自动判断该端点认哪个关闭字段（见 {@link guessThinkingFormat}），
+   * 因此混元 / DeepSeek / Qwen / GLM 这类混合推理模型**开箱即关**——它们在 OpenAI 兼容端点上
+   * 默认开着思考，模型会先吐一大段思考内容：慢、烧 token，还把 agent 的步骤编号与结论搅乱。
+   *
+   * 想改写法就填 {@link THINKING_FORMATS} 里的取值（各自发出的字段见 {@link THINKING_OFF_FIELD}）；
+   * 填 `none`/`off` 表示「不要关」（请求里不带任何思考相关字段，端点用它自己的默认）；
+   * 填不认识的值会如实提示并退回自动判断。
+   *
+   * 两条兜底让「默认关」不至于弄坏谁：字段按模型 id 猜（认不出就用最常见的
+   * `deepseek` 约定），而**严格端点直接拒绝**时探活会自动去掉字段重试一次（见 models.ts）。
+   */
+  thinkingFormat?: string;
   jev: JevConfig;
   /** 界面/日志/报告语种（"zh" | "en"）；交互模式 /setting 会写回这里。 */
   locale?: string;
@@ -128,6 +143,9 @@ export function loadConfig(): PageQaConfig {
       process.env.PAGEQA_LLM_PROVIDER ??
       fromFile.modelProvider ??
       DEFAULTS.modelProvider,
+    // 原样透传，取值校验统一放在 llm.ts 的 normalizeThinkingFormat（只有那里会发这个字段）
+    thinkingFormat:
+      process.env.PAGEQA_LLM_THINKING_FORMAT ?? fromFile.thinkingFormat,
     jev: {
       enabled: (() => {
         if (process.env.PAGEQA_JEV_ENABLED !== undefined) {
@@ -199,6 +217,17 @@ export interface SideOutputPrefs {
 export const SIDE_OUTPUT_DEFAULTS: SideOutputPrefs = {
   htmlReport: true,
   replayScript: true,
+};
+
+/**
+ * 旁路产物全关：供 CLI 的 `--no-side-outputs` 使用（见 ADR-0011 决策三）。
+ *
+ * 与 `SIDE_OUTPUT_DEFAULTS` 拆开：前者是「缺省即开」的兜底，后者是「显式全关」。
+ * 两者都不是用户配置文件里会落地的形态——`--no-side-outputs` 不写配置，只作用于当次运行。
+ */
+export const SIDE_OUTPUTS_DISABLED: SideOutputPrefs = {
+  htmlReport: false,
+  replayScript: false,
 };
 
 /**
@@ -309,6 +338,129 @@ export function saveSideOutputPref(
 }
 
 /**
+ * `compat.thinkingFormat` 的合法取值（pi-ai 的并集，见 node_modules/@earendil-works/pi-ai）。
+ *
+ * 它决定的不是「思考强度」，而是**在请求体里用什么写法告诉端点「别思考」**——各家
+ * OpenAI 兼容端点的开关字段并不统一，没有一个字段是通用的。
+ */
+export const THINKING_FORMATS = [
+  "openai",
+  "openrouter",
+  "deepseek",
+  "together",
+  "baseten",
+  "zai",
+  "qwen",
+  "chat-template",
+  "qwen-chat-template",
+  "string-thinking",
+  "ant-ling",
+] as const;
+
+export type ThinkingFormat = (typeof THINKING_FORMATS)[number];
+
+/**
+ * 每个取值在「**不**请求思考」时请求体里实际发出的字段。
+ *
+ * pageqa 从不请求思考档位，所以配了 thinkingFormat 的效果就是「每次请求显式关掉思考」。
+ * 空串 = 该格式发不出关闭开关（只在请求了思考档位时才带字段），配了等于没配——
+ * 这也是启动时要如实说出来的原因。
+ */
+export const THINKING_OFF_FIELD: Record<ThinkingFormat, string> = {
+  openai: "",
+  openrouter: 'reasoning: { effort: "none" }',
+  deepseek: 'thinking: { type: "disabled" }',
+  together: "reasoning: { enabled: false }",
+  baseten: "",
+  zai: 'thinking: { type: "disabled" }',
+  qwen: "enable_thinking: false",
+  "chat-template": "chat_template_kwargs（还需另配 chatTemplateKwargs）",
+  "qwen-chat-template":
+    "chat_template_kwargs: { enable_thinking: false, preserve_thinking: true }",
+  "string-thinking": 'thinking: "none"',
+  "ant-ling": "",
+};
+
+/**
+ * 校验 thinkingFormat 取值；空/不认识一律返回 undefined（= 用自动判断）。
+ *
+ * 刻意**不猜一个格式顶替**：猜错会往请求体里塞一个端点不认识的字段，严格端点直接 400
+ * ——但这条风险已经由两道兜底消化：格式按模型 id 自动选（见 guessThinkingFormat），
+ * 且探活失败时会自动去掉这个字段重试（见 models.ts 的 probeModel）。
+ */
+export function normalizeThinkingFormat(
+  value: string | undefined,
+): ThinkingFormat | undefined {
+  const v = (value ?? "").trim();
+  return (THINKING_FORMATS as readonly string[]).includes(v)
+    ? (v as ThinkingFormat)
+    : undefined;
+}
+
+/** 显式表示「不要关思考」的写法（填进 `thinkingFormat` 即关闭这项行为）。 */
+export const THINKING_OFF_TOKENS = [
+  "none",
+  "off",
+  "false",
+  "no",
+  "disable",
+  "disabled",
+  "0",
+] as const;
+
+/** `thinkingFormat` 的解析结果。 */
+export type ThinkingSetting =
+  /** 没配：按模型 id 自动判断发哪个关闭字段（**默认**，即「默认关闭思考」）。 */
+  | { kind: "auto" }
+  /** 显式不要关：请求里不带任何思考相关字段（端点用它自己的默认）。 */
+  | { kind: "off" }
+  /** 配了但不认识的取值：如实说出来，然后按「自动」处理。 */
+  | { kind: "invalid"; value: string }
+  /** 显式指定关闭字段的写法。 */
+  | { kind: "format"; format: ThinkingFormat };
+
+/** 解析配置里的 `thinkingFormat`（含「显式关闭」与「不认识」两种特殊取值）。 */
+export function parseThinkingSetting(
+  value: string | undefined,
+): ThinkingSetting {
+  const v = (value ?? "").trim();
+  if (!v) return { kind: "auto" };
+  if ((THINKING_OFF_TOKENS as readonly string[]).includes(v.toLowerCase())) {
+    return { kind: "off" };
+  }
+  const format = normalizeThinkingFormat(v);
+  return format ? { kind: "format", format } : { kind: "invalid", value: v };
+}
+
+/**
+ * 按模型 id / baseUrl 猜「这个端点认哪个关闭字段」。
+ *
+ * 只是一次猜测，所以配错了也不会坏事：发出去的字段端点要么认（关掉了），要么忽略
+ * （等于回到没关），而**严格端点直接拒绝**的那种由探活兜底——第一次探活失败会自动
+ * 去掉字段重试一次，并把这次降级写进模型对象，本进程后续都不再发它。
+ *
+ * 兜底选 deepseek（`thinking: {"type":"disabled"}`）：国产 OpenAI 兼容端点里最常见的
+ * 约定，混元 / DeepSeek / GLM 一类都用它。
+ */
+const THINKING_FORMAT_HINTS: readonly (readonly [RegExp, ThinkingFormat])[] = [
+  [/qwen|qwq/i, "qwen"],
+  [/deepseek/i, "deepseek"],
+  [/hunyuan|混元|\bhy-?\d/i, "deepseek"],
+  [/glm|智谱|zai/i, "zai"],
+];
+
+const THINKING_FORMAT_FALLBACK: ThinkingFormat = "deepseek";
+
+/** 按模型 id / baseUrl 猜该端点认哪个关闭字段；认不出就用兜底值。 */
+export function guessThinkingFormat(modelId: string, baseUrl = ""): ThinkingFormat {
+  const haystack = `${modelId} ${baseUrl}`;
+  for (const [re, format] of THINKING_FORMAT_HINTS) {
+    if (re.test(haystack)) return format;
+  }
+  return THINKING_FORMAT_FALLBACK;
+}
+
+/**
  * 把配置片段合并写回用户配置文件（保留其它字段，缺省字段补默认值）。
  *
  * 交互模式里的 /toggle-language 与 /model 都走这里：它们改的是同一个文件的
@@ -358,8 +510,8 @@ export function saveLocale(locale: string): void {
 /**
  * 把选定的模型持久化为「启动默认」（保留其它字段）。
  *
- * 供交互模式 /model 的「设为默认」使用（对应 pi-coding-agent 里模型选择器的 Ctrl+S）：
- * 只影响下次启动；本次会话的切换由 TUI 自己持有，不经过这里。
+ * 供交互模式 /model 使用：**选中即调用**（ADR-0015）——同一次选择既切换本次会话，
+ * 也写回这里成为下次启动的默认，不再需要额外的「设为默认」按键。
  */
 export function saveModelSelection(provider: string, model: string): void {
   updateUserConfig({ modelProvider: provider, model });
@@ -377,6 +529,9 @@ function readConfigFile(): Partial<PageQaConfig> {
       apiKey: parsed.apiKey ?? DEFAULTS.apiKey,
       model: parsed.model ?? DEFAULTS.model,
       modelProvider: parsed.modelProvider ?? DEFAULTS.modelProvider,
+      ...(typeof parsed.thinkingFormat === "string"
+        ? { thinkingFormat: parsed.thinkingFormat }
+        : {}),
       jev: parsed.jev ?? DEFAULTS.jev,
       locale: parsed.locale ?? DEFAULTS.locale,
     };
