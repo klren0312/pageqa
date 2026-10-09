@@ -6,7 +6,7 @@
  *   记下来只会让回放照着踩坑。
  * - 记语义定位符而不是 `@eN`。`@eN` 只在当时那次快照内有效（见 locator.ts）。
  */
-import { buildLocator, type Locator } from "./locator.js";
+import { buildLocator, type Locator } from "../shared/locator.js";
 import type { ReplayStep } from "./replay.js";
 import { restorePlaceholders, type RunVarValue } from "./vars.js";
 

@@ -9,7 +9,7 @@
  * - 回放脚本的 `source.hash` 也据此覆盖全部场景（见 ADR-0002 决策七）。
  */
 import { appendFileSync, readFileSync } from "node:fs";
-import { splitScenarios } from "../agent.js";
+import { splitScenarios } from "../agent/agent.js";
 
 /** 一段待写回的场景。 */
 export interface CaseScenario {

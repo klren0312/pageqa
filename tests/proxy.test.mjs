@@ -1,5 +1,5 @@
 /**
- * 模型请求的代理路由（src/proxy.ts）。
+ * 模型请求的代理路由（src/config/proxy.ts）。
  *
  * 纯单元测试：不联网、不碰真实主目录。
  * config.ts / proxy.ts 在模块加载时按 homedir() 定位 ~/.pageqa，所以必须在**动态 import
@@ -44,7 +44,7 @@ const {
   resolveProxyAction,
   saveProxyConfig,
   setProxyBypassed,
-} = await import("../dist/proxy.js");
+} = await import("../dist/config/proxy.js");
 
 /** 本地一对服务器：目标（会被直连命中）与假代理（回显，证明请求经过了它）。 */
 async function startServers() {
@@ -443,7 +443,7 @@ describe("模型请求端到端走代理", () => {
 
     const restore = installProxyRouting();
     try {
-      const { createModelCatalog, probeModel } = await import("../dist/models.js");
+      const { createModelCatalog, probeModel } = await import("../dist/config/models.js");
       const catalog = await createModelCatalog();
       const model = catalog.models.getModel("pageqa", "e2e-model");
       const result = await probeModel(catalog, model);

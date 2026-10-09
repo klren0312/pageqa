@@ -1,8 +1,8 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { LINT_RULE_IDS, lintCase, lintHasErrors } from "../dist/lint.js";
-import { getLocale, setLocale, t } from "../dist/i18n.js";
-import { countAssertions, numberSteps } from "../dist/report.js";
+import { LINT_RULE_IDS, lintCase, lintHasErrors } from "../dist/agent/lint.js";
+import { getLocale, setLocale, t } from "../dist/shared/i18n.js";
+import { countAssertions, numberSteps } from "../dist/report/report.js";
 
 // 纯单元测试：lintCase 是纯函数（只吃文本、吐问题清单），不开浏览器也不调模型。
 

@@ -15,7 +15,7 @@
  *   }
  */
 
-import { info } from "./log.js";
+import { info } from "../shared/log.js";
 
 const DEFAULT_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const DEFAULT_TIMEOUT = 15_000; // 毫秒

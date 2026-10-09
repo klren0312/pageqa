@@ -5,7 +5,7 @@ import {
   renderScenarios,
   selectScenario,
   splitScenarios,
-} from "../dist/agent.js";
+} from "../dist/agent/agent.js";
 import {
   buildChildArgs,
   ConcurrencySessionConflictError,
@@ -20,12 +20,12 @@ import {
   runSuiteInChildren,
   scenarioLogTag,
   USAGE_LINE_PREFIX,
-} from "../dist/suite.js";
+} from "../dist/agent/suite.js";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { emptyUsage, summarizeSuite } from "../dist/report.js";
-import { readConcurrency, readScenarioTimeoutMs } from "../dist/config.js";
+import { emptyUsage, summarizeSuite } from "../dist/report/report.js";
+import { readConcurrency, readScenarioTimeoutMs } from "../dist/config/config.js";
 
 // 纯单元测试：场景选择、子进程命令行契约、异常归因与场景级上限的解析。
 // 都不需要 bsk / LLM —— fork 编排本身要真浏览器，放在冒烟测试里。

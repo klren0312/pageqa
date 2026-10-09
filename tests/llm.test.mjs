@@ -6,8 +6,8 @@ import {
   parseThinkingSetting,
   THINKING_FORMATS,
   THINKING_OFF_FIELD,
-} from "../dist/config.js";
-import { createPageqaProvider } from "../dist/llm.js";
+} from "../dist/config/config.js";
+import { createPageqaProvider } from "../dist/llm/llm.js";
 
 // 「默认关闭思考」有一个反直觉的前提，钉住它：
 // pi-ai 只有在模型**声明自己是 reasoning 模型**时才会把关闭开关发出去

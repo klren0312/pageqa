@@ -8,9 +8,9 @@ import {
   THINKING_FORMATS,
   THINKING_OFF_FIELD,
   type PageQaConfig,
-} from "./config.js";
-import { info } from "./log.js";
-import { t } from "./i18n.js";
+} from "../config/config.js";
+import { info } from "../shared/log.js";
+import { t } from "../shared/i18n.js";
 
 /**
  * 自定义 LLM provider：基于 @earendil-works/pi-ai 构造一个指向可配置 OpenAI 兼容端点的 provider。

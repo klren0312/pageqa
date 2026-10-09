@@ -12,9 +12,9 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { readDownloadDir } from "./config.js";
-import { t } from "./i18n.js";
-import { formatLocalTime } from "./vars.js";
+import { readDownloadDir } from "../config/config.js";
+import { t } from "../shared/i18n.js";
+import { formatLocalTime } from "../agent/vars.js";
 
 /**
  * 捕获一次下载的默认等待上限。

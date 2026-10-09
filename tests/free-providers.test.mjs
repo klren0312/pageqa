@@ -29,13 +29,13 @@ const {
   refreshFreeProviders,
   resolveModel,
   PAGEQA_PROVIDER_ID,
-} = await import("../dist/models.js");
+} = await import("../dist/config/models.js");
 const {
   FREE_PROVIDER_IDS,
   isFreeProvider,
   createFreeProviders,
   createOpencodeFreeGateTools,
-} = await import("../dist/free-providers.js");
+} = await import("../dist/llm/free-providers.js");
 
 /** 不配任何凭据就该出现在 /model 的网关。 */
 const VISIBLE_WITHOUT_CREDENTIALS = ["cline", "fastrouter", "llm7", "opencode-free"];

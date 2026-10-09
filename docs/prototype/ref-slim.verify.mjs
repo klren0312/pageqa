@@ -11,8 +11,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { slimSnapshot } from "../../dist/snapshot.js";
-import { buildLocator, parseSnapshotRefs, resolveLocator } from "../../dist/locator.js";
+import { slimSnapshot } from "../../dist/shared/snapshot.js";
+import { buildLocator, parseSnapshotRefs, resolveLocator } from "../../dist/shared/locator.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CORPUS = ["element-plus-table.txt", "element-plus-form.txt", "smoke-page.txt"];

@@ -26,8 +26,8 @@ const {
   probeModel,
   resolveModel,
   PAGEQA_PROVIDER_ID,
-} = await import("../dist/models.js");
-const { ModelUnreachableError } = await import("../dist/agent.js");
+} = await import("../dist/config/models.js");
+const { ModelUnreachableError } = await import("../dist/agent/agent.js");
 
 /**
  * 测试替身：pi-ai 的 CredentialStore 只有 4 个方法，自持一份内存实现即可，
@@ -145,7 +145,7 @@ describe("模型探活（跑用例前的连通性检查）", () => {
   });
 
   test("端点不认「关思考」的字段时，自动去掉重试并就地降级", async () => {
-    // 严格端点会对多出来的字段报 400；pageqa 默认关思考（见 src/llm.ts），所以必须能
+    // 严格端点会对多出来的字段报 400；pageqa 默认关思考（见 src/llm/llm.ts），所以必须能
     // 区分「端点挂了」与「端点不认这个字段」，否则默认关思考会把人弄坏。
     const m = {
       ...model,

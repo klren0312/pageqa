@@ -8,7 +8,7 @@ import {
   resolveShowPage,
   statusMatches,
 } from "../dist/bsk/tools.js";
-import { getLocale, setLocale, t } from "../dist/i18n.js";
+import { getLocale, setLocale, t } from "../dist/shared/i18n.js";
 
 /**
  * `select_option` / `pick_date` 的 `showPage` **默认开**（click/fill/hover 则默认关）。

@@ -4,8 +4,8 @@ import { execFile, execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runAgent } from "../dist/agent.js";
-import { runScenarioInChild } from "../dist/suite.js";
+import { runAgent } from "../dist/agent/agent.js";
+import { runScenarioInChild } from "../dist/agent/suite.js";
 
 /** 跑一次真的 CLI（子进程），把退出码与 stdout 都拿回来——它抛错时也拿。 */
 function runCli(args) {

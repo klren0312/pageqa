@@ -3,17 +3,17 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getLocale, setLocale } from "../dist/i18n.js";
+import { getLocale, setLocale } from "../dist/shared/i18n.js";
 import {
   SessionCollector,
   summarizeArchive,
   writeArchive,
-} from "../dist/session-archive.js";
+} from "../dist/session/archive.js";
 import {
   renderDetailPage,
   renderIndexPage,
   runSessionServer,
-} from "../dist/session-server.js";
+} from "../dist/session/server.js";
 
 // 渲染是纯函数；HTTP 用真实监听 + fetch 跑一遍（不碰浏览器与模型）。
 

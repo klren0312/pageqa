@@ -345,11 +345,11 @@ flowchart TD
     CLI["parseArgs · main · detectInteractive<br/>batch / 交互 --tui / 回放 --replay / --help·--version·--init-config"]
   end
 
-  subgraph ORCH["编排 · src/agent.ts"]
+  subgraph ORCH["编排 · src/agent"]
     RUN["runAgent / runSuite：初始化 → 运行（≤5 次续跑）→ 收尾"]
   end
 
-  subgraph LLMC["LLM 与配置"]
+  subgraph LLMC["LLM 与配置 · src/config + src/llm"]
     MODELS["models.ts 模型目录 · 探活 · 解析"]
     LLMP["llm.ts OpenAI 兼容 provider"]
     FREE["free-providers.ts 免费网关目录（pi-free）"]
@@ -367,13 +367,13 @@ flowchart TD
 
   BROWSER["真实浏览器（由 bsk daemon 连接）"]
 
-  subgraph REC["录制 → 回放（零模型）"]
+  subgraph REC["录制 → 回放（零模型）· src/agent + src/shared"]
     RECORDER["record.ts 记录成功操作"]
     LOCATOR["locator.ts 语义定位符"]
     ENGINE["replay.ts 回放脚本与引擎"]
   end
 
-  subgraph REP["报告与旁路产物"]
+  subgraph REP["报告与旁路产物 · src/report + src/agent"]
     REPORT["report.ts 文本 / JSON 与套件汇总"]
     HTML["report-html.ts 自包含 HTML"]
     SIDE["side-outputs.ts 产物清单（stderr）"]
@@ -388,7 +388,7 @@ flowchart TD
     BATCH["batches.ts 会话批次快照"]
   end
 
-  XCUT["横切：i18n.ts 本地化 · log.ts 日志（sink） · version.ts"]
+  XCUT["横切 · src/shared：i18n.ts 本地化 · log.ts 日志（sink）· version.ts · locator.ts · snapshot.ts"]
 
   CLI -->|"batch"| RUN
   CLI -->|"--replay"| ENGINE

@@ -1,4 +1,4 @@
-import { t } from "./i18n.js";
+import { t } from "../shared/i18n.js";
 
 export interface AssertionResult {
   expectation: string;

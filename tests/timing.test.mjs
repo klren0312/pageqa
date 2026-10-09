@@ -5,7 +5,7 @@ import {
   avgMs,
   formatMs,
   renderTiming,
-} from "../dist/timing.js";
+} from "../dist/agent/timing.js";
 
 // 纯单元测试：累加器与渲染都是纯逻辑（时间点由调用方注入），不需要浏览器与模型。
 

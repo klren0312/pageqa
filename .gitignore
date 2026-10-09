@@ -7,3 +7,12 @@ dist/
 pageqa-report/
 .superpowers
 .codebuddy
+
+# Comet 生成的能力探测缓存：每次探测都会重写，属于运行产物而非项目配置
+.comet/runtime/
+
+# 本地工具残留（本项目是 TypeScript，ruff 是 Python 工具）
+.ruff_cache/
+
+# 分析/临时脚本目录
+.audit/

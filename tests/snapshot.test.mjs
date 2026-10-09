@@ -4,8 +4,8 @@ import {
   buildLocator,
   parseSnapshotRefs,
   resolveLocator,
-} from "../dist/locator.js";
-import { slimSnapshot } from "../dist/snapshot.js";
+} from "../dist/shared/locator.js";
+import { slimSnapshot } from "../dist/shared/snapshot.js";
 
 // 纯单元测试：只依赖 dist/*，不需要 bsk / LLM。
 //

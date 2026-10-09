@@ -24,7 +24,7 @@ import {
  * 首次运行（配置文件不存在）会自动创建带默认值的配置文件，便于用户日后修改。
  */
 
-import type { JevConfig } from "./jev.js";
+import type { JevConfig } from "../llm/jev.js";
 
 /**
  * 自定义 OpenAI 兼容端点的 provider id。

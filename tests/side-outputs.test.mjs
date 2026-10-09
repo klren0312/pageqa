@@ -16,21 +16,21 @@ const home = mkdtempSync(join(tmpdir(), "pageqa-side-outputs-home-"));
 process.env.USERPROFILE = home;
 process.env.HOME = home;
 
-const { setLocale } = await import("../dist/i18n.js");
-const { setSink } = await import("../dist/log.js");
+const { setLocale } = await import("../dist/shared/i18n.js");
+const { setSink } = await import("../dist/shared/log.js");
 const {
   CONFIG_PATH,
   ensureConfigDir,
   readSideOutputPrefs,
   saveLocale,
   saveSideOutputPref,
-} = await import("../dist/config.js");
+} = await import("../dist/config/config.js");
 const {
   emitSideOutputs,
   hasRunScenarios,
   renderSideOutputLines,
   writeReportSideOutput,
-} = await import("../dist/side-outputs.js");
+} = await import("../dist/report/side-outputs.js");
 
 setLocale("zh");
 

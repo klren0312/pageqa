@@ -347,11 +347,11 @@ flowchart TD
     CLI["parseArgs · main · detectInteractive<br/>batch / interactive --tui / replay --replay / --help·--version·--init-config"]
   end
 
-  subgraph ORCH["Orchestration · src/agent.ts"]
+  subgraph ORCH["Orchestration · src/agent"]
     RUN["runAgent / runSuite: initialize → run (≤5 continuations) → finalize"]
   end
 
-  subgraph LLMC["LLM & config"]
+  subgraph LLMC["LLM & config · src/config + src/llm"]
     MODELS["models.ts model catalog · probe · resolve"]
     LLMP["llm.ts OpenAI-compatible provider"]
     FREE["free-providers.ts free gateway catalog (pi-free)"]
@@ -369,13 +369,13 @@ flowchart TD
 
   BROWSER["Real browser (connected by the bsk daemon)"]
 
-  subgraph REC["Recording → replay (zero model)"]
+  subgraph REC["Recording → replay (zero model) · src/agent + src/shared"]
     RECORDER["record.ts records successful operations"]
     LOCATOR["locator.ts semantic locators"]
     ENGINE["replay.ts replay script & engine"]
   end
 
-  subgraph REP["Report & side outputs"]
+  subgraph REP["Report & side outputs · src/report + src/agent"]
     REPORT["report.ts text / JSON and suite summary"]
     HTML["report-html.ts self-contained HTML"]
     SIDE["side-outputs.ts artifact manifest (stderr)"]
@@ -390,7 +390,7 @@ flowchart TD
     BATCH["batches.ts session batch snapshots"]
   end
 
-  XCUT["Cross-cutting: i18n.ts localization · log.ts logging (sink) · version.ts"]
+  XCUT["Cross-cutting · src/shared: i18n.ts localization · log.ts logging (sink) · version.ts · locator.ts · snapshot.ts"]
 
   CLI -->|"batch"| RUN
   CLI -->|"--replay"| ENGINE

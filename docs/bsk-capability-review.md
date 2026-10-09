@@ -197,11 +197,11 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 | 档位 | 文件 | 位置 |
 | --- | --- | --- |
 | 工具本体（必改） | `src/bsk/tools.ts` | `interface BskOps`（操作层接口）、`createBskOps()` 内新增方法并暴露、新增 `AgentTool` 常量、加入 `createBskTools()` 的返回数组 |
-| 系统提示 | `src/agent.ts` | `DEFAULT_SYSTEM_PROMPT` 的工具清单（只写「何时用谁」，完整规则放工具 schema 描述，避免两处重复付费）；工具装配处**会自动纳入，无需改** |
-| 录制 | `src/record.ts` | `Recorder.noteTool()` 加 `case` |
-| 回放 | `src/replay.ts` | `ReplayStep` union、`REPLAY_STEP_KINDS`、`runStep` switch（按需升 `REPLAY_VERSION`） |
+| 系统提示 | `src/agent/agent.ts` | `DEFAULT_SYSTEM_PROMPT` 的工具清单（只写「何时用谁」，完整规则放工具 schema 描述，避免两处重复付费）；工具装配处**会自动纳入，无需改** |
+| 录制 | `src/agent/record.ts` | `Recorder.noteTool()` 加 `case` |
+| 回放 | `src/agent/replay.ts` | `ReplayStep` union、`REPLAY_STEP_KINDS`、`runStep` switch（按需升 `REPLAY_VERSION`） |
 | IPC 快路径（可选） | `src/bsk/ipc-commands.ts` | `planIpcCall()` 加 `case`；新参数需放入 `VALUE_FLAGS` / `BOOL_FLAGS` 白名单；`render` 必须与 CLI 输出逐字一致 |
-| 文案 | `src/i18n.ts` | `bsk.*` 文案（zh/en 各一份） |
+| 文案 | `src/shared/i18n.ts` | `bsk.*` 文案（zh/en 各一份） |
 | 页面侧注入（仅当需要） | `src/bsk/picker.ts` / `condition.ts` / `settle.ts` | —— |
 
 ### 7.2 建议顺序
@@ -226,9 +226,9 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 | --- | --- |
 | `src/bsk/tools.ts` | 操作层新增 `BskOps.press(key, { target?, modifiers?, holdMs? })`：`target` 按 `looksLikeRef` 二选一走 `--ref`/`--selector`（先聚焦再按键），`--hold-ms` 只接受正整数，动作前照常过引用闸门 `checkRef`。新增 `press` AgentTool（带 `showPage`）并注册进返回数组。 |
 | `src/bsk/ipc-commands.ts` | `planIpcCall` 新增 `press` case：`ref` / `selector` / `modifiers` / `hold-ms` 加入 `VALUE_FLAGS`；`parseModifierList` 复刻 CLI 的 `parse_modifiers`（别名归一 + 保序去重，认不出即返回 `null` 退回 CLI）；`render` 复刻 `press ok tab=… key=… code=… modifiers=[…]`；标 `mutating: true`（按键同样会改页面，重发就是按两次）。 |
-| `src/record.ts` | `press` case：键名 + 可选 target（照常构造语义定位符）+ modifiers + holdMs；`holdMs` 只在模型确实给过时才写进脚本（与 `download` / `wait_for` 同一条规则）。 |
-| `src/replay.ts` | 新增 `ReplayPressStep`，并入 `ReplayStep` 与 `REPLAY_STEP_KINDS`（不升 `REPLAY_VERSION`，理由同 `wait_for`）；加载时校验「缺键名当场拒绝」（`replay.err.pressNoKey`）；`normalizePlaceholderLiterals` 对其 locator 生效；`runStep` 新增执行分支。 |
-| `src/agent.ts` | 系统提示的工具清单加一行，并写明「不要用 `evaluate` 注入键盘事件代替它」。 |
+| `src/agent/record.ts` | `press` case：键名 + 可选 target（照常构造语义定位符）+ modifiers + holdMs；`holdMs` 只在模型确实给过时才写进脚本（与 `download` / `wait_for` 同一条规则）。 |
+| `src/agent/replay.ts` | 新增 `ReplayPressStep`，并入 `ReplayStep` 与 `REPLAY_STEP_KINDS`（不升 `REPLAY_VERSION`，理由同 `wait_for`）；加载时校验「缺键名当场拒绝」（`replay.err.pressNoKey`）；`normalizePlaceholderLiterals` 对其 locator 生效；`runStep` 新增执行分支。 |
+| `src/agent/agent.ts` | 系统提示的工具清单加一行，并写明「不要用 `evaluate` 注入键盘事件代替它」。 |
 | `README.md` / `README.zh-CN.md` / `CONTEXT.md` | 工具数 13 → 14、工具清单补 `press`；术语表「动作」词条补 `press`。 |
 
 `press` 的转发规则与其它动作一致：`target` 只是「先聚焦到谁」，不传就按在当前焦点上——这正是「输入框里填完直接回车」的常规写法，因此回放时按同一个键名重走即可，不需要把焦点状态也录进脚本。
@@ -260,10 +260,10 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 | 位置 | 改动 |
 | --- | --- |
 | `src/bsk/tools.ts` | 操作层 `assertNoConsoleError(options?, signal)` / `assertNetwork(url, options?, signal)`；模块级判定 `isConsoleOffender` / `parseStatusSpec` / `statusMatches`（导出供单测钉住）；读取辅助 `readConsole` / `readNetwork`；两个 `AgentTool` 定义与注册；`ASSERTION_TOOLS`。 |
-| `src/record.ts` | 两个 case：录**判定条件**（ignore / warnings；url / status / method），不录这次的结果。 |
-| `src/replay.ts` | 两个 step 类型 + 白名单 + 加载校验（`assert_network` 缺 url 当场拒绝）+ `normalizePlaceholderLiterals` 对 url 生效 + `runStep` 分支；新增 `assertionFromOps`：结构化结果 → 回放断言记录，取不到就按 FAIL（而不是静默跳过）。 |
-| `src/agent.ts` | 系统提示工具清单加两行。 |
-| `src/i18n.ts` | 两个工具的全部文案（zh / en）。 |
+| `src/agent/record.ts` | 两个 case：录**判定条件**（ignore / warnings；url / status / method），不录这次的结果。 |
+| `src/agent/replay.ts` | 两个 step 类型 + 白名单 + 加载校验（`assert_network` 缺 url 当场拒绝）+ `normalizePlaceholderLiterals` 对 url 生效 + `runStep` 分支；新增 `assertionFromOps`：结构化结果 → 回放断言记录，取不到就按 FAIL（而不是静默跳过）。 |
+| `src/agent/agent.ts` | 系统提示工具清单加两行。 |
+| `src/shared/i18n.ts` | 两个工具的全部文案（zh / en）。 |
 | `README.md` / `README.zh-CN.md` | 工具数 14 → 16、工具清单与「断言行要对齐」说明同步。 |
 
 四个关键决策：
@@ -297,13 +297,13 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 
 | 位置 | 改动 |
 | --- | --- |
-| `src/screenshots.ts`（新） | 截图路径策略（`~/.pageqa/screenshots/run-<启动时间戳>-<pid>-<随机串>/`，口径与下载产物完全一致）+ 本次运行的截图清单。与下载产物**同构但去处相反**：下载产物断言成立后默认清理（回归不跑一百次就堆一百个文件），截图只登记、从不清理——它是给人看的证据。 |
+| `src/report/screenshots.ts`（新） | 截图路径策略（`~/.pageqa/screenshots/run-<启动时间戳>-<pid>-<随机串>/`，口径与下载产物完全一致）+ 本次运行的截图清单。与下载产物**同构但去处相反**：下载产物断言成立后默认清理（回归不跑一百次就堆一百个文件），截图只登记、从不清理——它是给人看的证据。 |
 | `src/bsk/tools.ts` | 操作层 `screenshot({fullPage?, target?, out?})` + `screenshot` AgentTool + 注册。元素截图**只接受 `@eN`**（bsk 的 screenshot 没有 `--selector`），给 CSS 选择器当场报错；bsk 回 `capture_unavailable` 时视为「没截成」并抛错，绝不给一条看起来成功的回显。它是只读动作：不 `markStale()`，也不产生断言。 |
-| `src/record.ts` / `src/replay.ts` | 录「截什么」而不是「截到哪」：默认路径带时间戳、每次运行都不同，把这一次的文件名写进脚本只会把图覆盖到旧名字里。元素目标带语义定位符，回放时重新解析；解析不到按「元素未找到」跳过（截图不该把整条用例判死）。 |
-| `src/report.ts` | `TestReport.screenshots` / `ScenarioDetail.screenshots`，套件汇总时展平，并导出 `collectScreenshots()`。 |
-| `src/report-html.ts` | 截图按 `data:` URL **内联**进自包含报告（单张 ≤4MiB；超限或文件已不在时退化成一行路径）。 |
-| `src/side-outputs.ts` / `src/index.ts` | 旁路产物清单逐张列出截图路径（报告里虽有图，但「文件在哪」是运行刚结束时最想知道的）。 |
-| `src/agent.ts` / `src/i18n.ts` / `README.md` / `README.zh-CN.md` | 提示词一行、zh/en 文案、工具数 16 → 17。 |
+| `src/agent/record.ts` / `src/agent/replay.ts` | 录「截什么」而不是「截到哪」：默认路径带时间戳、每次运行都不同，把这一次的文件名写进脚本只会把图覆盖到旧名字里。元素目标带语义定位符，回放时重新解析；解析不到按「元素未找到」跳过（截图不该把整条用例判死）。 |
+| `src/report/report.ts` | `TestReport.screenshots` / `ScenarioDetail.screenshots`，套件汇总时展平，并导出 `collectScreenshots()`。 |
+| `src/report/report-html.ts` | 截图按 `data:` URL **内联**进自包含报告（单张 ≤4MiB；超限或文件已不在时退化成一行路径）。 |
+| `src/report/side-outputs.ts` / `src/index.ts` | 旁路产物清单逐张列出截图路径（报告里虽有图，但「文件在哪」是运行刚结束时最想知道的）。 |
+| `src/agent/agent.ts` / `src/shared/i18n.ts` / `README.md` / `README.zh-CN.md` | 提示词一行、zh/en 文案、工具数 16 → 17。 |
 
 三个关键决策：
 
@@ -331,7 +331,7 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 | 位置 | 触发点 |
 | --- | --- |
 | `src/bsk/tools.ts` 的 `exec()` | 任一断言型工具返回**不成立**（`assert_text` / `download` / `assert_no_console_error` / `assert_network`）——一处覆盖全部四个，因为断言结论本来就统一在 `ASSERTION_TOOLS` + `lastAssert()` 上 |
-| `src/replay.ts` 的 `runStepWithRetry` | 重试耗尽仍未成功（含 `LocatorWaitTimeoutError` 那条刻意不重试的路径） |
+| `src/agent/replay.ts` 的 `runStepWithRetry` | 重试耗尽仍未成功（含 `LocatorWaitTimeoutError` 那条刻意不重试的路径） |
 
 两处都用 `label: "failure"` 落在同一个运行目录里，文件名一眼能把它与收尾的 `final` 分开。工具层那处还会把路径回显给模型（`（已自动截图：…）`），让它知道现场已经留下、不必再自己调一次 `screenshot`。
 
@@ -345,8 +345,8 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 | --- | --- |
 | `src/bsk/ipc-commands.ts` | `planIpcCall` 新增 `wheel` / `focus` / `blur` 三个 case（IPC 快路径覆盖的命令从 8 条扩到 11 条）；抽出 `optionalTarget`（三条目标来源 → `{ref}` / `{selector}`）与 `wheelDeltas`（f64 增量解析，允许负数与小数）；`usedTarget` 支持自定义兜底——`wheel` 取不到落点时 bsk 打的是 `viewport-center`，不是共用的 `?`。 |
 | `src/bsk/tools.ts` | 操作层 `wheel` / `focus` / `blur` / `getHtml` 四个方法 + 四个 AgentTool + 注册；`clampHtmlBudget` 收敛 HTML 预算；`requiredTarget` 做本地必填校验。 |
-| `src/record.ts` / `src/replay.ts` | `wheel` / `focus` / `blur` 三个**动作**步骤（带定位符、占位符还原、加载校验「焦点步骤缺目标当场拒绝」）；`get_html` **不录**（理由见下）。 |
-| `src/agent.ts` / `src/i18n.ts` / `README.md` / `README.zh-CN.md` / `CONTEXT.md` | 提示词四行、zh/en 文案、工具数 17 → 21、术语表「动作」补三个。 |
+| `src/agent/record.ts` / `src/agent/replay.ts` | `wheel` / `focus` / `blur` 三个**动作**步骤（带定位符、占位符还原、加载校验「焦点步骤缺目标当场拒绝」）；`get_html` **不录**（理由见下）。 |
+| `src/agent/agent.ts` / `src/shared/i18n.ts` / `README.md` / `README.zh-CN.md` / `CONTEXT.md` | 提示词四行、zh/en 文案、工具数 17 → 21、术语表「动作」补三个。 |
 
 四个决策：
 

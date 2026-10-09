@@ -39,7 +39,7 @@ import {
   type RefreshModelsContext,
 } from "@earendil-works/pi-ai";
 import * as openaiCompletions from "@earendil-works/pi-ai/api/openai-completions";
-import { t } from "./i18n.js";
+import { t } from "../shared/i18n.js";
 
 /** 一个免费网关的目录定义。 */
 interface FreeProviderSpec {

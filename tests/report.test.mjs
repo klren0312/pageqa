@@ -13,7 +13,7 @@ import {
   mergeUsage,
   numberSteps,
   summarizeSuite,
-} from "../dist/report.js";
+} from "../dist/report/report.js";
 
 // 纯单元测试：只依赖 dist/report.js，不需要 bsk / LLM。
 describe("report 断言解析", () => {

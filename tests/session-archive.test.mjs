@@ -18,7 +18,7 @@ import {
   SESSIONS_DATABASE,
   summarizeMessage,
   writeArchive,
-} from "../dist/session-archive.js";
+} from "../dist/session/archive.js";
 
 // 纯逻辑 + 临时目录：不碰浏览器、模型，也不写用户真实的 ~/.pageqa。
 

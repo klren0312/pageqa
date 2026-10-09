@@ -10,7 +10,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { slimSnapshot } from "../../dist/snapshot.js";
+import { slimSnapshot } from "../../dist/shared/snapshot.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CORPUS = [

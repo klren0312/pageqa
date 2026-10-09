@@ -1,4 +1,4 @@
----
+﻿---
 name: pageqa-session-archive-forensics
 description: Read-only forensics over the pageqa run archive (~/.pageqa/sessions/sessions.sqlite) to find out which step of an E2E run actually broke. Use when a pageqa/smoke run only prints "fail", when a report complains 断言数不足 / 步骤未跑满 / 步骤完成：k/n, or when a "pass" must be checked for whether any tool really ran — telling apart a failing tool call from a model that called nothing and wrote navigate()/assert_text() as prose pseudo-code. 排查 pageqa E2E 失败、定位失败在第几步、核查 pass 是否真跑过工具时使用。
 ---
@@ -34,7 +34,7 @@ Prefer the reader over ad-hoc SQL. Use the first-party server only when you want
 
 ## Archive layout
 
-DB: `join(homedir(), ".pageqa", "sessions", "sessions.sqlite")`. `CONFIG_DIR` is hardcoded in `src/config.ts:100` — there is **no** `PAGEQA_HOME`-style env override. pageqa writes through `node:sqlite DatabaseSync` with `PRAGMA journal_mode = WAL`, so `-wal`/`-shm` sidecars exist; opening `readOnly: true` still works while no run is writing.
+DB: `join(homedir(), ".pageqa", "sessions", "sessions.sqlite")`. `CONFIG_DIR` is hardcoded in `src/config/config.ts:120` — there is **no** `PAGEQA_HOME`-style env override. pageqa writes through `node:sqlite DatabaseSync` with `PRAGMA journal_mode = WAL`, so `-wal`/`-shm` sidecars exist; opening `readOnly: true` still works while no run is writing.
 
 | table | columns |
 |---|---|
@@ -44,7 +44,7 @@ DB: `join(homedir(), ".pageqa", "sessions", "sessions.sqlite")`. `CONFIG_DIR` is
 | `sessions` | `id, created_at, parent_session_id, storage_version, metadata, message_count, usage_payload, next_seq` |
 | `usage_ledger` | `session_id, id, seq, entry_id, adjustment, usage, details` |
 
-pageqa's own rows are `namespace = 'pageqa'` (`src/session-archive.ts:63-68`, written in one transaction by `writeArchive` at `:514`):
+pageqa's own rows are `namespace = 'pageqa'` (`src/session/archive.ts:64-69`, written in one transaction by `writeArchive` at `:570`):
 
 - scalars — `params` (systemPrompt, model, tools, prompt, caseText, steps, bskSession, scenarioName, vars, debug), `summary`, `result` (startedAt, endedAt, status, note, usage)
 - lists — `turns` (one row per model turn), `toolCalls` (one row per real call)
@@ -81,7 +81,7 @@ SELECT value FROM list_values  WHERE namespace='pageqa' AND key='toolCalls' AND 
 | `summary disagrees` | `summary.toolCalls` (self-reported count) differs from archived rows | trust the rows |
 | first `ok=false` call | real failure at that call | the tool's `result` text carries the reason |
 
-When the diagnosis points at the harness rather than the page, the code to read is `src/agent.ts:860-908` (continuation loop: `countAssertions`, `needsContinuation`, `continuePrompt`) and `src/report.ts:426` (`alignProgress`, which clamps a self-reported denominator to the case's real step count). The archive's documented contract is `docs/comet/specs/pageqa/spec.md` §8.
+When the diagnosis points at the harness rather than the page, the code to read is `src/agent/agent.ts:899-921` (continuation loop: `countAssertions`, `needsContinuation`, `continuePrompt`) and `src/report/report.ts:464` (`alignProgress`, which clamps a self-reported denominator to the case's real step count). The archive's documented contract is `docs/comet/specs/pageqa/spec.md` §8.
 
 ## Boundaries
 
