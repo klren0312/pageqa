@@ -21,7 +21,7 @@ import {
   ROOT_SELECTOR,
   scopedToRoot,
 } from "../dist/bsk/picker.js";
-import { Recorder } from "../dist/record.js";
+import { Recorder } from "../dist/agent/record.js";
 
 // 探针表达式是**同步**的，这里用最小的 DOM 替身在进程内真的跑一遍——
 // 光断言「字符串里含某个片段」证明不了「禁用项被跳过」「相邻月份不算命中」这类逻辑。

@@ -29,7 +29,7 @@
  * ——这与 ADR-0001「不做猜一个最像的元素」是同一条理由。
  */
 
-import { t } from "../i18n.js";
+import { t } from "../shared/i18n.js";
 
 /** 一类失败的解释与下一步；文案存 i18n 键，渲染时按当前语种取。 */
 interface Diagnosis {

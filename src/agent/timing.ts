@@ -21,8 +21,8 @@
  * （agent.ts / replay.ts 把它写进日志，TUI 与批处理都从日志里看到）。
  */
 
-import { t } from "./i18n.js";
-import type { TokenUsage } from "./report.js";
+import { t } from "../shared/i18n.js";
+import type { TokenUsage } from "../report/report.js";
 
 /**
  * 毫秒 → 人类可读。

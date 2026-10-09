@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { pollUntil } from "./bsk/condition.js";
+import { pollUntil } from "../bsk/condition.js";
 import {
   closeSession,
   createBskOps,
@@ -24,15 +24,15 @@ import {
   ensureBskReady,
   ensureSession,
   type BskOps,
-} from "./bsk/tools.js";
-import { loadConfig, readAutoScreenshot } from "./config.js";
+} from "../bsk/tools.js";
+import { loadConfig, readAutoScreenshot } from "../config/config.js";
 import {
   DEFAULT_DOWNLOAD_TIMEOUT_MS,
   downloadExpectation,
   flushDownloadCleanup,
-} from "./downloads.js";
-import { t } from "./i18n.js";
-import { JevClient } from "./jev.js";
+} from "../report/downloads.js";
+import { t } from "../shared/i18n.js";
+import { JevClient } from "../llm/jev.js";
 import {
   describeLocator,
   inspectRegion,
@@ -41,8 +41,8 @@ import {
   resolveLocator,
   type Locator,
   type RegionState,
-} from "./locator.js";
-import { debugLog, info } from "./log.js";
+} from "../shared/locator.js";
+import { debugLog, info } from "../shared/log.js";
 import {
   emptyUsage,
   renderSuiteText,
@@ -52,8 +52,8 @@ import {
   type ScenarioDetail,
   type TestReport,
   type TokenUsage,
-} from "./report.js";
-import { resetScreenshots, screenshotsTaken } from "./screenshots.js";
+} from "../report/report.js";
+import { resetScreenshots, screenshotsTaken } from "../report/screenshots.js";
 import { TimingCollector, renderTiming } from "./timing.js";
 import { expandVars } from "./vars.js";
 

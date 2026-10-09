@@ -8,7 +8,7 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { setLocale, t } from "../dist/i18n.js";
+import { setLocale, t } from "../dist/shared/i18n.js";
 
 describe("/model 的帮助与提示文案", () => {
   for (const locale of ["zh", "en"]) {

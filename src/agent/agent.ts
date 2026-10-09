@@ -13,24 +13,24 @@ import {
   resolveModel,
   type ModelCatalog,
   type ModelChoice,
-} from "./models.js";
+} from "../config/models.js";
 import {
   createOpencodeFreeGateTools,
   isFreeProvider,
   OPENCODE_FREE_PROVIDER_ID,
-} from "./free-providers.js";
+} from "../llm/free-providers.js";
 import {
   captureSessionScreenshot,
   closeSession,
   createBskTools,
   ensureSession,
   ensureBskReady,
-} from "./bsk/tools.js";
-import { flushDownloadCleanup } from "./downloads.js";
-import { resetScreenshots, screenshotsTaken } from "./screenshots.js";
-import { JevClient } from "./jev.js";
-import { loadConfig, readAutoScreenshot } from "./config.js";
-import { debugLog, info, setDebug } from "./log.js";
+} from "../bsk/tools.js";
+import { flushDownloadCleanup } from "../report/downloads.js";
+import { resetScreenshots, screenshotsTaken } from "../report/screenshots.js";
+import { JevClient } from "../llm/jev.js";
+import { loadConfig, readAutoScreenshot } from "../config/config.js";
+import { debugLog, info, setDebug } from "../shared/log.js";
 import {
   addUsage,
   alignProgress,
@@ -49,7 +49,7 @@ import {
   type RawUsage,
   type TestReport,
   type TokenUsage,
-} from "./report.js";
+} from "../report/report.js";
 import { Recorder } from "./record.js";
 import type { ScenarioRecording } from "./replay.js";
 import {
@@ -57,10 +57,10 @@ import {
   SessionCollector,
   writeArchive,
   type SessionParams,
-} from "./session-archive.js";
+} from "../session/archive.js";
 import { TimingCollector, renderTiming } from "./timing.js";
 import { restorePlaceholders, type RunVarValue } from "./vars.js";
-import { t } from "./i18n.js";
+import { t } from "../shared/i18n.js";
 
 export interface AgentOptions {
   session?: string;

@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { packageVersion } from "../dist/version.js";
+import { packageVersion } from "../dist/shared/version.js";
 
 describe("packageVersion", () => {
   test("读到的就是包根 package.json 的 version", () => {

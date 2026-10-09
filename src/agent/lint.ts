@@ -14,8 +14,8 @@
  * 判定尽量只认**确定性**的特征（正则能命中的写法），宁可漏报也不误报——
  * 一条误报的告警会让人从此无视所有告警。
  */
-import { countAssertions, numberSteps } from "./report.js";
-import { t } from "./i18n.js";
+import { countAssertions, numberSteps } from "../report/report.js";
+import { t } from "../shared/i18n.js";
 
 /** 问题级别：`error` 会让用例跑错/跑不动；`warn` 只是写法不统一。 */
 export type LintSeverity = "error" | "warn";

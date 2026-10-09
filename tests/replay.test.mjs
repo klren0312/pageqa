@@ -10,8 +10,8 @@ import {
   locatorHint,
   parseSnapshotRefs,
   resolveLocator,
-} from "../dist/locator.js";
-import { Recorder } from "../dist/record.js";
+} from "../dist/shared/locator.js";
+import { Recorder } from "../dist/agent/record.js";
 import { literalAssertion } from "../dist/bsk/tools.js";
 import {
   buildReplayScript,
@@ -22,8 +22,8 @@ import {
   REPLAY_FORMAT,
   REPLAY_VERSION,
   scriptHash,
-} from "../dist/replay.js";
-import { captureRunVars, restorePlaceholders } from "../dist/vars.js";
+} from "../dist/agent/replay.js";
+import { captureRunVars, restorePlaceholders } from "../dist/agent/vars.js";
 
 // 纯单元测试：只依赖 dist/*，不需要 bsk / LLM。
 

@@ -41,8 +41,8 @@ import {
   type SessionDocFamilyToken,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CONFIG_DIR } from "./config.js";
-import type { RawUsage, TokenUsage } from "./report.js";
+import { CONFIG_DIR } from "../config/config.js";
+import type { RawUsage, TokenUsage } from "../report/report.js";
 
 /** 存档默认目录：与配置同处 `~/.pageqa` 下，不随工作目录漂移（跨项目也要能查到）。 */
 export const SESSIONS_DIR = join(CONFIG_DIR, "sessions");

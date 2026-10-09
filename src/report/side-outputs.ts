@@ -12,10 +12,10 @@
  * 且只在该运行真的收了文件时才列一行——每次运行都打一行「下载产物: 无」是纯噪声。
  * 通过后是否把文件清掉由 `downloadCleanup` 决定（见 downloads.ts），清理过的条目会标注出来。
  */
-import { readSideOutputPrefs, type SideOutputPrefs } from "./config.js";
+import { readSideOutputPrefs, type SideOutputPrefs } from "../config/config.js";
 import type { DownloadArtifact } from "./downloads.js";
-import { t } from "./i18n.js";
-import { info } from "./log.js";
+import { t } from "../shared/i18n.js";
+import { info } from "../shared/log.js";
 import { writeHtmlReport } from "./report-html.js";
 import type { TestReport } from "./report.js";
 

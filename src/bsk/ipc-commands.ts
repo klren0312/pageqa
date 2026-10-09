@@ -17,7 +17,7 @@
  * 这条规则是整层安全性的地基——新增一个 bsk 参数不会让这里静默跑错，只会让快路径暂时失效。
  */
 
-import { t } from "../i18n.js";
+import { t } from "../shared/i18n.js";
 import { BskIpcRpcError, BskIpcTransportError } from "./ipc.js";
 
 /** 一次 IPC 快路径调用：怎么发、发完怎么渲染。 */

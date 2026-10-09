@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "../dist/index.js";
-import { getLocale, parseLocale, setLocale, t } from "../dist/i18n.js";
+import { getLocale, parseLocale, setLocale, t } from "../dist/shared/i18n.js";
 
 // 纯单元测试：parseArgs / parseLocale 都是纯函数（import index.js 不会启动 CLI，有入口守卫）。
 

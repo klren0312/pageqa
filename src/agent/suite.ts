@@ -10,9 +10,9 @@ import {
   type AgentRunResult,
   type Scenario,
 } from "./agent.js";
-import { closeSession, ensureBskReady, ensureSession } from "./bsk/tools.js";
-import { debugLog, info } from "./log.js";
-import { getLocale, t } from "./i18n.js";
+import { closeSession, ensureBskReady, ensureSession } from "../bsk/tools.js";
+import { debugLog, info } from "../shared/log.js";
+import { getLocale, t } from "../shared/i18n.js";
 import {
   loadReplayScript,
   REPLAY_FORMAT,
@@ -30,7 +30,7 @@ import {
   type SuiteMember,
   type TestReport,
   type TokenUsage,
-} from "./report.js";
+} from "../report/report.js";
 
 /**
  * 套件的父进程编排：父进程按运行队列**串行** fork 子进程，一个场景一个进程。
@@ -49,7 +49,7 @@ import {
 export type ChildLogSink = (line: string) => void;
 
 /**
- * 子进程入口：**与 suite.js 同目录的 index.js**，也就是 CLI 自己。
+ * 子进程入口：**dist 根目录下的 index.js**，也就是 CLI 自己（本模块编译到 `dist/agent/`）。
  *
  * 刻意**不用 `process.argv[1]`**：它只在「这个进程本身就是 CLI」时才等于入口脚本。
  * 在被别的程序调用时（测试进程、将来的库用法）它是调用方的文件，拿它当入口等于
@@ -61,7 +61,7 @@ export type ChildLogSink = (line: string) => void;
  * 而不是让 node 去报一个「找不到模块」然后被当成子进程日志转发出去。
  */
 export function resolveCliEntry(): string {
-  const entry = fileURLToPath(new URL("./index.js", import.meta.url));
+  const entry = fileURLToPath(new URL("../index.js", import.meta.url));
   if (!existsSync(entry)) {
     throw new Error(t("err.childEntryMissing", { path: entry }));
   }

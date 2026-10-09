@@ -9,8 +9,8 @@ import {
   renderHtml,
   htmlReportFilePath,
   writeHtmlReport,
-} from "../dist/report-html.js";
-import { getLocale, setLocale } from "../dist/i18n.js";
+} from "../dist/report/report-html.js";
+import { getLocale, setLocale } from "../dist/shared/i18n.js";
 
 const base = (over = {}) => ({
   status: "pass",

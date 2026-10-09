@@ -28,14 +28,14 @@ import {
   type ThinkingFormat,
 } from "./config.js";
 import { FileCredentialStore } from "./auth.js";
-import { createPageqaProvider } from "./llm.js";
-import { info } from "./log.js";
+import { createPageqaProvider } from "../llm/llm.js";
+import { info } from "../shared/log.js";
 import {
   createFreeProviders,
   FREE_PROVIDER_IDS,
   isFreeProvider,
-} from "./free-providers.js";
-import { t } from "./i18n.js";
+} from "../llm/free-providers.js";
+import { t } from "../shared/i18n.js";
 
 export { PAGEQA_PROVIDER_ID };
 
@@ -166,7 +166,7 @@ const PROBE_TIMEOUT_MS = 20_000;
 export type ModelProbe = { ok: true } | { ok: false; reason: string };
 
 /**
- * 这次请求是否带着「关思考」的字段（见 src/llm.ts：默认开着）。
+ * 这次请求是否带着「关思考」的字段（见 src/llm/llm.ts：默认开着）。
  *
  * 默认关思考意味着每个请求都多一个 `thinking: {"type":"disabled"}` 之类的字段。绝大多数
  * OpenAI 兼容端点会忽略不认识的字段，但**严格实现会直接 400**（报错就是「不认识这个参数」）。

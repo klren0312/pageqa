@@ -5,7 +5,7 @@ import {
   inspectRegion,
   parseSnapshotRefs,
   snapshotNodeLabels,
-} from "../dist/locator.js";
+} from "../dist/shared/locator.js";
 
 // 纯单元测试：只依赖 dist/locator.js，不需要 bsk / LLM。
 //

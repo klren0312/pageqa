@@ -3,7 +3,7 @@ import { existsSync, renameSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { basename } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { readDownloadCleanup } from "../config.js";
+import { readDownloadCleanup } from "../config/config.js";
 import {
   DEFAULT_DOWNLOAD_TIMEOUT_MS,
   downloadDestination,
@@ -15,20 +15,20 @@ import {
   matchFileName,
   recordDownloaded,
   uniquePath,
-} from "../downloads.js";
-import { t } from "../i18n.js";
+} from "../report/downloads.js";
+import { t } from "../shared/i18n.js";
 import {
   ensureScreenshotDirFor,
   recordScreenshot,
   screenshotPath,
-} from "../screenshots.js";
-import { JevClient } from "../jev.js";
+} from "../report/screenshots.js";
+import { JevClient } from "../llm/jev.js";
 import {
   inspectRefTarget,
   parseSnapshotRefs,
   type SnapshotRef,
-} from "../locator.js";
-import { debugLog, info, timer } from "../log.js";
+} from "../shared/locator.js";
+import { debugLog, info, timer } from "../shared/log.js";
 import {
   buildConfirmExpression,
   buildProbeExpression,
@@ -70,7 +70,7 @@ import {
   type DateSpec,
   type OverlayProbe,
 } from "./picker.js";
-import { slimSnapshot } from "../snapshot.js";
+import { slimSnapshot } from "../shared/snapshot.js";
 import {
   BskIpcAbortError,
   BskIpcRpcError,

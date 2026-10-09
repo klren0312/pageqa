@@ -14,9 +14,9 @@
  */
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { escapeHtml, formatDurationMs } from "./report-html.js";
-import { getLocale, t } from "./i18n.js";
-import { info } from "./log.js";
+import { escapeHtml, formatDurationMs } from "../report/report-html.js";
+import { getLocale, t } from "../shared/i18n.js";
+import { info } from "../shared/log.js";
 import {
   databasePath,
   listArchives,
@@ -24,7 +24,7 @@ import {
   SESSIONS_DIR,
   type SessionArchive,
   type SessionSummary,
-} from "./session-archive.js";
+} from "./archive.js";
 
 /** 默认端口：换一个不常被占用的号，少一点「起服务先撞端口」的摩擦。 */
 export const DEFAULT_SESSIONS_PORT = 7331;

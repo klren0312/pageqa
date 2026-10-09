@@ -33,15 +33,15 @@ pageqa/
 
 ## 2. LLM 后端（pi-agent-core + pi-ai）
 
-- `src/llm.ts` 使用 `@earendil-works/pi-ai` 的 `createModels` / `createProvider` 构造一个自定义 `openai-completions` provider，指向 CodeBuddy 本地反代 `http://127.0.0.1:3000/v1`，模型 `hunyuan-2.0-instruct`。
+- `src/llm/llm.ts` 使用 `@earendil-works/pi-ai` 的 `createModels` / `createProvider` 构造一个自定义 `openai-completions` provider，指向 CodeBuddy 本地反代 `http://127.0.0.1:3000/v1`，模型 `hunyuan-2.0-instruct`。
 - `auth` 采用静态解析的 `ApiKeyAuth`（`resolve` 返回 `{ apiKey, baseUrl }`），避免交互式 env 探测；默认 Key `codebuddy-proxy-key`。
 - 模型定义需包含 pi-ai `Model` 必填字段：`api`、`provider`、`baseUrl`、`input`、`contextWindow`、`maxTokens`/`maxOutput`、`cost`（含 `tiers` 等价字段）、`compat`。
 - 可通过环境变量 `PAGEQA_LLM_BASE_URL` / `PAGEQA_LLM_API_KEY` / `PAGEQA_LLM_MODEL` 覆盖；也可切换到 pi-ai 其他已配置 provider。
 - `streamFn` 使用 `models.streamSimple.bind(models)`，供 `pi-agent-core` 的 Agent 驱动 LLM。
 
-- **出口（`src/proxy.ts`）**：模型端点直连不通时要能改走代理，但 `127.0.0.1` 上的本地端点与 bsk daemon 必须直连——一刀切设 `HTTP_PROXY` 会把它们也塞进代理（症状是「连上了但不回话」）。因此按域名逐条决定：`direct` / `proxy` / `fallback`（先直连、遇网络层错误再走代理），规则自上而下第一条命中者胜，都不命中按全局 `mode`。装配点是替换 `globalThis.fetch`（pi-ai 每次请求才构造 SDK 客户端，取的是当时的全局 fetch），走代理时用 undici 自带的 fetch + `ProxyAgent`（外部 undici 的 dispatcher 与 Node 内置 fetch 跨大版本不兼容）。配置在 `~/.pageqa/proxy.json`（`--init-config` 生成模板），环境变量 `PAGEQA_PROXY_URL` / `_ENABLED` / `_MODE` 优先，交互模式 `/proxy` 面板可开关并查看统计与规则。详见 `docs/adr/0016`。
+- **出口（`src/config/proxy.ts`）**：模型端点直连不通时要能改走代理，但 `127.0.0.1` 上的本地端点与 bsk daemon 必须直连——一刀切设 `HTTP_PROXY` 会把它们也塞进代理（症状是「连上了但不回话」）。因此按域名逐条决定：`direct` / `proxy` / `fallback`（先直连、遇网络层错误再走代理），规则自上而下第一条命中者胜，都不命中按全局 `mode`。装配点是替换 `globalThis.fetch`（pi-ai 每次请求才构造 SDK 客户端，取的是当时的全局 fetch），走代理时用 undici 自带的 fetch + `ProxyAgent`（外部 undici 的 dispatcher 与 Node 内置 fetch 跨大版本不兼容）。配置在 `~/.pageqa/proxy.json`（`--init-config` 生成模板），环境变量 `PAGEQA_PROXY_URL` / `_ENABLED` / `_MODE` 优先，交互模式 `/proxy` 面板可开关并查看统计与规则。详见 `docs/adr/0016`。
 
-- **免费网关（`src/free-providers.ts`）**：`/model` 除自定义端点与 pi-ai 内置 provider 外，还自带一批免费 OpenAI 兼容网关（cline / llm7 / fastrouter / orcarouter / xkiro），目录数据取自 pi-free 的 `docs/providers.md` 与 `docs/free_models.md`（2026-08-26 审计）。每个网关的模型目录是「内置快照（基线）+ 动态 `fetchModels` 打公开 `/v1/models`」，只保留免费条目（快照命中或该网关自己声明的命名规律，llm7 只认快照）；刷新失败静默回落快照，因此断网也总有模型可选。允许匿名的三个（cline / llm7 / fastrouter）无凭据也 resolve，因此照常出现在 `/model`，其余两个需 key。详见 `docs/adr/0017`。
+- **免费网关（`src/llm/free-providers.ts`）**：`/model` 除自定义端点与 pi-ai 内置 provider 外，还自带一批免费 OpenAI 兼容网关（cline / llm7 / fastrouter / orcarouter / xkiro），目录数据取自 pi-free 的 `docs/providers.md` 与 `docs/free_models.md`（2026-08-26 审计）。每个网关的模型目录是「内置快照（基线）+ 动态 `fetchModels` 打公开 `/v1/models`」，只保留免费条目（快照命中或该网关自己声明的命名规律，llm7 只认快照）；刷新失败静默回落快照，因此断网也总有模型可选。允许匿名的三个（cline / llm7 / fastrouter）无凭据也 resolve，因此照常出现在 `/model`，其余两个需 key。详见 `docs/adr/0017`。
 
 ## 3. 浏览器驱动（browserskill / bsk）
 
@@ -65,7 +65,7 @@ pageqa/
     - **过滤**：禁用项（`is-disabled` / `aria-disabled`）、不可见项（别的下拉留下的隐藏节点）、日期表格里 `.prev-month` / `.next-month` 的相邻月份格子、以及日期文本非全等的格子（找「1」不能命中「11」）都不算命中。
     - **操作后等浮层收起**：浮层收起前一直盖在下面的控件上，不等它消失就去点下一个控件，那一下会落在浮层上（A 的下拉没关、B 的下拉没开）。最多等 1.5s，等不到也不影响后续——多选下拉本就不关闭。
     - 都命中不了就如实报错，让模型退回「看快照自己点」的通用路径——**绝不猜元素**；每次操作前先清掉上一轮残留的两个标记（点击标记与根标记）。
-  - **引用闸门**：`@eN` 只对产生它的那次快照成立，而编号会随页面变化（展开侧边栏/折叠菜单、悬停弹出菜单、切换路由、提交表单）整体位移——沿用旧编号不会报错，而是静默点到同编号的另一个元素。因此 click/fill/hover/scroll/upload/download/select_option/pick_date 在动作前都用最近一次快照核对引用：快照之后有过任何改页面动作（navigate/click/fill/hover/scroll/wait）→ 拒绝并提示重新 snapshot；编号不在最近一次快照里 → 拒绝；通过时把解析出的 role/name 作为「（落点：…）」回显在操作结果里，供模型与日志核对。CSS 选择器不经过该判定（与快照编号无关）。判定逻辑在 `src/locator.ts` 的 `inspectRefTarget`（纯函数，有单测）。
+  - **引用闸门**：`@eN` 只对产生它的那次快照成立，而编号会随页面变化（展开侧边栏/折叠菜单、悬停弹出菜单、切换路由、提交表单）整体位移——沿用旧编号不会报错，而是静默点到同编号的另一个元素。因此 click/fill/hover/scroll/upload/download/select_option/pick_date 在动作前都用最近一次快照核对引用：快照之后有过任何改页面动作（navigate/click/fill/hover/scroll/wait）→ 拒绝并提示重新 snapshot；编号不在最近一次快照里 → 拒绝；通过时把解析出的 role/name 作为「（落点：…）」回显在操作结果里，供模型与日志核对。CSS 选择器不经过该判定（与快照编号无关）。判定逻辑在 `src/shared/locator.ts` 的 `inspectRefTarget`（纯函数，有单测）。
   - `upload(target, file)`：经 `bsk upload <target> --file <path>` 上传本地文件；`target` 为触发文件选择器的元素（或省略，由 bsk 自动查找文件输入框）。
   - `scroll(target)`：经 `evaluate` 滚动到元素。
   - `wait(ms)`：经 `wait-ms` 等待。只该用于**页面之外**的事情（等服务端生成导出文件、后台排队）。
@@ -78,7 +78,7 @@ pageqa/
 
 ## 4. Agent 编排（pi-agent-core）
 
-- `src/agent.ts` 构造 `Agent`（`@earendil-works/pi-agent-core`），注入 `systemPrompt`（定义测试协议）与 bsk 工具集，使用 `llm.ts` 的 `model` 与 `streamFn`。
+- `src/agent/agent.ts` 构造 `Agent`（`@earendil-works/pi-agent-core`），注入 `systemPrompt`（定义测试协议）与 bsk 工具集，使用 `llm.ts` 的 `model` 与 `streamFn`。
 - Agent 订阅事件：记录工具调用与文本增量，结束（`waitForIdle`）后生成报告。
 - `runAgent(input, opts)`：`opts` 含 `session?`（复用已有 bsk session）、`systemPrompt?`（覆盖默认测试协议）、`scenarioName?`、`vars?`、`scriptPath?`（仅在报告里标注落盘位置）、`model?` / `catalog?`（交互模式注入，使 `/login` 的凭据与 `/model` 的切换对本场景立即生效）、`abortSignal?`（Esc 中止）、`debug?`、`onUsage?`（每轮 LLM 调用后回调**累计**用量，供界面实时显示）。返回 `{ report, text, json, transcript, usage, recordings }`——`recordings` 是本次录制到的可回放步骤，失败运行同样有，便于排查「模型这次到底做了什么」。
 - 上下文压力控制：`transformContext` 钩子在字符数超过 40000 时裁掉较早的工具结果（最近 12 条保持完整，更早的截到 1500 字符），避免长流程把早期的步骤说明挤出上下文、导致模型提前收尾。
@@ -87,7 +87,7 @@ pageqa/
 
 ## 5. 报告与退出码
 
-- `src/report.ts` 组装报告。断言**优先取 `assert_text` 工具返回的结构化结果**（期望值 + 成立/不成立 + 证据，由工具层经 `onExec` 逐条上报）：工具结论是确定性的，而模型自述的措辞不可靠（常写成「…，断言成立。」，既没有期望值也无法解析，据此外推会把全部通过的用例报成「用例中的断言全部执行（实际 0/N）」的假失败）。只有在拿不到工具结果时（回放、纯文本输入）才解析结论文本（`断言「X」：成立/不成立` 句式），并沿用按关键字（不成立/未找到/失败/不存在）的降级判定。
+- `src/report/report.ts` 组装报告。断言**优先取 `assert_text` 工具返回的结构化结果**（期望值 + 成立/不成立 + 证据，由工具层经 `onExec` 逐条上报）：工具结论是确定性的，而模型自述的措辞不可靠（常写成「…，断言成立。」，既没有期望值也无法解析，据此外推会把全部通过的用例报成「用例中的断言全部执行（实际 0/N）」的假失败）。只有在拿不到工具结果时（回放、纯文本输入）才解析结论文本（`断言「X」：成立/不成立` 句式），并沿用按关键字（不成立/未找到/失败/不存在）的降级判定。
 - 文本报告含结论（PASS/FAIL）、断言列表与证据、摘要、transcript；JSON 报告结构稳定：`{ status, mode?, assertions[], summary?, transcript, usage?, trace?, steps?, skipped?, durationMs? }`（`mode: "replay"` 标记回放；`skipped` 是回放中因元素未找到而跳过的步骤，不算失败但必须让人看见）。
 - token 消耗：`runAgent` 汇总本次运行全部 assistant 消息的 `usage`（含续跑轮次）为 `TokenUsage { input, output, cacheRead, cacheWrite, reasoning, total, calls }`；`runSuite` 用 `mergeUsage` 合并各场景用量。
 - 文本报告**末尾**输出一行 token 消耗（`formatUsage`），套件模式下每个场景块内也各有一行，末尾为合计；JSON 报告经 `usage` 字段输出。端点未返回 usage（`calls>0` 且 `total=0`）时须如实标注，不得把 0 当作真实消耗。
@@ -95,17 +95,17 @@ pageqa/
 
 ## 6. 录制与回放（零模型重跑）
 
-- **录制**：`createBskTools` 的 `onExec` 回调把每次工具执行（含入参、成败、操作前的最后一份快照）交给 `Record`（`src/record.ts`）。只记录**成功**的操作（失败的尝试是模型的探索过程）；`snapshot` 不记录（它只服务于模型的观察）。每条记录附：
+- **录制**：`createBskTools` 的 `onExec` 回调把每次工具执行（含入参、成败、操作前的最后一份快照）交给 `Record`（`src/agent/record.ts`）。只记录**成功**的操作（失败的尝试是模型的探索过程）；`snapshot` 不记录（它只服务于模型的观察）。每条记录附：
   - `step`：尽力映射的用例步骤号——取「上一个『第 k 步完成』自述 + 1」，映射不到为 null；
   - `locator`：由操作前快照解析出的语义定位符（`{role, name, nth, target}`），见下；
   - 字符串里已展开的 `${...}` 取值会被还原回占位符写法（`restorePlaceholders`，仅还原长度 ≥ 8 的取值，避免误伤页面里的无关数字），另存录制当次的字面量以便人工核对。**定位符里的可访问名同样要还原**（列表里点的常是「刚创建的那条」，名字带时间戳），否则回放必然定位失败；用例原文（`caseSteps`）也按占位符形式写进脚本，与用户的用例文件保持一致。
-- **定位符（`src/locator.ts`）**：bsk 的 `@eN` 只在产生它的那次快照内有效，因此**不存 `@eN`**。改为从快照行 `@e1 link "Learn more"` 解析出「角色 + 可访问名 + 祖先路径」，并记下同名候选中的序号 `nth`。回放时用当次快照重新解析：全等 → role 相同且 name 包含 → 只看 name；命中多个时先用**祖先路径**消歧（快照缩进即层级，`pathScore` 从最深一层往上数连续相同的层数，唯一最高分即命中），路径无法区分才退回 `nth`。解析不到时退回录制时的 target（是 CSS 仍可用），都失败即报错，绝不猜元素。
+- **定位符（`src/shared/locator.ts`）**：bsk 的 `@eN` 只在产生它的那次快照内有效，因此**不存 `@eN`**。改为从快照行 `@e1 link "Learn more"` 解析出「角色 + 可访问名 + 祖先路径」，并记下同名候选中的序号 `nth`。回放时用当次快照重新解析：全等 → role 相同且 name 包含 → 只看 name；命中多个时先用**祖先路径**消歧（快照缩进即层级，`pathScore` 从最深一层往上数连续相同的层数，唯一最高分即命中），路径无法区分才退回 `nth`。解析不到时退回录制时的 target（是 CSS 仍可用），都失败即报错，绝不猜元素。
   - 祖先路径是为「同名元素很多」设计的：详情页同时存在页面级与区域级的「操作」下拉，只按 `nth` 会随元素数量变化指错，而「在哪个 `menu`/`tabpanel`/`dialog` 之下」更抗漂移。路径条目名字超过 60 字符会截断（`main` 的可访问名可能是整页文本）、只保留最深 3 层，且截断在录制/回放两侧同规则执行，比较依旧有效。
   - 定位失败时用 `locatorHint` 区分三类线索：**similar-name**（名字相近的元素存在，多半是改名）、**role-only**（该角色元素存在但名字都不同，多半点错了另一个同名菜单）、**no-role**（该角色元素一个都没有，菜单/弹窗并未打开），写进跳过/失败原因。
 - **悬停触发的下拉菜单**：系统提示要求「先 hover 触发按钮、确认菜单项出现在快照里，再 click 菜单项」，并提醒同名下拉要按当前区域选择；`hover` 属正常录制的步骤，回放照做。
 - **选择类控件记成「一个」步骤**：`select_option` / `pick_date` 各记成一步（`ReplayStep` 的 `select_option` / `pick_date`），而不是展开成「click 展开 + click 选项」——展开后的选项是浮层，它的 `@eN` 只在那一次快照里有效，展开成两条 click 等于把录制当次的编号写进脚本。回放时控件本身仍走语义定位（与 click 同一条路径），「展开 → 匹配 → 点击」的中间态由操作层内部完成：录制与回放调用的是同一个 `BskOps` 方法，不存在两套实现漂移。选项文本与日期同样按占位符写法保存，并参与加载时的 `recorded*` 反查还原。
 - **新增步骤类型不升 `REPLAY_VERSION`**：闸门是加载时的逐步类型校验（`REPLAY_STEP_KINDS`），读到不认识的类型会当场报「不支持的步骤类型」并指出是哪个步骤、哪个文件；升版本号会把「只含 click/fill 的新脚本」也一起拒掉，代价更大而精度更低。`wait_for` / `select_option` / `pick_date` 都按这条处理，且有单测钉住「全部类型都在白名单里」。
-- **回放脚本（`src/replay.ts`）**：`{ format: "pageqa-replay", version, recordedAt, source: {path, hash}, scenarios: [{name, caseSteps, steps}] }`；`loadReplayScript` 校验格式/版本，并**拒绝空步骤脚本**（否则会伪装成「0 步全通过」）。`source.hash` 用于回放时提示源用例已变更（只警告不失败）。加载时还会用脚本自带的 `recorded*` 字段反推「录制当次取值 → 占位符」，把旧脚本里写死的动态取值就地还原（改写范围限于用例原文、定位符名、填入值、断言期望；不动 `file`/`target`/`url`），免去为一个字段重跑一次十几分钟的 LLM 用例。
+- **回放脚本（`src/agent/replay.ts`）**：`{ format: "pageqa-replay", version, recordedAt, source: {path, hash}, scenarios: [{name, caseSteps, steps}] }`；`loadReplayScript` 校验格式/版本，并**拒绝空步骤脚本**（否则会伪装成「0 步全通过」）。`source.hash` 用于回放时提示源用例已变更（只警告不失败）。加载时还会用脚本自带的 `recorded*` 字段反推「录制当次取值 → 占位符」，把旧脚本里写死的动态取值就地还原（改写范围限于用例原文、定位符名、填入值、断言期望；不动 `file`/`target`/`url`），免去为一个字段重跑一次十几分钟的 LLM 用例。
 - **回放引擎**：逐场景执行，各自 `ensureSession` / `closeSession`（独立浏览器窗口）。单场景输出单份报告；多场景用 `summarizeSuite` 汇总，语义与 `--suite` 一致（任一场景失败即整体失败、退出码非零）。每步最多**重试 3 次**，两次尝试之间用 `ops.settle()`（页面已稳定就立刻重试，真在加载/播动画时才等、上限 800ms，取代了原先固定的 500ms；每次重试都重新取快照），对齐 bsk 时序抖动与弹窗/动画延迟。`navigate` 不重试（目标不可达不会因为等一下再试就变得可达）。失败语义三分（`executeReplaySteps`，结论判定 `replayScenarioStatus`）：
   - **元素未找到（`LocatorMissError`）** → 记为**跳过**并继续，**不算失败**。这表达的是「当前页面状态下这一步不需要」，最典型是录制期模型补点的「取 消」类清理动作；实测中它曾让 65 步用例在第 12 步整条报废。跳过必须显式呈现（报告 `skipped` 字段 + `[replay-skip]` 轨迹行 + 摘要里的跳过数），不得悄悄略过。
   - **其它失败**（元素找到但操作报错、断言不成立）→ 记为失败并**继续跑完**剩余步骤，一次给出完整健康报告；报告指出「回放第 n 步（kind）／对应用例第 k 步：<用例原文>」。
@@ -165,13 +165,13 @@ pageqa sessions [选项]        # 子命令：起运行存档查询服务（见�
 
 出问题时能看到多少现场，决定了能不能查下去：默认日志（stderr）只留工具名与一行失败原因，`--debug` 也只够眼看它滚过去、事后无从翻查。因此每次运行把「交给 agent 的参数」与「运行中的完整交互」持久化下来，由 `pageqa sessions` 起服务回看。
 
-- **存储（`src/session-archive.ts`）**：走 pi 官方的 `@earendil-works/pi-durable`（底层是 `node:sqlite`），全部运行落在**一个容器** `~/.pageqa/sessions/sessions.sqlite`。只用它的 **Session + 文档**这一层，不牵进 Harness / 模型 / 工具运行时：
+- **存储（`src/session/archive.ts`）**：走 pi 官方的 `@earendil-works/pi-durable`（底层是 `node:sqlite`），全部运行落在**一个容器** `~/.pageqa/sessions/sessions.sqlite`。只用它的 **Session + 文档**这一层，不牵进 Harness / 模型 / 工具运行时：
   - 一次运行 = 文档族 `pageqa.archive` 的一个成员，**键就是运行 id**（按 id 取存档是一次直接查表）；
   - 列表页要的摘要 = 单例文档 `pageqa.index`（一次读就能列全，不必把每份档案的轮次与工具调用都读出来）。
   写入是**一次提交**（`session.commit(...)` 里档案与索引一起写）：一次运行的档案要么整条可读、要么一条都不存在，不会留下「看着有、实际缺」的半截记录。刻意**不用**它的 Conversation / Entry / Task 语义——档案是只写一次、之后只读的运行记录，不是可续跑的对话。
-- **采集（`src/agent.ts`）**：`initializeAgent` 记录参数（系统提示词、模型、工具声明含 schema、编号后的 prompt、用例原文、步骤清单、占位符取值、bsk session、debug 开关）；`transformContext` 钩子记录**每轮实际发出**的上下文（裁剪后的版本 + 裁剪前字符数，因此「模型是不是把前面的步骤挤掉了」有据可查）；`subscribeProgress` 从 agent 事件里记录每轮耗时/用量，以及每次工具调用的入参、结果、耗时、成败。单段文本按 4000 字符截断并标注原始长度。
+- **采集（`src/agent/agent.ts`）**：`initializeAgent` 记录参数（系统提示词、模型、工具声明含 schema、编号后的 prompt、用例原文、步骤清单、占位符取值、bsk session、debug 开关）；`transformContext` 钩子记录**每轮实际发出**的上下文（裁剪后的版本 + 裁剪前字符数，因此「模型是不是把前面的步骤挤掉了」有据可查）；`subscribeProgress` 从 agent 事件里记录每轮耗时/用量，以及每次工具调用的入参、结果、耗时、成败。单段文本按 4000 字符截断并标注原始长度。
 - **落盘时机**：正常路径在 `finalizeResult` 之后写入（带结论与总用量）；编排中途抛错时由 `runAgent` 的 `finally` 兜底写一次——那正是最需要现场的时刻。落盘**绝不影响测试结论**：写失败只提示一句、不改退出码（与旁路产物同一条口径）。
-- **查询服务（`src/session-server.ts`）**：零依赖的 `node:http` 服务，服务端渲染列表页（`/`）与详情页（`/s/<id>`），另提供 JSON（`/api/sessions`、`/api/sessions/<id>`）。动态文本一律经 `escapeHtml`；`id` 走 `assertSafeId` 校验（`[A-Za-z0-9._-]`），URL 编码过的目录穿越撞在校验上返回 404。只监听回环地址——存档含系统提示词、用例文本与页面快照。
+- **查询服务（`src/session/server.ts`）**：零依赖的 `node:http` 服务，服务端渲染列表页（`/`）与详情页（`/s/<id>`），另提供 JSON（`/api/sessions`、`/api/sessions/<id>`）。动态文本一律经 `escapeHtml`；`id` 走 `assertSafeId` 校验（`[A-Za-z0-9._-]`），URL 编码过的目录穿越撞在校验上返回 404。只监听回环地址——存档含系统提示词、用例文本与页面快照。
 - **清理**：默认只保留最近 200 次运行（按容器里的创建时间倒序），清理失败静默（它只是维护动作，不该冒泡成「这次运行出错了」）。容器文件不存在时 `list` / `read` / `prune` 一律直接返回，不会为「看一眼列表」在磁盘上建出一个空数据库。
 - **旧格式不迁移**：早期版本按「一次运行两个 JSON 文件」写在 `~/.pageqa/sessions/*.json`；再早一版把存档放在 pi 自带 session 后端的 SQLite 容器里（文件名同样是 `sessions.sqlite`，但表结构不同）。换存储格式时都不做迁移，旧数据不再被读取（列表页会显示为空，可手动删除容器文件）。
 

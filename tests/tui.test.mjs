@@ -9,8 +9,8 @@ import {
   sliceByColumn,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import { splitScenarios } from "../dist/agent.js";
-import { debugLog, info, setDebug, setSink } from "../dist/log.js";
+import { splitScenarios } from "../dist/agent/agent.js";
+import { debugLog, info, setDebug, setSink } from "../dist/shared/log.js";
 import {
   addUsage,
   buildReport,
@@ -18,8 +18,8 @@ import {
   renderSuiteText,
   statusTag,
   summarizeSuite,
-} from "../dist/report.js";
-import { groupRecordingsBySource } from "../dist/replay.js";
+} from "../dist/report/report.js";
+import { groupRecordingsBySource } from "../dist/agent/replay.js";
 import {
   buildPickPrompt,
   displayPath,

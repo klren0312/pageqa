@@ -6,7 +6,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { getLocale, t } from "./i18n.js";
+import { getLocale, t } from "../shared/i18n.js";
 import {
   formatUsage,
   statusTag,

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileCredentialStore } from "../dist/auth.js";
+import { FileCredentialStore } from "../dist/config/auth.js";
 
 // 纯单元测试：不依赖浏览器、LLM 与真实 TTY，也不会写用户主目录（凭据文件路径显式注入）。
 

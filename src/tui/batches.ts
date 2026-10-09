@@ -8,11 +8,11 @@
  *
  * 这个模块只有纯函数（输入是队列项与结果表），因此「归档不丢数据」这条不变量可以直接单测。
  */
-import type { AgentRunResult } from "../agent.js";
-import { emptyUsage, numberSteps, type SuiteMember, type TestReport } from "../report.js";
-import type { ScenarioRecording } from "../replay.js";
+import type { AgentRunResult } from "../agent/agent.js";
+import { emptyUsage, numberSteps, type SuiteMember, type TestReport } from "../report/report.js";
+import type { ScenarioRecording } from "../agent/replay.js";
 import type { QueuedScenario, ScenarioOrigin } from "./queue.js";
-import { t } from "../i18n.js";
+import { t } from "../shared/i18n.js";
 
 /** 一批场景的快照：退出报告与回放脚本的输入。 */
 export interface SessionBatch {

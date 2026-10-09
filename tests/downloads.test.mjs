@@ -20,15 +20,15 @@ import {
   runDownloadDir,
   runDownloadDirName,
   sanitizeFileName,
-} from "../dist/downloads.js";
-import { Recorder } from "../dist/record.js";
+} from "../dist/report/downloads.js";
+import { Recorder } from "../dist/agent/record.js";
 import {
   executeReplaySteps,
   loadReplayScript,
   replayScenarioStatus,
   REPLAY_FORMAT,
   REPLAY_VERSION,
-} from "../dist/replay.js";
+} from "../dist/agent/replay.js";
 
 // 纯单元测试：只依赖 dist/*，不需要 bsk / LLM、不发起真实下载。
 

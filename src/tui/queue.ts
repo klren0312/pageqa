@@ -8,7 +8,7 @@
  * 「提交了就一定会跑」是队列对用户的承诺，因此一个场景结束（通过／失败／已取消）后
  * 立刻补上下一个，不停下来等指令。
  */
-import { debugLog } from "../log.js";
+import { debugLog } from "../shared/log.js";
 
 /** 并发上限的兜底：与 CLI 侧同名常量同一个含义（见 suite.ts 的 MAX_CONCURRENCY）。 */
 const QUEUE_MAX_CONCURRENCY = 8;

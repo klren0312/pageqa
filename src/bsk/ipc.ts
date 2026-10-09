@@ -30,7 +30,7 @@ import { readFileSync } from "node:fs";
 import net from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { debugLog } from "../log.js";
+import { debugLog } from "../shared/log.js";
 
 /** `$BSK_HOME`（默认 `~/.bsk`）——daemon.json 与 UDS 都在这下面。 */
 export function bskHome(): string {

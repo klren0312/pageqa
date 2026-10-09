@@ -11,9 +11,9 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { CONFIG_DIR } from "./config.js";
+import { CONFIG_DIR } from "../config/config.js";
 import { uniquePath } from "./downloads.js";
-import { formatLocalTime } from "./vars.js";
+import { formatLocalTime } from "../agent/vars.js";
 
 /** 截图根目录：`~/.pageqa/screenshots`（与 `~/.pageqa/downloads` 同层）。 */
 export function screenshotDir(): string {

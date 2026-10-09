@@ -65,14 +65,14 @@ import {
   ModelUnreachableError,
   splitScenarios,
   type AgentRunResult,
-} from "../agent.js";
+} from "../agent/agent.js";
 // 场景在独立子进程里执行（ADR-0013）：交互模式与批处理共用同一个执行器。
 import {
   EnvironmentUnavailableError,
   runScenarioInChild,
   scenarioLogTag,
-} from "../suite.js";
-import { info, setSink } from "../log.js";
+} from "../agent/suite.js";
+import { info, setSink } from "../shared/log.js";
 import {
   cacheHitRate,
   emptyUsage,
@@ -87,8 +87,8 @@ import {
   type SuiteMember,
   type TestReport,
   type TokenUsage,
-} from "../report.js";
-import type { ScenarioRecording } from "../replay.js";
+} from "../report/report.js";
+import type { ScenarioRecording } from "../agent/replay.js";
 // 仅类型导入（编译期擦除），不会让「非交互路径」为 UI 依赖付出加载开销。
 import type {
   Component,
@@ -111,7 +111,7 @@ import {
 } from "./batches.js";
 import { accent, dim, editorTheme, err, ok, title, warn } from "./theme.js";
 import { frameLines, overlayInnerWidth } from "./overlay-frame.js";
-import { packageVersion } from "../version.js";
+import { packageVersion } from "../shared/version.js";
 import {
   arrowKeysBelongToLog,
   KEYBINDINGS,
@@ -129,7 +129,7 @@ import {
   parsePick,
   resolveCaseFile,
 } from "./case-source.js";
-import { getLocale, setLocale, t } from "../i18n.js";
+import { getLocale, setLocale, t } from "../shared/i18n.js";
 import {
   CONFIG_PATH,
   readSideOutputPrefs,
@@ -138,8 +138,8 @@ import {
   saveModelSelection,
   saveSideOutputPref,
   type SideOutputPrefs,
-} from "../config.js";
-import { AUTH_PATH } from "../auth.js";
+} from "../config/config.js";
+import { AUTH_PATH } from "../config/auth.js";
 import {
   describeProxyRules,
   PROXY_CONFIG_PATH,
@@ -147,7 +147,7 @@ import {
   reloadProxyConfig,
   setProxyBypassed,
   setProxyEnabled,
-} from "../proxy.js";
+} from "../config/proxy.js";
 import {
   createModelCatalog,
   listLoginOptions,
@@ -162,8 +162,8 @@ import {
   type ModelCatalog,
   type ModelChoice,
   type ModelOption,
-} from "../models.js";
-import { isFreeProvider } from "../free-providers.js";
+} from "../config/models.js";
+import { isFreeProvider } from "../llm/free-providers.js";
 // 仅类型导入（编译期擦除）：TUI 路径不需要为 pi-ai 的运行时代码付出加载开销
 // （真正的模型目录由 models.ts 按需动态加载）。
 import type { AuthEvent, AuthPrompt, AuthType } from "@earendil-works/pi-ai";

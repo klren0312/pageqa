@@ -11,7 +11,7 @@ import {
   splitScenarios,
   type AgentRunResult,
   type ScenarioSelection,
-} from "./agent.js";
+} from "./agent/agent.js";
 import {
   ensureConfigDir,
   CONFIG_PATH,
@@ -22,23 +22,23 @@ import {
   readSideOutputPrefs,
   SIDE_OUTPUTS_DISABLED,
   type SideOutputPrefs,
-} from "./config.js";
-import { downloadedFiles } from "./downloads.js";
-import { formatLintReport, lintCase, type LintResult } from "./lint.js";
-import { collectScreenshots, type TestReport, type TokenUsage } from "./report.js";
+} from "./config/config.js";
+import { downloadedFiles } from "./report/downloads.js";
+import { formatLintReport, lintCase, type LintResult } from "./agent/lint.js";
+import { collectScreenshots, type TestReport, type TokenUsage } from "./report/report.js";
 import {
   ConcurrencySessionConflictError,
   formatUsageLine,
   MAX_CONCURRENCY,
   runSuiteInChildren,
-} from "./suite.js";
+} from "./agent/suite.js";
 import {
   emitSideOutputs,
   reportDisabledByFlag,
   writeReportSideOutput,
   type ScriptOutcome,
-} from "./side-outputs.js";
-import { runSessionServer } from "./session-server.js";
+} from "./report/side-outputs.js";
+import { runSessionServer } from "./session/server.js";
 import { runInteractive } from "./tui/app.js";
 import {
   buildReplayScript,
@@ -49,15 +49,15 @@ import {
   writeReplayScript,
   type ReplayScript,
   type ScenarioRecording,
-} from "./replay.js";
+} from "./agent/replay.js";
 import {
   captureRunVars,
   expandVars,
   VAR_HELP,
   type RunVarValue,
-} from "./vars.js";
-import { info, setDebug, debugLog } from "./log.js";
-import { parseLocale, setLocale, t } from "./i18n.js";
+} from "./agent/vars.js";
+import { info, setDebug, debugLog } from "./shared/log.js";
+import { parseLocale, setLocale, t } from "./shared/i18n.js";
 import {
   describeProxyRules,
   ensureProxyConfigFile,
@@ -65,8 +65,8 @@ import {
   PROXY_CONFIG_PATH,
   proxyStatus,
   reloadProxyConfig,
-} from "./proxy.js";
-import { packageVersion } from "./version.js";
+} from "./config/proxy.js";
+import { packageVersion } from "./shared/version.js";
 
 interface CliArgs {
   input?: string;
@@ -1092,7 +1092,7 @@ async function main(): Promise<number> {
    *
    * 真正跑一次要开浏览器、调模型、十几分钟，而格式写歪往往以「假失败」收场
    * （最典型的是解释性文字被当成步骤、断言数对不上）。这里用与运行时**同一份口径**
-   * 先扫一遍（见 src/lint.ts），把问题摆在开跑之前。
+   * 先扫一遍（见 src/agent/lint.ts），把问题摆在开跑之前。
    *
    * 刻意不拦：能跑起来的用例就该让它跑完，真失败比格式告警值钱；要设门槛就把
    * `pageqa lint` 接进 CI（它的退出码可判）。`--no-lint` 可整体跳过。

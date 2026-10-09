@@ -32,10 +32,10 @@ const catalogs: Record<Locale, Catalog> = {
     "common.disabled": "未启用",
     "common.scenarioDefault": "场景 1",
 
-    // ── 进度日志（src/log.ts 的调用点，文案来自 agent.ts / index.ts）──
+    // ── 进度日志（src/shared/log.ts 的调用点，文案来自 agent.ts / index.ts）──
     "log.startup": "[pageqa] ===== 启动 =====",
     "log.startupInteractive": "[pageqa] ===== 启动（交互模式）=====",
-    // 思考模式（混元/DeepSeek/Qwen 这类混合推理模型默认开着思考；src/llm.ts 按配置显式关掉）
+    // 思考模式（混元/DeepSeek/Qwen 这类混合推理模型默认开着思考；src/llm/llm.ts 按配置显式关掉）
     "log.thinkingAuto":
       "模型思考：默认已关闭（按模型 {model} 识别为 {format} 族，每次请求发送 {field}；端点若不接受会在探活时自动退回）",
     "log.thinkingOff": "模型思考：已关闭（thinkingFormat={format}，每次请求发送 {field}）",
@@ -80,7 +80,7 @@ const catalogs: Record<Locale, Catalog> = {
       "[pageqa] 执行完整性不足（步骤或断言未跑满），发起第 {n} 次续跑（进度 {progress}，断言 {a}/{b}）",
     "log.caseEnd":
       "[pageqa] 用例结束：{status}，断言 {n} 条，耗时 {dur}s",
-    // ── session 存档与查询服务（src/session-archive.ts / src/session-server.ts）──
+    // ── session 存档与查询服务（src/session/archive.ts / src/session/server.ts）──
     "log.sessionArchived":
       "[pageqa] session 存档已写入 {id}（pageqa sessions 可回看这次运行交给了模型什么）",
     "log.sessionArchiveFailed":
@@ -130,7 +130,7 @@ const catalogs: Record<Locale, Catalog> = {
     "log.suiteStart": "[pageqa] 套件共 {n} 个场景：{names}",
     "log.suiteScenario": "[pageqa] ═══ 场景 {i}/{n}：{name} ═══",
     "log.suiteScenarioEnd": "[pageqa] ═══ 场景 {i}/{n} 结束：{status} ═══",
-    // ── 套件的子进程编排（src/suite.ts，见 ADR-0013）──
+    // ── 套件的子进程编排（src/agent/suite.ts，见 ADR-0013）──
     "log.suiteChildProbe":
       "[pageqa] 场景 {i}/{n} 没有产出报告，回查模型与浏览器环境…",
     "log.suiteChildTimeout":
@@ -230,7 +230,7 @@ const catalogs: Record<Locale, Catalog> = {
       "[proxy] 代理路由已装配：{proxy} · 模式 {mode} · {rules} 条规则（配置 {path}）",
     "log.proxyOff": "[proxy] 代理路由未生效（{reason}），所有请求直连；配置 {path}",
 
-    // ── 回放脚本（src/replay.ts）──
+    // ── 回放脚本（src/agent/replay.ts）──
     "replay.err.notFound": "找不到回放脚本：{path}",
     "replay.err.invalidJson": "回放脚本不是合法 JSON：{path}（{msg}）",
     "replay.err.badFormat": "不是 pageqa 回放脚本（format={format}）：{path}",
@@ -335,7 +335,7 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.connected": "[pageqa] bsk 已连接浏览器 {count} 个",
     "bsk.err.sessionFailed": "无法创建 bsk session，请确认 bsk daemon 已连接浏览器。",
     "bsk.err.uploadMissing": "待上传文件不存在：{file}",
-    // 引用闸门（src/bsk/tools.ts 的 checkRef / src/locator.ts 的 inspectRefTarget）
+    // 引用闸门（src/bsk/tools.ts 的 checkRef / src/shared/locator.ts 的 inspectRefTarget）
     // 这条报错后面**一定**会跟上「当前页面的可交互元素」清单（src/bsk/tools.ts 的 exec），
     // 因此这里只交代「为什么失效」，「怎么办」由清单的标题来说——两处都写会互相打架
     // （清单说的是「不必再单独 snapshot」，正文说的却是「请先调用 snapshot」）。
@@ -388,7 +388,7 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.network.hit": "匹配「{url}」{method}的请求 {count} 条，最近一条：{latest}{note}",
     "bsk.network.miss":
       "匹配「{url}」{method}的请求 {count} 条，实际：{actual}（期望 {expected}）{note}",
-    // 截图（src/bsk/tools.ts 的 screenshot 工具 + src/report-html.ts 的嵌图）
+    // 截图（src/bsk/tools.ts 的 screenshot 工具 + src/report/report-html.ts 的嵌图）
     "bsk.screenshot.bothModes":
       "截图不能同时要「整页」和「某个元素」：二选一（整页用 fullPage=true，元素用 target）。",
     "bsk.screenshot.refOnly":
@@ -429,7 +429,7 @@ const catalogs: Record<Locale, Catalog> = {
       "{target} 打开的是**单日期**面板（只有一张日历表），不需要 endDate。如果页面上确实是「开始~结束」两个输入框，请把 target 指向范围控件的输入框，而不是其中某一个。",
     "bsk.picker.rangeOrder":
       "结束日期早于开始日期（{start} ~ {end}）：请检查用例里的顺序，这不是页面问题。",
-    // 下载断言（src/bsk/tools.ts 的 download 工具 + src/downloads.ts）
+    // 下载断言（src/bsk/tools.ts 的 download 工具 + src/report/downloads.ts）
     "bsk.download.expectation": "导出的文件已下载到本地",
     "bsk.download.expectationNamed": "下载的文件名匹配 {pattern}",
     "bsk.download.captured":
@@ -678,7 +678,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.exitReason": "用户输入 /exit",
     "tui.debugOn": "，debug=on",
 
-    // ── 报告（src/report.ts）──
+    // ── 报告（src/report/report.ts）──
     "report.title": "=== 页面测试报告 ===",
     "report.titleSuite": "=== 页面测试套件报告 ===",
     "report.modeReplay": "模式: 回放（未调用大模型）",
@@ -726,7 +726,7 @@ const catalogs: Record<Locale, Catalog> = {
     "report.cancel": "用户中止了该场景，剩余步骤未执行",
     "report.agentErrorExpectation": "agent 正常执行完毕（未因错误中断）",
 
-    // ── 耗时构成（src/timing.ts）：一次运行的墙钟花在哪了。写进日志，不进 stdout 报告 ──
+    // ── 耗时构成（src/agent/timing.ts）：一次运行的墙钟花在哪了。写进日志，不进 stdout 报告 ──
     "timing.title": "耗时构成（墙钟 {wall}）",
     "timing.llm": "  LLM 调用 {calls} 次，{total}（{pct}%），平均 {avg}",
     "timing.commands":
@@ -747,7 +747,7 @@ const catalogs: Record<Locale, Catalog> = {
     "report.reason.infrastructure": "环境不可用（{msg}），本场景没有执行",
     "report.cancelEnvGone": "环境不可用，本场景没有执行",
 
-    // ── HTML 报告（src/report-html.ts）──
+    // ── HTML 报告（src/report/report-html.ts）──
     "reportHtml.generatedAt": "生成时间: {time}",
     "reportHtml.duration": "耗时: {dur}",
     "reportHtml.durationLabel": "耗时",
@@ -767,7 +767,7 @@ const catalogs: Record<Locale, Catalog> = {
     "reportHtml.pageTitle": "页面测试报告",
     "reportHtml.pageTitleSuite": "页面测试套件报告",
     "reportHtml.detail": "用例明细",
-    // ── 本次产物清单（src/side-outputs.ts；三条出口收尾各打一次，只走 stderr）──
+    // ── 本次产物清单（src/report/side-outputs.ts；三条出口收尾各打一次，只走 stderr）──
     "log.sideOutputsTitle": "[pageqa] 本次产物：",
     "log.sideOutputReport": "[pageqa]   测试报告: {path}",
     "log.sideOutputReportOff":
@@ -1043,7 +1043,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
 （换存储格式时不做迁移），需要的话手动删掉即可。
 `,
 
-    // ── 用例格式校验（src/lint.ts；`pageqa lint` 与跑用例前的预检共用）──
+    // ── 用例格式校验（src/agent/lint.ts；`pageqa lint` 与跑用例前的预检共用）──
     "help.lint": `pageqa lint - 用例格式静态校验
 
 用法:
@@ -1182,7 +1182,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "[pageqa] incomplete execution (steps or assertions not finished), initiating retry #{n} (progress {progress}, assertions {a}/{b})",
     "log.caseEnd":
       "[pageqa] case ended: {status}, {n} assertions, elapsed {dur}s",
-    // ── session archive & query server (src/session-archive.ts / src/session-server.ts) ──
+    // ── session archive & query server (src/session/archive.ts / src/session/server.ts) ──
     "log.sessionArchived":
       "[pageqa] session archive written: {id} (run `pageqa sessions` to review what was handed to the model)",
     "log.sessionArchiveFailed":
@@ -1237,7 +1237,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "[pageqa] ═══ scenario {i}/{n}: {name} ═══",
     "log.suiteScenarioEnd":
       "[pageqa] ═══ scenario {i}/{n} ended: {status} ═══",
-    // ── suite child-process orchestration (src/suite.ts, see ADR-0013) ──
+    // ── suite child-process orchestration (src/agent/suite.ts, see ADR-0013) ──
     "log.suiteChildProbe":
       "[pageqa] scenario {i}/{n} produced no report; re-checking the model and browser environment…",
     "log.suiteChildTimeout":
@@ -1343,7 +1343,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "log.proxyOff":
       "[proxy] routing inactive ({reason}); every request goes direct (config {path})",
 
-    // ── replay script (src/replay.ts) ──
+    // ── replay script (src/agent/replay.ts) ──
     "replay.err.notFound": "replay script not found: {path}",
     "replay.err.invalidJson": "replay script is not valid JSON: {path} ({msg})",
     "replay.err.badFormat": "not a pageqa replay script (format={format}): {path}",
@@ -1451,7 +1451,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "bsk.err.sessionFailed":
       "could not create a bsk session; make sure the bsk daemon has a connected browser.",
     "bsk.err.uploadMissing": "file to upload does not exist: {file}",
-    // ref gate (checkRef in src/bsk/tools.ts + inspectRefTarget in src/locator.ts)
+    // ref gate (checkRef in src/bsk/tools.ts + inspectRefTarget in src/shared/locator.ts)
     // this error is always followed by the "interactive elements on the current page" list
     // (see exec in src/bsk/tools.ts), so it only explains *why* — the *what to do* lives in the
     // list header. Writing both would contradict itself ("call snapshot" vs "no separate snapshot").
@@ -1505,7 +1505,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "bsk.network.hit": '{count} request(s) matching "{url}"{method}; latest: {latest}{note}',
     "bsk.network.miss":
       '{count} request(s) matching "{url}"{method}; actual: {actual} (expected {expected}){note}',
-    // screenshots (the `screenshot` tool in src/bsk/tools.ts + embedding in src/report-html.ts)
+    // screenshots (the `screenshot` tool in src/bsk/tools.ts + embedding in src/report/report-html.ts)
     "bsk.screenshot.bothModes":
       'a screenshot cannot be both "full page" and "a single element": pick one (fullPage=true, or target).',
     "bsk.screenshot.refOnly":
@@ -1547,7 +1547,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "{target} opened a **single-date** panel (only one calendar table), so endDate is not expected. If the page really has a \"start ~ end\" pair of inputs, point target at the range control rather than one of its inputs.",
     "bsk.picker.rangeOrder":
       "the end date is earlier than the start date ({start} ~ {end}): check the order used in the case; this is not a page problem.",
-    // download assertion (the `download` tool in src/bsk/tools.ts + src/downloads.ts)
+    // download assertion (the `download` tool in src/bsk/tools.ts + src/report/downloads.ts)
     "bsk.download.expectation": "the exported file has been downloaded locally",
     "bsk.download.expectationNamed":
       "the downloaded file name matches {pattern}",
@@ -1864,7 +1864,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "report.agentErrorExpectation":
       "agent finished executing normally (not interrupted by an error)",
 
-    // ── Timing breakdown (src/timing.ts) ──
+    // ── Timing breakdown (src/agent/timing.ts) ──
     "timing.title": "time breakdown (wall clock {wall})",
     "timing.llm": "  LLM calls {calls}, {total} ({pct}%), avg {avg}",
     "timing.commands":
@@ -1908,7 +1908,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "reportHtml.pageTitle": "page test report",
     "reportHtml.pageTitleSuite": "page test suite report",
     "reportHtml.detail": "case details",
-    // ── side outputs summary (src/side-outputs.ts) ──
+    // ── side outputs summary (src/report/side-outputs.ts) ──
     "log.sideOutputsTitle": "[pageqa] side outputs:",
     "log.sideOutputReport": "[pageqa]   test report: {path}",
     "log.sideOutputReportOff":
@@ -2213,7 +2213,7 @@ Note: archives that earlier versions wrote as two JSON files per run
 migration — and can simply be deleted.
 `,
 
-    // ── case-format lint (src/lint.ts; shared by `pageqa lint` and the pre-run check) ──
+    // ── case-format lint (src/agent/lint.ts; shared by `pageqa lint` and the pre-run check) ──
     "help.lint": `pageqa lint - static case-format check
 
 Usage:

@@ -6,8 +6,8 @@ import {
   needsContinuation,
   toolResultText,
   turnUsage,
-} from "../dist/agent.js";
-import { extractTrace } from "../dist/report.js";
+} from "../dist/agent/agent.js";
+import { extractTrace } from "../dist/report/report.js";
 
 // 纯单元测试：不依赖浏览器与 LLM。
 //
