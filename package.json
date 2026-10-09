@@ -16,7 +16,7 @@
     "start": "node dist/index.js",
     "pretest": "npm run build",
     "test": "node --test tests/smoke.test.mjs",
-    "test:unit": "npm run build && node --test tests/report.test.mjs tests/report-html.test.mjs tests/side-outputs.test.mjs tests/overlay-frame.test.mjs tests/version.test.mjs tests/replay.test.mjs tests/downloads.test.mjs tests/snapshot.test.mjs tests/locator.test.mjs tests/tui.test.mjs tests/agent.test.mjs tests/suite.test.mjs tests/navigate-diagnosis.test.mjs tests/bsk-ipc.test.mjs tests/bsk-settle.test.mjs tests/bsk-condition.test.mjs tests/bsk-assert.test.mjs tests/timing.test.mjs tests/credentials.test.mjs tests/model-catalog.test.mjs tests/cli.test.mjs tests/session-archive.test.mjs tests/session-server.test.mjs tests/bsk-picker.test.mjs",
+    "test:unit": "npm run build && node --test tests/report.test.mjs tests/report-html.test.mjs tests/side-outputs.test.mjs tests/overlay-frame.test.mjs tests/version.test.mjs tests/replay.test.mjs tests/downloads.test.mjs tests/snapshot.test.mjs tests/locator.test.mjs tests/tui.test.mjs tests/agent.test.mjs tests/suite.test.mjs tests/navigate-diagnosis.test.mjs tests/bsk-ipc.test.mjs tests/bsk-settle.test.mjs tests/bsk-condition.test.mjs tests/bsk-assert.test.mjs tests/timing.test.mjs tests/credentials.test.mjs tests/model-catalog.test.mjs tests/model-default-persistence.test.mjs tests/free-providers.test.mjs tests/cli.test.mjs tests/llm.test.mjs tests/lint.test.mjs tests/session-archive.test.mjs tests/session-server.test.mjs tests/bsk-picker.test.mjs tests/proxy.test.mjs",
     "prepublishOnly": "npm run build",
     "serve:smoke": "serve -l 18888 examples"
   },
@@ -39,13 +39,15 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.87.1",
-    "@earendil-works/pi-ai": "^0.87.1",
-    "@earendil-works/pi-session-backend-sqlite-node": "^0.87.1",
-    "@earendil-works/pi-tui": "^0.87.1"
+    "@earendil-works/chord": "^1.1.0",
+    "@earendil-works/pi-agent-core": "^1.1.0",
+    "@earendil-works/pi-ai": "^1.1.0",
+    "@earendil-works/pi-durable": "^1.1.0",
+    "@earendil-works/pi-tui": "^1.1.0",
+    "undici": "^8.11.2"
   },
   "devDependencies": {
-    "@types/node": "^26.6.3",
+    "@types/node": "^26.6.4",
     "serve": "^14.2.6",
     "typescript": "^7.0.2"
   }

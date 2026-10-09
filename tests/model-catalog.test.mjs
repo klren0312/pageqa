@@ -144,6 +144,58 @@ describe("模型探活（跑用例前的连通性检查）", () => {
     assert.deepEqual(probe, { ok: true });
   });
 
+  test("端点不认「关思考」的字段时，自动去掉重试并就地降级", async () => {
+    // 严格端点会对多出来的字段报 400；pageqa 默认关思考（见 src/llm.ts），所以必须能
+    // 区分「端点挂了」与「端点不认这个字段」，否则默认关思考会把人弄坏。
+    const m = {
+      ...model,
+      reasoning: true,
+      compat: { thinkingFormat: "deepseek" },
+    };
+    const seen = [];
+    const probe = await probeModel(
+      {
+        models: {
+          completeSimple: async (used) => {
+            seen.push(used.compat?.thinkingFormat);
+            return used.compat?.thinkingFormat
+              ? { stopReason: "error", errorMessage: "Unknown field" }
+              : { stopReason: "stop", content: [] };
+          },
+        },
+      },
+      m,
+    );
+    assert.deepEqual(probe, { ok: true });
+    assert.deepEqual(seen, ["deepseek", undefined], "应先带字段失败、再不带字段成功");
+    assert.equal(m.reasoning, false, "本进程后续不再发这个字段");
+    assert.equal(m.compat.thinkingFormat, undefined);
+  });
+
+  test("两次都失败 → 报第一次的原始原因（那才是真实故障）", async () => {
+    const m = {
+      ...model,
+      reasoning: true,
+      compat: { thinkingFormat: "qwen" },
+    };
+    let calls = 0;
+    const probe = await probeModel(
+      {
+        models: {
+          completeSimple: async () => {
+            calls++;
+            return { stopReason: "error", errorMessage: "Connection error." };
+          },
+        },
+      },
+      m,
+    );
+    assert.equal(calls, 2, "带字段与不带字段各试一次");
+    assert.equal(probe.ok, false);
+    assert.equal(probe.reason, "Connection error.");
+    assert.equal(m.reasoning, true, "没有成功就不降级");
+  });
+
   test("解析出 stopReason=error 的消息也算不可达（pi-ai 失败不抛异常）", async () => {
     const probe = await probeModel(
       catalogWith(async () => ({

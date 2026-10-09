@@ -35,6 +35,18 @@ const catalogs: Record<Locale, Catalog> = {
     // ── 进度日志（src/log.ts 的调用点，文案来自 agent.ts / index.ts）──
     "log.startup": "[pageqa] ===== 启动 =====",
     "log.startupInteractive": "[pageqa] ===== 启动（交互模式）=====",
+    // 思考模式（混元/DeepSeek/Qwen 这类混合推理模型默认开着思考；src/llm.ts 按配置显式关掉）
+    "log.thinkingAuto":
+      "模型思考：默认已关闭（按模型 {model} 识别为 {format} 族，每次请求发送 {field}；端点若不接受会在探活时自动退回）",
+    "log.thinkingOff": "模型思考：已关闭（thinkingFormat={format}，每次请求发送 {field}）",
+    "log.thinkingOffNoop":
+      "模型思考：thinkingFormat={format} 发不出关闭开关（它只在请求了思考档位时才带字段），端点仍用自己的默认",
+    "log.thinkingOffExplicit":
+      "模型思考：按配置**不**关闭（thinkingFormat=none）——请求里不带任何思考开关，端点用它自己的默认",
+    "log.thinkingBad":
+      "模型思考：thinkingFormat「{value}」不认识，已按默认（自动识别）处理（可选值：{list}）",
+    "log.thinkingDowngraded":
+      "模型思考：这个端点不接受关闭思考的字段（{field}），已自动去掉，本进程后续不再发送；要永久如此请设 thinkingFormat=none",
     "log.replayStartup": "[pageqa] ===== 回放启动 =====",
     "log.warn": "[pageqa] 警告：{msg}",
     "log.readScriptFile": "[pageqa] 已读取脚本文件 {path}（{chars} 字符）",
@@ -210,6 +222,12 @@ const catalogs: Record<Locale, Catalog> = {
     "err.unhandled": "执行失败（未处理的 Promise rejection）: {msg}",
     "config.created": "配置文件已创建/确认：{path}\n目录：{dir}",
     "config.current": "当前生效配置：{json}",
+    "config.proxyCreated":
+      "代理配置已创建（可改：代理地址 / 总开关 / 域名规则）：{path}",
+    "config.proxyExists": "代理配置已存在（未改动）：{path}",
+    "log.proxyOn":
+      "[proxy] 代理路由已装配：{proxy} · 模式 {mode} · {rules} 条规则（配置 {path}）",
+    "log.proxyOff": "[proxy] 代理路由未生效（{reason}），所有请求直连；配置 {path}",
 
     // ── 回放脚本（src/replay.ts）──
     "replay.err.notFound": "找不到回放脚本：{path}",
@@ -317,11 +335,20 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.err.sessionFailed": "无法创建 bsk session，请确认 bsk daemon 已连接浏览器。",
     "bsk.err.uploadMissing": "待上传文件不存在：{file}",
     // 引用闸门（src/bsk/tools.ts 的 checkRef / src/locator.ts 的 inspectRefTarget）
+    // 这条报错后面**一定**会跟上「当前页面的可交互元素」清单（src/bsk/tools.ts 的 exec），
+    // 因此这里只交代「为什么失效」，「怎么办」由清单的标题来说——两处都写会互相打架
+    // （清单说的是「不必再单独 snapshot」，正文说的却是「请先调用 snapshot」）。
     "bsk.err.refStale":
-      "`{target}` 这个 @eN 引用已失效：最近一次快照之后页面被改动过（navigate/click/fill/hover/scroll/wait 任一动作都会让引用重新编号），它现在可能指向另一个元素——沿用会静默点到同编号的那个。请先调用 snapshot 读取当前页面，再用新编号重试这次 {action}。",
+      "`{target}` 这个 @eN 引用已失效：最近一次快照之后页面被改动过（navigate/click/fill/select_option/pick_date/hover/scroll/wait 任一动作都会让引用重新编号），它现在可能指向另一个元素——沿用会静默点到同编号的那个。",
     "bsk.err.refUnknown":
       "最近一次快照里没有 {target} 这个引用：{action} 用的 @eN 必须来自最近一次 snapshot。请先 snapshot 取当前编号，不要沿用更早快照的编号或凭记忆写编号。",
     "bsk.ref.landed": "（落点：{who}）",
+    // 动作后附的「可交互元素清单」（src/bsk/tools.ts 的 refsAfterAction）：
+    // forRetry 用在「引用失效」的报错里——那一次动作没成功，说「动作后」会让人以为它成功了。
+    "bsk.refs.afterAction": "动作后的可交互元素",
+    "bsk.refs.forRetry":
+      "当前页面的可交互元素（用这里的新编号重试本次 {action}，不必再单独调用 snapshot）",
+    "bsk.refs.failed": "（取快照失败：{msg}）",
     // 原生对话框透传（src/bsk/ipc-commands.ts 的 renderDialogs / extractDialogs）
     "bsk.dialog.notice":
       "注意：这次操作期间页面弹出了原生对话框，bsk 已按默认策略处理（确认框点确定、提示框点关闭），页面不会卡住：",
@@ -343,16 +370,23 @@ const catalogs: Record<Locale, Catalog> = {
       "无法理解状态码期望「{spec}」。支持的写法：200（精确）、2xx / 4xx / 5xx（区间）。",
     "bsk.network.truncated":
       "（bsk 的网络缓冲只保留最近 200 条，更早的记录已被丢弃：这里看到的不是全部）",
-    "bsk.network.expectationStatus": "请求 {url} 返回 {status}",
-    "bsk.network.expectationAny": "请求 {url} 成功完成",
+    // 方法也是匹配条件：methodSuffix 进**期望**（报告里那句断言原文），methodNote 进证据。
+    // 少了它，一条「地址没错、只是方法写错」的断言会报成「没有匹配「url」的请求」，
+    // 把人引去改那个本来没错的地址（实测被这么误导过一轮）。
+    "bsk.network.methodSuffix": "，方法 {method}",
+    "bsk.network.methodNote": "（方法 {method}）",
+    "bsk.network.expectationStatus": "请求 {url} 返回 {status}{method}",
+    "bsk.network.expectationAny": "请求 {url} 成功完成{method}",
     "bsk.network.expectedResponse": "收到成功响应（不是请求失败）",
     "bsk.network.noTraffic":
       "（这一页还没有产生任何网络记录：要么它真的没有发请求，要么 bsk 的网络采集没能为它开启）",
     "bsk.network.noMatch":
-      "最近 {count} 条网络记录里没有匹配「{url}」的请求{note}。最近的请求：{recent}",
-    "bsk.network.hit": "匹配「{url}」的请求 {count} 条，最近一条：{latest}{note}",
+      "最近 {count} 条网络记录里没有匹配「{url}」{method}的请求{note}。最近的请求：{recent}",
+    "bsk.network.methodMismatch":
+      "「{url}」匹配到 {count} 条请求，但方法都不是 {expected}（实际出现过：{actual}）{note}。请把 method 写成实际的方法，或去掉 method 只按 URL 匹配。",
+    "bsk.network.hit": "匹配「{url}」{method}的请求 {count} 条，最近一条：{latest}{note}",
     "bsk.network.miss":
-      "匹配「{url}」的请求 {count} 条，实际：{actual}（期望 {expected}）{note}",
+      "匹配「{url}」{method}的请求 {count} 条，实际：{actual}（期望 {expected}）{note}",
     // 截图（src/bsk/tools.ts 的 screenshot 工具 + src/report-html.ts 的嵌图）
     "bsk.screenshot.bothModes":
       "截图不能同时要「整页」和「某个元素」：二选一（整页用 fullPage=true，元素用 target）。",
@@ -427,7 +461,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.hint":
       "Enter 提交 · Shift+Enter 换行 · Esc 中止当前场景 · ↑↓/PgUp/PgDn 滚日志 · Ctrl+P 历史 · Ctrl+C 收工 · /help",
     "tui.help":
-      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择本次会话使用的模型（Ctrl+S 设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
+      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择模型（Enter 即切换并设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /proxy         查看/开关模型请求的代理路由（配置 ~/.pageqa/proxy.json）\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
     "tui.scroll.paused": "↓ 已暂停跟随 · End 回到底部",
     "tui.appended": "（追加）",
     "tui.originAdded": "追加",
@@ -461,7 +495,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cancelNotFound":
       "没有找到可取消的待办 #{arg}（已开始执行的场景请用 Esc 中止）",
     "tui.unknownCmd":
-      "未知命令：/{cmd}（可用：/help /status /run <文件> /new /cancel <n> /model /login /logout /setting /exit）",
+      "未知命令：/{cmd}（可用：/help /status /run <文件> /new /cancel <n> /model /login /logout /setting /proxy /exit）",
     "tui.languageSwitched": "界面语种已切换为 {locale}（已保存到配置）",
     "tui.languageSwitchFailed":
       "界面语种已切换为 {locale}（写入配置失败：{msg}）",
@@ -501,7 +535,31 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cmd.logout": "移除已登录 provider 的本地凭据",
     "tui.cmd.help": "显示本帮助",
     "tui.cmd.setting": "修改设置（测试报告 / 回放脚本 / 语言）",
+    "tui.cmd.proxy": "查看/开关模型请求的代理路由",
     "tui.cmd.exit": "收工（等同于 Ctrl+C）",
+
+    // ── /proxy 面板 ──
+    "tui.proxy.title": "模型请求代理 v{version} · {state}",
+    "tui.proxy.state": "当前：{state} · 代理 {proxy} · 模式 {mode}",
+    "tui.proxy.on": "生效中",
+    "tui.proxy.off": "未生效",
+    "tui.proxy.hint":
+      "代理 {proxy} · 模式 {mode} · ↑↓ 选择 · Enter 执行 · Esc 关闭 · 配置 {path}",
+    "tui.proxy.enable": "启用代理路由（写回配置）",
+    "tui.proxy.disable": "关闭代理路由（写回配置）",
+    "tui.proxy.bypass": "本次会话先全部直连（不写配置）",
+    "tui.proxy.unbypass": "恢复按配置走（取消本次会话的直连）",
+    "tui.proxy.reload": "重新加载配置文件",
+    "tui.proxy.stats": "查看统计与规则",
+    "tui.proxy.saved": "代理路由已{state}，已写回 {path}",
+    "tui.proxy.reloadOk": "已重新加载 {path}：{state} · 代理 {proxy} · 模式 {mode}",
+    "tui.proxy.failed": "操作失败：{msg}",
+    "tui.proxy.bypassed": "本次会话所有请求改为直连（配置未动）",
+    "tui.proxy.unbypassed": "已恢复按配置路由（{state} · 代理 {proxy}）",
+    "tui.proxy.statsLine":
+      "直连 {direct} · 走代理 {proxy} · 兜底 {fallback}（其中改走代理 {fallbackHit}）",
+    "tui.proxy.rulesTitle": "规则（自上而下，第一条命中者胜）：",
+    "tui.proxy.envOverride": "环境变量优先级高于本文件（PAGEQA_PROXY_URL / _ENABLED / _MODE）",
 
     // ── /setting 面板 ──
     "tui.setting.title": "设置 v{version}",
@@ -525,21 +583,25 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.model.status": "模型 {model}",
     "tui.model.title": "选择模型（当前 {current}）",
     "tui.model.loading": "正在准备模型列表…",
-    "tui.model.hint":
-      "↑↓ 选择 · Enter 本次会话使用 · Ctrl+S 设为启动默认 · Esc 取消",
+    "tui.model.hint": "↑↓ 选择 · Enter 使用并设为启动默认 · Esc 取消",
     "tui.model.badgeCurrent": "当前",
     "tui.model.badgeDefault": "默认",
+    "tui.model.badgeFree": "免费",
     "tui.select.hint": "↑↓ 选择 · Enter 确认 · Esc 取消",
     "tui.select.searchHint": "输入关键字可实时过滤",
     "tui.select.searchPlaceholder": "输入关键字过滤…",
     "tui.select.noMatch": "没有匹配的项",
     "tui.model.fallback":
-      "启动默认模型 {provider}/{model} 当前不可用（provider 未登录或模型已下线），本次先退回 {next}；可用 /model 重新选择",
-    "tui.model.switched":
-      "本次会话模型已切换为 {provider}/{model}（后续场景生效；当前正在跑的场景不受影响）",
-    "tui.model.savedDefault":
-      "已把 {provider}/{model} 设为启动默认（已写入 {path}）",
-    "tui.model.saveDefaultFailed": "写入默认模型失败：{msg}",
+      "启动默认模型 {provider}/{model} 当前不可用（provider 未登录或模型已下线），已退回并改用 {next}；{healed} 可用 /model 重新选择",
+    "tui.model.fallbackHealed": "config.json 已同步更新，下次启动不再警告。",
+    "tui.model.fallbackKept":
+      "config.json 没能写入，下次启动仍会警告一次。",
+    "tui.model.applied":
+      "已切换为 {provider}/{model} 并设为启动默认（写入 {path}，下次启动生效；后续场景生效，正在跑的场景不受影响）",
+    "tui.model.envOverride":
+      "注意：本次仍由环境变量 PAGEQA_LLM_MODEL / PAGEQA_LLM_PROVIDER 决定——它们的优先级高于 config.json，去掉后上面这个默认才生效。",
+    "tui.model.saveDefaultFailed":
+      "本次会话已切到 {provider}/{model}，但没能写入启动默认（{msg}）：下次启动仍用旧的。",
     "tui.model.switchFailed": "切换模型失败：{provider}/{model} 未在模型目录中",
     "tui.model.empty":
       "没有可用模型：自定义端点未配置，且没有任何已登录的 provider。请先用 /login 登录。",
@@ -569,6 +631,12 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.login.openUrl": "请在浏览器中打开以下地址完成授权：",
     "tui.login.deviceCode": "请在浏览器打开 {url} 并输入验证码：{code}",
     "tui.login.waiting": "等待授权完成…",
+    "tui.login.stepPrepare": "正在准备浏览器登录…",
+    "tui.login.stepExchange": "已收到回调，正在换取访问令牌…",
+    "tui.login.stepDone": "授权成功，正在写入凭据…",
+    "tui.login.errCallbackTimeout":
+      "5 分钟内没有收到浏览器回调。若浏览器不在这台机器上（容器 / 虚拟机），请改用 API Key 登录",
+    "tui.login.errDeviceTimeout": "设备码已过期，请重新登录",
     "tui.login.info": "{msg}",
     "tui.login.success": "已登录 {provider}（凭据已写入 {path}）；可用 /model 选择它的模型",
     "tui.login.failed": "登录 {provider} 失败：{msg}",
@@ -702,12 +770,16 @@ const catalogs: Record<Locale, Catalog> = {
     "log.sideOutputReport": "[pageqa]   测试报告: {path}",
     "log.sideOutputReportOff":
       "[pageqa]   测试报告: 未生成（/setting 中已关闭）",
+    "log.sideOutputReportOffFlag":
+      "[pageqa]   测试报告: 未生成（--no-side-outputs 已禁用）",
     "log.sideOutputReportSkipped":
       "[pageqa]   测试报告: 未生成（本次没有执行任何用例）",
     "log.sideOutputReportFailed": "[pageqa]   测试报告: 写入失败（{msg}）",
     "log.sideOutputScript": "[pageqa]   回放脚本: {path}",
     "log.sideOutputScriptOff":
       "[pageqa]   回放脚本: 未生成（/setting 中已关闭）",
+    "log.sideOutputScriptOffFlag":
+      "[pageqa]   回放脚本: 未生成（--no-side-outputs 已禁用）",
     "log.sideOutputScriptNone":
       "[pageqa]   回放脚本: 未生成（本次没有可回放的动作）",
     "log.sideOutputScriptNoTarget":
@@ -829,6 +901,8 @@ const catalogs: Record<Locale, Catalog> = {
                    显式给出的 --emit-script <path> 仍然生效（显式请求优先）
   --usage-stream   把 LLM 用量的结构化记录逐次打到 stderr（一行一次，前缀 [pageqa:usage]）
                    场景在独立子进程里执行时，父进程靠它把「已经烧了多少」实时带回来
+  --no-lint        跳过「跑用例前的格式预检」（默认开；预检只在 stderr 提示、不拦执行）
+                   想把它设成门槛：pageqa lint <用例文件>
   --debug          显示调试日志（bsk 命令、快照体积、上下文裁剪、Jev 请求详情）
   -v, --version    显示版本号
   -h, --help       显示帮助
@@ -843,18 +917,29 @@ const catalogs: Record<Locale, Catalog> = {
   Esc           中止当前场景：记为「已取消」，不计入退出码、不写入回放脚本
   Ctrl+C        收工：中止当前 + 取消全部待办，然后输出汇总报告
   /status       查看运行队列；/cancel <n> 取消一个尚未开始的待办
-  /model        选择本次会话使用的模型（Enter 本次生效，Ctrl+S 设为启动默认）
+  /model        选择模型（Enter 即切换并写回 config.json，作为下次启动的默认）
   /login        登录一个 provider（API Key 或订阅登录），凭据存到 ~/.pageqa/auth.json
   /logout       移除某个 provider 的本地凭据
   /setting      修改设置（测试报告 / 回放脚本 / 语言），写回 ~/.pageqa/config.json
+  /proxy        查看/开关模型请求的代理路由（配置在 ~/.pageqa/proxy.json）
   /help /exit
+
+模型请求的代理:
+  - 模型端点直连不通时，按 ~/.pageqa/proxy.json 的规则决定走哪条路：direct（直连）、
+    proxy（走代理）、fallback（先直连、网络层失败再走代理，默认）。
+  - 默认规则是「本机与内网直连 + 其余先直连后代理」，因此本机端点（127.0.0.1 上的
+    兼容端点、bsk daemon）不受影响，墙外的模型端点自动改走代理。
+  - 改地址与开关：编辑 ~/.pageqa/proxy.json（pageqa --init-config 可生成一份），
+    或用环境变量 PAGEQA_PROXY_URL / PAGEQA_PROXY_ENABLED / PAGEQA_PROXY_MODE 临时覆盖
+    （环境变量优先）；交互模式里 /proxy 面板可随时开关并查看统计与规则。
+  - --debug 会在启动时打一行当前代理状态。
 
 模型切换与登录:
   - /model 列出「已配好鉴权」的模型：自定义端点（config.json 的 baseUrl/apiKey/model）
     总是可用；内置 provider（anthropic / openai / deepseek / github-copilot …）只有
     在 /login 过、或设置了对应环境变量（如 ANTHROPIC_API_KEY）之后才会出现。
-  - /model 的选择只作用于本次会话；按 Ctrl+S 才写入 config.json 的
-    modelProvider/model，作为下次启动的默认。
+  - /model 按 Enter 选中即写回 config.json 的 modelProvider/model：既切换本次会话，
+    也成为下次启动的默认。两者是同一个动作，不再分开（ADR-0015）。
   - 切换模型不会打断正在执行的场景：当前场景沿用开跑时的模型，下一个场景才用新模型。
 
   - 提交的场景会**立即追加写回源用例文件**（原文原样保留，含运行时占位符），
@@ -900,7 +985,17 @@ const catalogs: Record<Locale, Catalog> = {
   - 也可用环境变量覆盖（优先级高于配置文件）：
       PAGEQA_LLM_BASE_URL / PAGEQA_LLM_API_KEY / PAGEQA_LLM_MODEL / PAGEQA_LLM_PROVIDER
   - 交互模式 /login 登录内置 provider 得到的凭据存在 ~/.pageqa/auth.json，
-    /model 的选择可用 Ctrl+S 写回 config.json 作为启动默认（也可直接编辑上述字段）
+    /model 的选择会自动写回 config.json 作为启动默认（也可直接编辑上述字段）
+  - 关闭端点思考：混元/DeepSeek/Qwen 这类混合推理模型默认开着思考，模型会先吐一大段
+    思考内容（慢、烧 token、还搅乱步骤编号）。**默认就关**：按模型 id 自动判断该端点认哪个
+    关闭字段，每次请求都带上；不要这个行为就设 thinkingFormat=none。
+      PAGEQA_LLM_THINKING_FORMAT=deepseek   发送 thinking: {"type": "disabled"}
+      PAGEQA_LLM_THINKING_FORMAT=qwen       发送 enable_thinking: false
+      PAGEQA_LLM_THINKING_FORMAT=zai|together|openrouter|string-thinking|qwen-chat-template
+                                            同样可用，取值见 README
+      PAGEQA_LLM_THINKING_FORMAT=none       不发任何思考开关（端点用它自己的默认）
+      （openai / ant-ling / baseten 发不出关闭开关，配了等于没配；端点若不认某个字段，
+        探活会自动去掉它并降级，不会把本来能用的端点弄坏）
   - Jev 语义判断（可选，用于增强断言精度；仅在字面匹配未命中时调用）：
       PAGEQA_JEV_ENABLED=true   启用 Jev 辅助断言
       PAGEQA_JEV_API_KEY=<key>  TypeSafe API 密钥
@@ -920,6 +1015,7 @@ const catalogs: Record<Locale, Catalog> = {
   pageqa --tui examples/smoke.md        # 交互模式：跑用例的同时可以追加场景
   pageqa --tui examples/smoke.md --emit-script   # 顺手固化出回放脚本
   pageqa sessions                       # 回看历史运行的参数与工具调用（Ctrl+C 退出）
+  pageqa lint examples/smoke-test.md    # 静态校验用例格式（不开浏览器、不调模型）
 `,
     "help.sessions": `pageqa sessions - 本地存档查询服务
 
@@ -944,6 +1040,79 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
 注：早期版本按「一次运行两个 JSON 文件」写在 ~/.pageqa/sessions/*.json 的存档不再读取
 （换存储格式时不做迁移），需要的话手动删掉即可。
 `,
+
+    // ── 用例格式校验（src/lint.ts；`pageqa lint` 与跑用例前的预检共用）──
+    "help.lint": `pageqa lint - 用例格式静态校验
+
+用法:
+  pageqa lint <用例文件…> [选项]
+
+只读用例文本，**不开浏览器、不调模型**，秒级指出「第几行、哪条规则、为什么」。
+它检查的是运行时真正在意的那几条格式约定（场景分隔、一个非空行 = 一步、
+一条断言 = 一次断言工具调用），用的是与运行时同一份口径，因此不会出现
+「lint 说没事、一跑报断言不足」。
+
+选项:
+  --json        以 JSON 输出（stdout 只有结果，便于接 CI）
+  --strict      告警（warn）也算失败，退出码非零
+  --locale <l>  显示语种 zh|en
+  -h, --help    显示本帮助
+
+级别:
+  error  会让用例跑错或跑不动（「## 」之前的正文被丢弃、空场景、重名场景、
+         @e 快照编号、URL 缺协议、未知占位符、上传非绝对路径）
+  warn   只是写法不统一（固定等待、下拉框写成填写、下载又单写一行断言、
+         说明性文字被当成步骤、场景没有断言）
+
+退出码:
+  0  没有 error（--strict 时连 warn 也没有）
+  1  有 error（或 --strict 下有 warn）、参数/文件有问题
+
+每次跑用例之前也会自动做一次同样的预检（只提示、不拦），加 --no-lint 可跳过。
+`,
+    "err.lintNeedsFile": "lint 需要一个用例文件路径",
+    "err.lintNotFound": "找不到文件：{path}",
+    "err.lintDir": "lint 只接受用例文件，不接受目录：{path}",
+    "err.noLintWithReplay": "--replay 与 --no-lint 不能同时使用",
+    "lint.header": "用例格式校验：{path}",
+    "lint.headerInline": "用例格式校验：（内联文本）",
+    "lint.counts":
+      "场景 {scenarios} 个 · 步骤 {steps} 步 · 断言 {assertions} 条 · 下载 {downloads} 处",
+    "lint.clean": "未发现格式问题",
+    "lint.line": "  第 {line} 行 [{rule}] {message}",
+    "lint.lineScenario": "  第 {line} 行 [{rule}]（场景：{scenario}）{message}",
+    "lint.text": "      {text}",
+    "lint.more": "  …另有 {n} 条问题未展开（去掉截断即可看全）",
+    "lint.total": "共 {errors} 个错误 / {warnings} 个告警",
+    "lint.preflightClean":
+      "用例格式预检通过（{scenarios} 个场景 · {steps} 步 · {assertions} 条断言）",
+    "lint.hint":
+      "预检只提示、不拦执行；查看全部并把格式设成门槛：pageqa lint <用例文件>",
+    "lint.rule.preambleText":
+      "`## ` 之前的正文会被整体丢弃（开场说明、前置条件都算），请改写成 `>` 注释行",
+    "lint.rule.emptyScenario":
+      "该场景没有任何有效步骤（只有空行或注释），运行时会被静默丢弃",
+    "lint.rule.duplicateScenario":
+      "场景标题重复：`--only <标题>` 无法区分，报告里也分不清是哪一个",
+    "lint.rule.snapshotRef":
+      "出现快照编号 @eN：它只在产生它的那一次快照里有效，下一个动作就失效，回放更无从谈起；请用可见文本或 CSS 选择器定位",
+    "lint.rule.urlScheme": "`打开` 后面的地址必须完整含 http/https",
+    "lint.rule.unknownPlaceholder":
+      "未知占位符：会被原样保留、静默失效（可用 ${timestamp} / ${date} / ${time} / ${datetime}，也可带自定义格式）",
+    "lint.rule.uploadPath":
+      "上传要给出本地文件的「绝对」路径（如 D:\\\\data\\\\a.xlsx）：相对路径在 bsk 侧会解析失败",
+    "lint.rule.hardWait":
+      "等页面内的变化请写条件等待（`等到页面出现「…」`）；`等待 N 秒` 只留给页面之外的等待",
+    "lint.rule.selectAsFill":
+      "下拉框不是文本框：请写「在下拉框中选择 X」（或直接点名 select_option），不要写「填写/填入」",
+    "lint.rule.downloadExtraAssert":
+      "下载本身就算一条断言，不要再单写一行「断言文件名…」——那会让期望断言数多一条，收尾报「断言数不足」的假失败",
+    "lint.rule.vagueAssertion":
+      "这条断言没有可字面匹配的文本：断言工具只做字面包含，模型只能先去快照里读一个当前值再拿它当期望（这条断言于是永远成立），而且这个值会被录进回放脚本、数据一变就假失败。请写页面上真实印着、且不随数据变化的文本（表头、字段 label、按钮文案）",
+    "lint.rule.proseStep":
+      "这行看起来是说明性文字而不是操作步骤：说明请写成 `>` 引用行，否则模型会把它当成一步去执行",
+    "lint.rule.noAssertion":
+      "该场景没有任何断言行（也没有下载捕获）：跑完没有判定依据，结论只能靠文本关键字猜",
   },
   en: {
     // ── common ──
@@ -959,6 +1128,19 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     // ── progress log ──
     "log.startup": "[pageqa] ===== startup =====",
     "log.startupInteractive": "[pageqa] ===== startup (interactive mode) =====",
+    // thinking mode (hybrid reasoning models such as Hunyuan / DeepSeek / Qwen default to thinking on)
+    "log.thinkingAuto":
+      "model thinking: disabled by default (model {model} looks like the {format} family; every request sends {field}; if the endpoint rejects it, the probe falls back automatically)",
+    "log.thinkingOff":
+      "model thinking: disabled (thinkingFormat={format}; every request sends {field})",
+    "log.thinkingOffNoop":
+      "model thinking: thinkingFormat={format} cannot send an off-switch (it only adds a field when a thinking level is requested), so the endpoint keeps its own default",
+    "log.thinkingBad":
+      'model thinking: unknown thinkingFormat "{value}"; falling back to the default (auto-detect) (accepted: {list})',
+    "log.thinkingOffExplicit":
+      "model thinking: NOT disabled by config (thinkingFormat=none); requests carry no thinking switch, the endpoint keeps its own default",
+    "log.thinkingDowngraded":
+      "model thinking: this endpoint rejects the thinking-off field ({field}); it was removed and will not be sent again in this process. Set thinkingFormat=none to make that permanent",
     "log.replayStartup": "[pageqa] ===== replay startup =====",
     "log.warn": "[pageqa] warning: {msg}",
     "log.readScriptFile":
@@ -1150,6 +1332,13 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "execution failed (unhandled Promise rejection): {msg}",
     "config.created": "config file created/confirmed: {path}\ndir: {dir}",
     "config.current": "current effective config: {json}",
+    "config.proxyCreated":
+      "proxy config created (editable: proxy URL / master switch / domain rules): {path}",
+    "config.proxyExists": "proxy config already exists (left untouched): {path}",
+    "log.proxyOn":
+      "[proxy] routing installed: {proxy} · mode {mode} · {rules} rule(s) (config {path})",
+    "log.proxyOff":
+      "[proxy] routing inactive ({reason}); every request goes direct (config {path})",
 
     // ── replay script (src/replay.ts) ──
     "replay.err.notFound": "replay script not found: {path}",
@@ -1260,11 +1449,20 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "could not create a bsk session; make sure the bsk daemon has a connected browser.",
     "bsk.err.uploadMissing": "file to upload does not exist: {file}",
     // ref gate (checkRef in src/bsk/tools.ts + inspectRefTarget in src/locator.ts)
+    // this error is always followed by the "interactive elements on the current page" list
+    // (see exec in src/bsk/tools.ts), so it only explains *why* — the *what to do* lives in the
+    // list header. Writing both would contradict itself ("call snapshot" vs "no separate snapshot").
     "bsk.err.refStale":
-      "the @eN ref `{target}` is stale: the page changed after the latest snapshot (any navigate/click/fill/hover/scroll/wait renumbers refs), so it may now point at a different element — reusing it silently clicks whatever holds that number now. Call snapshot to read the current page, then retry this {action} with a fresh ref.",
+      "the @eN ref `{target}` is stale: the page changed after the latest snapshot (any navigate/click/fill/select_option/pick_date/hover/scroll/wait renumbers refs), so it may now point at a different element — reusing it silently clicks whatever holds that number now.",
     "bsk.err.refUnknown":
       "the latest snapshot has no ref {target}: {action} must use a ref from the most recent snapshot. Call snapshot for current refs instead of reusing numbers from an earlier snapshot or writing them from memory.",
     "bsk.ref.landed": "(landed on: {who})",
+    // the interactive-element list attached after an action (refsAfterAction in src/bsk/tools.ts);
+    // forRetry is used in the stale-ref error — that action did NOT succeed, so "after the action" would mislead
+    "bsk.refs.afterAction": "interactive elements after the action",
+    "bsk.refs.forRetry":
+      "interactive elements on the current page (retry this {action} with a new ref from here — no separate snapshot call needed)",
+    "bsk.refs.failed": "(snapshot failed: {msg})",
     // native dialog passthrough (renderDialogs / extractDialogs in src/bsk/ipc-commands.ts)
     "bsk.dialog.notice":
       "Note: the page raised a native dialog during this action; bsk handled it with the default policy (accepted confirms, dismissed alerts) so the page is not blocked:",
@@ -1287,16 +1485,23 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       'cannot understand the status expectation "{spec}". Supported: 200 (exact), 2xx / 4xx / 5xx (ranges).',
     "bsk.network.truncated":
       " (bsk keeps only the last 200 network entries; older ones were dropped, so this is not the full picture)",
-    "bsk.network.expectationStatus": "request {url} returns {status}",
-    "bsk.network.expectationAny": "request {url} completes successfully",
+    // the method is a match condition too: methodSuffix goes into the **expectation**
+    // (the assertion text in the report), methodNote into the evidence. Without it a
+    // "right URL, wrong method" assertion reads as "no request matching {url}".
+    "bsk.network.methodSuffix": ", method {method}",
+    "bsk.network.methodNote": " (method {method})",
+    "bsk.network.expectationStatus": "request {url} returns {status}{method}",
+    "bsk.network.expectationAny": "request {url} completes successfully{method}",
     "bsk.network.expectedResponse": "a successful response (not a failure)",
     "bsk.network.noTraffic":
       "(this page has produced no network records: either it really made no requests, or bsk could not enable network capture for it)",
     "bsk.network.noMatch":
-      'no request matching "{url}" among the last {count} network records{note}. Recent requests: {recent}',
-    "bsk.network.hit": '{count} request(s) matching "{url}"; latest: {latest}{note}',
+      'no request matching "{url}"{method} among the last {count} network records{note}. Recent requests: {recent}',
+    "bsk.network.methodMismatch":
+      '"{url}" matched {count} request(s), but none uses method {expected} (methods seen: {actual}){note}. Write the real method, or drop method and match on the URL alone.',
+    "bsk.network.hit": '{count} request(s) matching "{url}"{method}; latest: {latest}{note}',
     "bsk.network.miss":
-      '{count} request(s) matching "{url}"; actual: {actual} (expected {expected}){note}',
+      '{count} request(s) matching "{url}"{method}; actual: {actual} (expected {expected}){note}',
     // screenshots (the `screenshot` tool in src/bsk/tools.ts + embedding in src/report-html.ts)
     "bsk.screenshot.bothModes":
       'a screenshot cannot be both "full page" and "a single element": pick one (fullPage=true, or target).',
@@ -1374,7 +1579,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.hint":
       "Enter submit · Shift+Enter newline · Esc abort current scenario · ↑↓/PgUp/PgDn scroll log · Ctrl+P history · Ctrl+C finish · /help",
     "tui.help":
-      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model used by this session (Ctrl+S sets the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
+      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model (Enter switches and sets it as the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /proxy         inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
     "tui.scroll.paused": "↓ follow paused · End to jump to bottom",
     "tui.appended": " (appended)",
     "tui.originAdded": "appended",
@@ -1408,7 +1613,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.cancelNotFound":
       "no cancellable pending item #{arg} (for an already-running scenario use Esc to abort)",
     "tui.unknownCmd":
-      "unknown command: /{cmd} (available: /help /status /run <file> /new /cancel <n> /model /login /logout /setting /exit)",
+      "unknown command: /{cmd} (available: /help /status /run <file> /new /cancel <n> /model /login /logout /setting /proxy /exit)",
     "tui.languageSwitched": "UI language switched to {locale} (saved to config)",
     "tui.languageSwitchFailed":
       "UI language switched to {locale} (failed to write config: {msg})",
@@ -1454,7 +1659,33 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.cmd.help": "show this help",
     "tui.cmd.setting":
       "change settings (test report / replay script / language)",
+    "tui.cmd.proxy": "inspect / toggle the proxy routing for model requests",
     "tui.cmd.exit": "finish (same as Ctrl+C)",
+
+    // ── /proxy panel ──
+    "tui.proxy.title": "model request proxy v{version} · {state}",
+    "tui.proxy.state": "now: {state} · proxy {proxy} · mode {mode}",
+    "tui.proxy.on": "active",
+    "tui.proxy.off": "inactive",
+    "tui.proxy.hint":
+      "proxy {proxy} · mode {mode} · ↑↓ choose · Enter run · Esc close · config {path}",
+    "tui.proxy.enable": "enable proxy routing (saved to config)",
+    "tui.proxy.disable": "disable proxy routing (saved to config)",
+    "tui.proxy.bypass": "send everything direct for this session (config untouched)",
+    "tui.proxy.unbypass": "go back to the configured routing",
+    "tui.proxy.reload": "reload the config file",
+    "tui.proxy.stats": "show counters and rules",
+    "tui.proxy.saved": "proxy routing {state}; written to {path}",
+    "tui.proxy.reloadOk":
+      "reloaded {path}: {state} · proxy {proxy} · mode {mode}",
+    "tui.proxy.failed": "action failed: {msg}",
+    "tui.proxy.bypassed": "this session sends everything direct (config untouched)",
+    "tui.proxy.unbypassed": "back to configured routing ({state} · proxy {proxy})",
+    "tui.proxy.statsLine":
+      "direct {direct} · via proxy {proxy} · fallback {fallback} (of which retried via proxy {fallbackHit})",
+    "tui.proxy.rulesTitle": "rules (top-down, first match wins):",
+    "tui.proxy.envOverride":
+      "environment variables take precedence over this file (PAGEQA_PROXY_URL / _ENABLED / _MODE)",
 
     // ── /setting panel ──
     "tui.setting.title": "settings v{version}",
@@ -1480,21 +1711,26 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.model.status": "model {model}",
     "tui.model.title": "Select model (current: {current})",
     "tui.model.loading": "preparing the model list…",
-    "tui.model.hint":
-      "↑↓ move · Enter use for this session · Ctrl+S set as startup default · Esc cancel",
+    "tui.model.hint": "↑↓ move · Enter use and set as startup default · Esc cancel",
     "tui.model.badgeCurrent": "current",
     "tui.model.badgeDefault": "default",
+    "tui.model.badgeFree": "free",
     "tui.select.hint": "↑↓ move · Enter confirm · Esc cancel",
     "tui.select.searchHint": "type to filter in real time",
     "tui.select.searchPlaceholder": "type to filter…",
     "tui.select.noMatch": "no matching items",
     "tui.model.fallback":
-      "the startup default {provider}/{model} is unavailable (provider not signed in, or the model was retired); falling back to {next} for this session — use /model to pick again",
-    "tui.model.switched":
-      "session model switched to {provider}/{model} (takes effect for later scenarios; the running one is unaffected)",
-    "tui.model.savedDefault":
-      "set {provider}/{model} as the startup default (written to {path})",
-    "tui.model.saveDefaultFailed": "failed to write the default model: {msg}",
+      "the startup default {provider}/{model} is unavailable (provider not signed in, or the model was retired); switched to {next} instead — {healed} use /model to pick again",
+    "tui.model.fallbackHealed":
+      "config.json was updated, so the next start won't warn again.",
+    "tui.model.fallbackKept":
+      "config.json could not be written, so the next start will warn once more.",
+    "tui.model.applied":
+      "switched to {provider}/{model} and set it as the startup default (written to {path}; takes effect for later scenarios and for the next start — the running one is unaffected)",
+    "tui.model.envOverride":
+      "note: PAGEQA_LLM_MODEL / PAGEQA_LLM_PROVIDER still win over config.json — remove them for the default above to take effect.",
+    "tui.model.saveDefaultFailed":
+      "this session now uses {provider}/{model}, but the startup default could not be written ({msg}); the next start will still use the old one.",
     "tui.model.switchFailed":
       "failed to switch model: {provider}/{model} is not in the model catalog",
     "tui.model.empty":
@@ -1528,6 +1764,12 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.login.openUrl": "open the following URL in a browser to authorize:",
     "tui.login.deviceCode": "open {url} in a browser and enter code: {code}",
     "tui.login.waiting": "waiting for authorization…",
+    "tui.login.stepPrepare": "preparing browser sign-in…",
+    "tui.login.stepExchange": "callback received, exchanging the access token…",
+    "tui.login.stepDone": "authorized, writing credentials…",
+    "tui.login.errCallbackTimeout":
+      "no browser callback within 5 minutes. If the browser is not on this machine (container / VM), use API key sign-in instead",
+    "tui.login.errDeviceTimeout": "the device code expired, please sign in again",
     "tui.login.info": "{msg}",
     "tui.login.success":
       "signed in to {provider} (credentials written to {path}); use /model to pick one of its models",
@@ -1667,6 +1909,8 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "log.sideOutputReport": "[pageqa]   test report: {path}",
     "log.sideOutputReportOff":
       "[pageqa]   test report: not generated (turned off in /setting)",
+    "log.sideOutputReportOffFlag":
+      "[pageqa]   test report: not generated (disabled by --no-side-outputs)",
     "log.sideOutputReportSkipped":
       "[pageqa]   test report: not generated (no case ran this session)",
     "log.sideOutputReportFailed":
@@ -1674,6 +1918,8 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "log.sideOutputScript": "[pageqa]   replay script: {path}",
     "log.sideOutputScriptOff":
       "[pageqa]   replay script: not generated (turned off in /setting)",
+    "log.sideOutputScriptOffFlag":
+      "[pageqa]   replay script: not generated (disabled by --no-side-outputs)",
     "log.sideOutputScriptNone":
       "[pageqa]   replay script: not generated (no replayable action this run)",
     "log.sideOutputScriptNoTarget":
@@ -1808,6 +2054,8 @@ Options:
   --usage-stream   print one structured LLM-usage record per call to stderr (prefix [pageqa:usage] )
                   when a scenario runs in its own child process, this is how the parent gets
                   "how much has been burned so far" in real time
+  --no-lint        skip the case-format pre-check before a run (on by default; it only
+                  advises on stderr and never blocks). To gate on it: pageqa lint <case file>
   --debug          show debug logs (bsk commands, snapshot size, context trimming, Jev request details)
   -v, --version    show the version
   -h, --help       show help
@@ -1822,19 +2070,33 @@ Interactive mode (append scenarios while a run is in progress):
   Esc           abort current scenario: recorded as "cancelled", not counted in exit code, not written to replay script
   Ctrl+C        finish: abort current + cancel all pending, then output the summary report
   /status       view the run queue; /cancel <n> cancel a not-yet-started pending item
-  /model        choose the model used by this session (Enter for this session, Ctrl+S as startup default)
+  /model        choose the model (Enter switches and writes it back to config.json as the next startup default)
   /login        sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json
   /logout       remove locally stored credentials for a provider
   /setting      change settings (test report / replay script / language), saved to ~/.pageqa/config.json
+  /proxy        inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)
   /help /exit
+
+Proxy for model requests:
+  - When a model endpoint is unreachable directly, the rules in ~/.pageqa/proxy.json
+    decide per domain: direct, proxy, or fallback (try direct, retry via the proxy on a
+    network error — the default).
+  - Default rules are "localhost and the intranet go direct, everything else tries direct
+    first", so local endpoints (an OpenAI-compatible server on 127.0.0.1, the bsk daemon)
+    are untouched while an off-network model endpoint automatically goes through the proxy.
+  - Change the address or the switch: edit ~/.pageqa/proxy.json (pageqa --init-config
+    writes one), or override per run with PAGEQA_PROXY_URL / PAGEQA_PROXY_ENABLED /
+    PAGEQA_PROXY_MODE (env wins). The interactive /proxy panel toggles it and shows
+    counters and rules.
+  - --debug prints the current proxy state at startup.
 
 Model switching & login:
   - /model lists models whose provider has complete auth: the custom endpoint
     (baseUrl/apiKey/model in config.json) is always available; built-in providers
     (anthropic / openai / deepseek / github-copilot …) appear only after /login, or
     when the matching env var (e.g. ANTHROPIC_API_KEY) is set.
-  - a /model choice applies to this session only; press Ctrl+S to persist it to
-    modelProvider/model in config.json as the startup default.
+  - picking a model with Enter writes modelProvider/model back to config.json: it
+    switches this session and becomes the startup default in one action (ADR-0015).
   - switching never interrupts a running scenario: the current one keeps the model
     it started with, the next one uses the new one.
 
@@ -1885,7 +2147,18 @@ Config:
   - env overrides also work (higher precedence than the config file):
       PAGEQA_LLM_BASE_URL / PAGEQA_LLM_API_KEY / PAGEQA_LLM_MODEL / PAGEQA_LLM_PROVIDER
   - credentials obtained via /login are stored in ~/.pageqa/auth.json; a /model choice
-    can be persisted with Ctrl+S into config.json (or by editing the fields above)
+    is persisted to config.json automatically (or by editing the fields above)
+  - turning the endpoint's thinking off: hybrid reasoning models (Hunyuan / DeepSeek / Qwen) default to
+    thinking on, and the model then emits a long reasoning passage first (slow, token-hungry, and it
+    muddles step numbering). **Off by default**: pageqa picks the off-switch the endpoint understands
+    from the model id and sends it on every request; set thinkingFormat=none to stop doing that.
+      PAGEQA_LLM_THINKING_FORMAT=deepseek   sends thinking: {"type": "disabled"}
+      PAGEQA_LLM_THINKING_FORMAT=qwen       sends enable_thinking: false
+      PAGEQA_LLM_THINKING_FORMAT=zai|together|openrouter|string-thinking|qwen-chat-template
+                                            also work; see the README for the table
+      PAGEQA_LLM_THINKING_FORMAT=none       send no thinking switch (endpoint keeps its default)
+      (openai / ant-ling / baseten cannot send an off-switch. If an endpoint rejects the field, the
+        probe drops it and downgrades, so a working endpoint is never broken by the default.)
   - Jev semantic judgment (optional, for higher assertion precision; only called when literal match misses):
       PAGEQA_JEV_ENABLED=true    enable Jev-assisted assertion
       PAGEQA_JEV_API_KEY=<key>  TypeSafe API key
@@ -1905,6 +2178,7 @@ Examples:
   pageqa --tui examples/smoke.md        # interactive mode: append scenarios while running
   pageqa --tui examples/smoke.md --emit-script   # also freeze a replay script
   pageqa sessions                       # review archived parameters and tool calls (Ctrl+C to quit)
+  pageqa lint examples/smoke-test.md    # static case-format check (no browser, no model)
 `,
     "help.sessions": `pageqa sessions - local archive query server
 
@@ -1934,6 +2208,83 @@ Note: archives that earlier versions wrote as two JSON files per run
 (~/.pageqa/sessions/*.json) are no longer read — the storage change ships without a
 migration — and can simply be deleted.
 `,
+
+    // ── case-format lint (src/lint.ts; shared by `pageqa lint` and the pre-run check) ──
+    "help.lint": `pageqa lint - static case-format check
+
+Usage:
+  pageqa lint <case file...> [options]
+
+Reads the case text only — **no browser, no model** — and reports "which line, which
+rule, why" in a second. It checks the format conventions the runtime actually depends
+on (scenario splitting, one non-empty line = one step, one assertion line = one
+assertion tool call) using the very same code path, so a clean lint never turns into
+an "assertions incomplete" failure at run time.
+
+Options:
+  --json        output JSON (stdout carries the result only, CI-friendly)
+  --strict      treat warnings as failures too (non-zero exit code)
+  --locale <l>  display language: zh|en
+  -h, --help    show this help
+
+Severities:
+  error  the case will run wrong or not at all (text before "## " is dropped, empty
+         scenario, duplicate scenario name, @e snapshot ref, URL without scheme,
+         unknown placeholder, non-absolute upload path)
+  warn   merely inconsistent style (fixed wait, dropdown written as fill, a separate
+         download-filename assertion, prose mistaken for a step, scenario with no
+         assertion)
+
+Exit code:
+  0  no error (with --strict: no warning either)
+  1  has an error (or a warning under --strict), or a parameter/file problem
+
+Every run also performs the same check before executing a case (advisory only, it does
+not block); pass --no-lint to skip it.
+`,
+    "err.lintNeedsFile": "lint needs a case file path",
+    "err.lintNotFound": "file not found: {path}",
+    "err.lintDir": "lint accepts case files, not directories: {path}",
+    "err.noLintWithReplay": "--replay cannot be combined with --no-lint",
+    "lint.header": "case format check: {path}",
+    "lint.headerInline": "case format check: (inline text)",
+    "lint.counts":
+      "{scenarios} scenario(s) · {steps} step(s) · {assertions} assertion(s) · {downloads} download(s)",
+    "lint.clean": "no format problems found",
+    "lint.line": "  line {line} [{rule}] {message}",
+    "lint.lineScenario": "  line {line} [{rule}] (scenario: {scenario}) {message}",
+    "lint.text": "      {text}",
+    "lint.more": "  …{n} more issue(s) not expanded (remove the cap to see all)",
+    "lint.total": "{errors} error(s) / {warnings} warning(s)",
+    "lint.preflightClean":
+      "case format pre-check passed ({scenarios} scenario(s) · {steps} step(s) · {assertions} assertion(s))",
+    "lint.hint":
+      "the pre-check only advises and never blocks the run; to see all and gate the format: pageqa lint <case file>",
+    "lint.rule.preambleText":
+      "text before the first \"## \" is dropped entirely (intro notes, preconditions) — write it as a \">\" comment line",
+    "lint.rule.emptyScenario":
+      "this scenario has no effective step (only blank or comment lines); the runtime drops it silently",
+    "lint.rule.duplicateScenario":
+      "duplicate scenario title: \"--only <title>\" cannot tell them apart, and the report cannot either",
+    "lint.rule.snapshotRef":
+      "snapshot reference @eN: it is only valid in the snapshot that produced it and is stale on the very next action, let alone in a replay — locate by visible text or a CSS selector instead",
+    "lint.rule.urlScheme": "the address after \"打开/open\" must include http/https",
+    "lint.rule.unknownPlaceholder":
+      "unknown placeholder: it is kept verbatim and silently does nothing (available: ${timestamp} / ${date} / ${time} / ${datetime}, optionally with a custom pattern)",
+    "lint.rule.uploadPath":
+      "uploads need an absolute local path (e.g. D:\\\\data\\\\a.xlsx): a relative path fails on the bsk side",
+    "lint.rule.hardWait":
+      "for changes inside the page use a conditional wait (\"wait until the page shows …\"); keep \"wait N seconds\" for things outside the page",
+    "lint.rule.selectAsFill":
+      "a dropdown is not a text box: write \"select X in the dropdown\" (or name select_option) instead of \"fill in\"",
+    "lint.rule.downloadExtraAssert":
+      "a download is already one assertion — do not add a separate \"assert the filename…\" line, which inflates the expected count into a false \"assertions incomplete\" failure",
+    "lint.rule.vagueAssertion":
+      "this assertion has no literal text to match: the assertion tool only does substring matching, so the model can only snapshot a current value (e.g. a row count) and use that as the expectation — making the assertion always true — and that value is recorded into the replay script, turning it into a false failure once the data changes. Write text that is actually printed on the page and does not change with the data (a header, a field label, a button caption)",
+    "lint.rule.proseStep":
+      "this line reads as explanatory prose rather than a step: put the explanation on a \">\" line, otherwise the model will try to execute it as a step",
+    "lint.rule.noAssertion":
+      "this scenario has no assertion line (and no download capture): nothing decides pass/fail, so the verdict falls back to guessing from keywords",
   },
 };
 

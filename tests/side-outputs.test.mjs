@@ -132,6 +132,18 @@ describe("renderSideOutputLines", () => {
     assert.ok(off.includes("[pageqa]   测试报告: 未生成（/setting 中已关闭）"));
     assert.ok(off.includes("[pageqa]   回放脚本: 未生成（/setting 中已关闭）"));
 
+    // `--no-side-outputs` 关掉时不能把锅甩给 /setting：面板里那个开关其实还是开的。
+    const byFlag = renderSideOutputLines(
+      { kind: "off", reason: "flag" },
+      { kind: "off", reason: "flag" },
+    );
+    assert.ok(
+      byFlag.includes("[pageqa]   测试报告: 未生成（--no-side-outputs 已禁用）"),
+    );
+    assert.ok(
+      byFlag.includes("[pageqa]   回放脚本: 未生成（--no-side-outputs 已禁用）"),
+    );
+
     const none = renderSideOutputLines({ kind: "written", path: "p" }, { kind: "none" });
     assert.ok(
       none.includes("[pageqa]   回放脚本: 未生成（本次没有可回放的动作）"),

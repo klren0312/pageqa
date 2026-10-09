@@ -189,6 +189,20 @@ export class BskAbortError extends Error {
 }
 
 /**
+ * `@eN` 引用已失效：最近一次快照之后页面被改动过，旧编号可能已指向另一个元素。
+ *
+ * 单独一个类型（而不是只有一句文案）是为了让 `exec` 能认出它并**顺手把当前可交互元素
+ * 清单附在报错里**：模型收到这条报错后必然要做「重新 snapshot 拿新编号」这件事，
+ * 让它为此多花一轮 LLM 往返（实测 3 秒起）纯属浪费。
+ */
+export class RefStaleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RefStaleError";
+  }
+}
+
+/**
  * bsk 命令的串行队列。
  *
  * 「一次只有一条 bsk 命令在飞」以前是 `execFileSync` 免费提供的——同步调用天然把并发
@@ -600,6 +614,37 @@ const SHOW_PAGE_PARAM = {
     "展开下拉/菜单/弹窗之后用它，可以直接拿到新编号，省掉紧接着的一次 snapshot。" +
     "其它情况不要开：清单本身不小，每步都带会把上下文撑大。",
 } as const;
+
+/**
+ * `showPage` 的「**默认开**」版本（`select_option` / `pick_date` 用）。
+ *
+ * 为什么这两个工具与 click/fill/hover 的默认值相反：它们**必然**改动页面（点开浮层、
+ * 写入取值、收起面板），`markStale()` 之后模型手里那套编号全部失效；而「选完一个控件、
+ * 紧接着操作同一区域的下一个控件」是用例里最常见的节奏。默认不给清单，就只剩最贵的
+ * 那条路——引用被拒 → 模型再想一轮 → 重新 snapshot → 重试（实测每个选择类动作白付
+ * 一轮 LLM 往返 + 一次全量快照，D1 那种「4 个下拉 + 2 个日期范围」的用例要白付 6 次）。
+ *
+ * 代价可控：清单是快照的 `refs` 档位（只留可交互元素），比模型本来要拍的那份全量快照小，
+ * 因此这一步通常是**省上下文**而不是加。确实不需要时（本场景最后一次操作页面）传 false。
+ */
+const SHOW_PAGE_PARAM_DEFAULT_ON = {
+  type: "boolean",
+  description:
+    "可选，默认 true：动作完成后在结果里附一份「动作后的可交互元素」清单（含新的 @eN 编号）。" +
+    "选择类操作必然改动页面（点开浮层/写入取值/收起面板），旧的 @eN 随即失效——" +
+    "带上它就能直接拿到新编号继续操作，省掉一次失败的引用校验和一次单独的 snapshot。" +
+    "本次已是本场景最后一次操作页面时可以传 false。",
+} as const;
+
+/**
+ * `showPage` 的取值：**默认开**，只有显式传 `false` 才关（见 SHOW_PAGE_PARAM_DEFAULT_ON）。
+ *
+ * 抽成函数是为了能被单测钉住：这是选择类工具与 click/fill/hover 唯一的行为差异，
+ * 也正是「每个选择动作白付一轮失败重试 + 一次全量快照」那个问题的开关。
+ */
+export function resolveShowPage(requested?: boolean): boolean {
+  return requested !== false;
+}
 
 /**
  * 断言型工具：它们的调用结果是一条**断言**（进报告、影响退出码），而不只是一次操作。
@@ -1132,7 +1177,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
     const info = inspectRefTarget(target, snapshotFresh, refsOf());
     if (info.kind === "css") return "";
     if (info.kind === "stale") {
-      throw new Error(t("bsk.err.refStale", { action, target }));
+      throw new RefStaleError(t("bsk.err.refStale", { action, target }));
     }
     if (info.kind === "unknown") {
       throw new Error(t("bsk.err.refUnknown", { action, target }));
@@ -2309,18 +2354,31 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
       const { entries, truncated } = await readNetwork(signal);
       const note = truncated ? t("bsk.network.truncated") : "";
       const wanted = needle.toLowerCase();
-      const matched = entries.filter((entry) => {
-        if (!(entry.url ?? "").toLowerCase().includes(wanted)) return false;
-        if (method && (entry.method ?? "").toUpperCase() !== method) return false;
-        return true;
-      });
+      /**
+       * 只看 URL 的命中。必须单独留着它，才能把「地址片段写错了」和
+       * 「地址没错、只是方法对不上」分开报：后者的正确改法是动 method，
+       * 而两者原先都落进「没有匹配「url」的请求」——人去改那个本来没错的地址，
+       * 白跑一轮（实测就这么被误导过）。
+       */
+      const urlMatched = entries.filter((entry) =>
+        (entry.url ?? "").toLowerCase().includes(wanted),
+      );
+      const matched = urlMatched.filter(
+        (entry) => !method || (entry.method ?? "").toUpperCase() === method,
+      );
+
+      // 方法也是匹配条件，因此必须出现在**期望**里：报告里那句断言原文若只有
+      // 「请求 /x 返回 200」，没人看得出还有一条方法约束（methodMismatch 是同一件事的显式报法）。
+      const methodSuffix = method ? t("bsk.network.methodSuffix", { method }) : "";
+      const methodNote = method ? t("bsk.network.methodNote", { method }) : "";
 
       const expectation = statusSpec
         ? t("bsk.network.expectationStatus", {
             url: needle,
             status: describeStatusSpec(statusSpec),
+            method: methodSuffix,
           })
-        : t("bsk.network.expectationAny", { url: needle });
+        : t("bsk.network.expectationAny", { url: needle, method: methodSuffix });
       const verdict = (pass: boolean, why: string): string => {
         assertOutcome = { expectation, pass, evidence: why };
         return `断言「${expectation}」：${pass ? "成立" : "不成立"}。${why}`;
@@ -2332,6 +2390,23 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
           : `${e.method ?? "?"} ${e.status ?? "?"}`;
 
       if (matched.length === 0) {
+        // URL 命中了、只是方法都不对：单独报，并给出实际出现过的方法。
+        // 「把 method 改对」和「把 url 改对」是两条完全不同的修法，不能混成一句话。
+        if (method && urlMatched.length > 0) {
+          const actual = [
+            ...new Set(urlMatched.map((e) => (e.method ?? "?").toUpperCase())),
+          ].join("、");
+          return verdict(
+            false,
+            t("bsk.network.methodMismatch", {
+              url: needle,
+              count: urlMatched.length,
+              expected: method,
+              actual,
+              note,
+            }),
+          );
+        }
         // 如实给出「最近到底请求过什么」：模型据此一轮就能改对 URL 片段，
         // 不必再花一轮去猜（与 picker 报「当前可选项」同一个动机）。
         const recent = entries
@@ -2345,6 +2420,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
             count: entries.length,
             recent: recent || t("bsk.network.noTraffic"),
             note,
+            method: methodNote,
           }),
         );
       }
@@ -2372,6 +2448,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
             actual: matched.map(one).join("、"),
             expected: describeStatusSpec(statusSpec),
             note,
+            method: methodNote,
           }),
         );
       }
@@ -2386,6 +2463,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
             count: matched.length,
             latest: one(last),
             note,
+            method: methodNote,
           }),
         );
       }
@@ -2397,6 +2475,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
           actual: matched.map(one).join("、"),
           expected: t("bsk.network.expectedResponse"),
           note,
+          method: methodNote,
         }),
       );
     },
@@ -2446,17 +2525,24 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
    *
    * 取不到快照**不抛错**：动作本身已经成功了，附带的清单只是福利，不能让它把成功改写失败。
    */
-  const refsAfterAction = async (signal?: AbortSignal): Promise<string> => {
+  const refsAfterAction = async (
+    signal?: AbortSignal,
+    /**
+     * 清单标题。默认是「动作后的可交互元素」；引用失效的报错里换成「重试用」的措辞——
+     * 那次动作没成功，说「动作后」会让人以为它成功了。
+     */
+    header: string = t("bsk.refs.afterAction"),
+  ): Promise<string> => {
     try {
       // `fresh`：动作刚改过页面，缓存的快照在这里必然是过期的。
       const fresh = await ops.snapshot(signal, { fresh: true });
       const slim = slimSnapshot(fresh, { mode: "refs" });
-      return `\n\n【动作后的可交互元素】\n${slim.text}`;
+      return `\n\n【${header}】\n${slim.text}`;
     } catch (err) {
       if (err instanceof BskAbortError) throw err;
-      return `\n\n（动作后取快照失败：${
-        err instanceof Error ? err.message : String(err)
-      }）`;
+      return `\n\n${t("bsk.refs.failed", {
+        msg: err instanceof Error ? err.message : String(err),
+      })}`;
     }
   };
 
@@ -2503,6 +2589,19 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       );
     } catch (err) {
       opts.onExec?.({ name, params, ok: false, lastSnapshot: before });
+      // 引用失效是**可自愈**的：模型收到它之后必然要做「重新 snapshot 拿新编号」这件事。
+      // 与其让它为此多花一轮 LLM 往返（实测 3 秒起），不如这里顺手把**当前页面**的可交互
+      // 元素清单附在报错里——它直接拿新编号重试即可（这一抓也把快照刷新成新鲜的了）。
+      // 注意顺序：清单取的是**动作之后**的页面，那才是接下来要操作的那一版。
+      if (err instanceof RefStaleError) {
+        throw new RefStaleError(
+          err.message +
+            (await refsAfterAction(
+              signal,
+              t("bsk.refs.forRetry", { action: name }),
+            )),
+        );
+      }
       throw err;
     }
   };
@@ -2597,27 +2696,31 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       "**下拉框一律用它，不要用 fill**（el-select 这类控件的输入框是只读的，填不进去）；" +
       "也不要「先 click 展开、再 snapshot、再 click 选项」——那要花三到四轮，这个工具一轮就完成。" +
       "target 传下拉控件本身（@eN 或 CSS 选择器）；option 传页面上**印出来的选项文本**（如「已完成」「北京市」）。" +
-      "找不到浮层或选项时会报错，并把当前可选的项列出来，那时再退回通用路径手动操作。",
+      "找不到浮层或选项时会报错，并把当前可选的项列出来，那时再退回通用路径手动操作。" +
+      "选完后结果里会附一份「动作后的可交互元素」清单（含新编号）：**直接用清单里的新编号接着操作**，" +
+      "不要再单独 snapshot——选择类操作必然让旧编号失效。",
     parameters: paramsOf(
       {
         target: { type: "string", description: "下拉控件（@eN 引用或 CSS 选择器）" },
         option: { type: "string", description: "选项的可见文本（页面上印出来的字）" },
-        showPage: SHOW_PAGE_PARAM,
+        showPage: SHOW_PAGE_PARAM_DEFAULT_ON,
       },
       ["target", "option"],
     ),
     execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as SelectOptionParams;
+      // 默认开（见 SHOW_PAGE_PARAM_DEFAULT_ON）：选择类操作必然改页面，旧编号随即失效。
+      const showPage = resolveShowPage(p.showPage);
       return exec(
         "select_option",
         {
           target: p.target,
           option: p.option,
-          ...(p.showPage ? { showPage: true } : {}),
+          ...(p.showPage === false ? { showPage: false } : {}),
         },
         (s) => ops.selectOption(p.target, p.option, s),
         signal,
-        { snapshotAfter: p.showPage === true },
+        { snapshotAfter: showPage },
       );
     },
   };
@@ -2636,7 +2739,8 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       "**日期范围**（「发送时间 开始~结束」这类两个输入框的控件）：把结束日期传进 endDate，" +
       "工具会按「选开始 → 选结束 → 点确定」走；只传 date 而面板其实是范围类型时会直接报错，" +
       "不会留下一个半截的范围。" +
-      "showPage: true 时在结果里附一份动作后的可交互元素清单。",
+      "选完后结果里会附一份「动作后的可交互元素」清单（含新编号）：**直接用清单里的新编号接着操作**，" +
+      "不要再单独 snapshot——选日期同样会让旧编号失效。",
     parameters: paramsOf(
       {
         target: { type: "string", description: "日期输入框（@eN 引用或 CSS 选择器）" },
@@ -2648,23 +2752,25 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
           type: "string",
           description: "仅日期范围控件需要：结束日期，写法同 date（必须不早于 date）",
         },
-        showPage: SHOW_PAGE_PARAM,
+        showPage: SHOW_PAGE_PARAM_DEFAULT_ON,
       },
       ["target", "date"],
     ),
     execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as PickDateParams;
+      // 默认开（见 SHOW_PAGE_PARAM_DEFAULT_ON）：选日期会让旧编号整体失效。
+      const showPage = resolveShowPage(p.showPage);
       return exec(
         "pick_date",
         {
           target: p.target,
           date: p.date,
           ...(p.endDate ? { endDate: p.endDate } : {}),
-          ...(p.showPage ? { showPage: true } : {}),
+          ...(p.showPage === false ? { showPage: false } : {}),
         },
         (s) => ops.pickDate(p.target, p.date, p.endDate, s),
         signal,
-        { snapshotAfter: p.showPage === true },
+        { snapshotAfter: showPage },
       );
     },
   };

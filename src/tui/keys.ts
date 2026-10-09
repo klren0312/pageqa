@@ -4,8 +4,8 @@
  * ## 1. 视口滚动键位
  *
  * pi-tui 给主滚动视口（`primary: true`）留了翻页（`PageUp`/`PageDown`）、首尾
- * （`Home`/`End`）与鼠标滚轮，但**逐行滚动（`lineUp`/`lineDown`）默认没有任何键位**。
- * 那恰恰是用户最先去按的一档，因此这里把它接到 `Ctrl+↑`/`Ctrl+↓`。
+ * （`Ctrl+Home`/`Ctrl+End`）与鼠标滚轮，但**逐行滚动（`lineUp`/`lineDown`）默认没有任何
+ * 键位**。那恰恰是用户最先去按的一档，因此这里把它接到 `Ctrl+↑`/`Ctrl+↓`。
  *
  * 为什么是这两个键：`Alt+↑/↓` 会被 Windows Terminal 抢去切分屏，`Shift+↑/↓` 会被终端
  * 抢去做文本选择，都送不到应用；`Ctrl+↑/↓` 在 Windows Terminal / conhost / VS Code

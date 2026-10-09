@@ -80,9 +80,25 @@ _Avoid_：会话记录、运行日志、trace
 交互模式里统一修改持久化偏好的入口：旁路产物开关、语言与并发量。模型切换、凭据各有专责命令，不并入这里。
 _Avoid_：配置、偏好、options
 
+**启动默认模型**：
+`config.json` 里 `modelProvider` + `model` 记录的那个模型：既驱动交互模式本次会话跑哪些场景，也是下次启动时用的那个。`/model` 按 Enter 选中即同时成为两者（ADR-0015）。`PAGEQA_LLM_MODEL` / `PAGEQA_LLM_PROVIDER` 环境变量优先级高于它。
+_Avoid_：本次会话模型、当前模型、会话模型
+
 **并发量（Concurrency）**：
 同时执行几个场景的**上限**（1..8），代价是同时开着同样多的浏览器窗口。默认 1：串行是「场景之间可能有隐含顺序依赖」的保护，并发等于声明这些场景互不依赖。
 _Avoid_：并行度、线程数、worker 数
+
+**免费网关（Free Gateway）**：
+`/model` 里自带的一批免费 OpenAI 兼容模型来源（cline / llm7 / fastrouter / orcarouter / xkiro），目录数据取自 pi-free。它在列表里的存在形态是三件事的合集：**快照**（上一次审计的免费模型，断网时的兜底）+ **动态目录**（打开 `/model` 时拉各网关的 `/v1/models`，只留免费条目）+ **免费判定**（快照命中或该网关自己的命名规律，逐网关显式声明）。配了 key 的网关才出现；允许匿名的那三个不配也出现（ADR-0017）。
+_Avoid_：免费模型、pi-free、免费 provider
+
+**代理路由（Proxy Routing）**：
+每个对外请求该走哪条路的判断：`direct`（直连）/ `proxy`（走代理）/ `fallback`（先直连、网络层失败再走代理）。按**代理规则**自上而下匹配，第一条命中者胜；都没命中用 `mode`。配置在 `~/.pageqa/proxy.json`，交互模式里由 `/proxy` 面板开关。装配点是替换 `globalThis.fetch`（见 ADR-0016）。
+_Avoid_：环境变量代理、HTTP_PROXY、翻墙、socket 代理
+
+**代理规则（Proxy Rule）**：
+代理路由里的一条「域名模式 → 动作」映射（如 `*.example.com → proxy`）。支持精确域名、`*.` 通配子域、`10.*` 这样的 IP 前缀、`*` 兜底，以及逗号分隔的多个模式。默认两条：本机与内网 `direct`，其余 `fallback`。
+_Avoid_：白名单、黑名单、路由表、规则集
 
 **定位符（Locator）**：
 元素的可复用语义描述：角色 + 可访问名 + 同名序号。

@@ -1,6 +1,16 @@
 import { createProvider, type Provider } from "@earendil-works/pi-ai";
 import * as openaiCompletions from "@earendil-works/pi-ai/api/openai-completions";
-import { loadConfig, PAGEQA_PROVIDER_ID, type PageQaConfig } from "./config.js";
+import {
+  guessThinkingFormat,
+  loadConfig,
+  parseThinkingSetting,
+  PAGEQA_PROVIDER_ID,
+  THINKING_FORMATS,
+  THINKING_OFF_FIELD,
+  type PageQaConfig,
+} from "./config.js";
+import { info } from "./log.js";
+import { t } from "./i18n.js";
 
 /**
  * 自定义 LLM provider：基于 @earendil-works/pi-ai 构造一个指向可配置 OpenAI 兼容端点的 provider。
@@ -11,6 +21,11 @@ import { loadConfig, PAGEQA_PROVIDER_ID, type PageQaConfig } from "./config.js";
  *
  * 配置优先级（高 -> 低）：环境变量 PAGEQA_LLM_*  >  用户配置文件（~/.pageqa/config.json）  >  内置默认值。
  * 首次运行会自动在用户主目录创建配置文件，便于用户修改模型/端点地址/密钥。
+ *
+ * 代理：这里**不**注入 fetch。自定义端点与内置 provider 走同一条路——pi-ai 在每次请求
+ * 时才构造 SDK 客户端，客户端默认取当时的 `globalThis.fetch`，而代理路由在进程启动时
+ * 就已替换了它（见 proxy.ts 的 `installProxyRouting`）。刻意只留这一个装配点：两个入口
+ * 各自代理一次，统计会翻倍、fallback 也会套一层。
  */
 
 /** 内置预设模型：给出精确的上下文窗口与输出上限（未收录的模型见 resolveModels 的保守兜底）。 */
@@ -68,6 +83,49 @@ export function createPageqaProvider(
 ): Provider {
   const baseUrl = cfg.baseUrl;
   const registered = resolveModels(cfg.model);
+  /**
+   * 「显式关闭端点的思考模式」——**默认就关**。
+   *
+   * 关键在 pi-ai 那一侧：**关思考的开关只在模型声明自己是 reasoning 模型时才发**
+   * （`openai-completions.js` 里 `zai`/`qwen`/`deepseek`/… 每个分支都带 `&& model.reasoning`）。
+   * 所以只给 thinkingFormat 不开 reasoning 没用——两者必须同时到位。
+   *
+   * 三种来源：显式配置 > 按模型 id 自动猜（默认）> 不用了（`thinkingFormat: "none"`）。
+   * 猜错不会坏事：端点要么认、要么忽略，而拒绝这种字段的严格端点由探活兜底
+   * （第一次失败会自动去掉字段重试，见 models.ts 的 probeModel）。
+   */
+  const setting = parseThinkingSetting(cfg.thinkingFormat);
+  if (setting.kind === "invalid") {
+    info(
+      t("log.thinkingBad", {
+        value: setting.value,
+        list: THINKING_FORMATS.join(" / "),
+      }),
+    );
+  }
+  const thinkingFormat =
+    setting.kind === "format"
+      ? setting.format
+      : setting.kind === "off"
+        ? undefined
+        : guessThinkingFormat(cfg.model, baseUrl);
+  const guessed = setting.kind !== "format";
+  if (!thinkingFormat) {
+    info(t("log.thinkingOffExplicit"));
+  } else {
+    const field = THINKING_OFF_FIELD[thinkingFormat];
+    info(
+      field
+        ? guessed
+          ? t("log.thinkingAuto", {
+              model: cfg.model,
+              format: thinkingFormat,
+              field,
+            })
+          : t("log.thinkingOff", { format: thinkingFormat, field })
+        : t("log.thinkingOffNoop", { format: thinkingFormat }),
+    );
+  }
   return createProvider({
     id: PAGEQA_PROVIDER_ID,
     name: "OpenAI Compatible (自定义端点)",
@@ -79,7 +137,8 @@ export function createPageqaProvider(
       provider: PAGEQA_PROVIDER_ID,
       baseUrl,
       input: ["text"],
-      reasoning: false,
+      // 见上方注释：关思考的字段只在 reasoning 为真时才发，所以两者必须同时打开。
+      reasoning: thinkingFormat !== undefined,
       contextWindow: m.contextWindow,
       maxTokens: m.maxOutput,
       maxOutput: m.maxOutput,
@@ -90,6 +149,7 @@ export function createPageqaProvider(
         supportsReasoningEffort: false,
         maxTokensField: "max_tokens",
         supportsLongCacheRetention: false,
+        ...(thinkingFormat ? { thinkingFormat } : {}),
       },
     })),
     api: openaiCompletions,

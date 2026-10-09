@@ -3,11 +3,9 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core";
-import {
-  createNodeSqliteFactory,
-  SqliteSessionRepo,
-} from "@earendil-works/pi-session-backend-sqlite-node";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createSession, defineDocFamily } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import {
   assertSafeId,
   clipText,
@@ -359,17 +357,30 @@ describe("存档落盘与读取（SQLite 单容器）", () => {
     }
   });
 
-  test("不是 pageqa 档案的 Session 会被列表跳过（同一容器里的其它写入者）", async () => {
+  test("不是 pageqa 写的存档文档会被列表跳过、也读不出来（同一容器里的其它写入者）", async () => {
     const dir = tempDir();
     try {
-      // 直接用后端建一个「别人的」Session：它没有 pageqa 的摘要，列表不该把它算成一次运行。
-      const repo = new SqliteSessionRepo({
-        directory: dir,
-        databasePath: databasePath(dir),
-        databaseFactory: createNodeSqliteFactory(),
+      // 直接用 durable 写一份「别人的」存档文档：同样的 kind，但不是 pageqa 的形状，
+      // 也没进 pageqa.index。列表不该把它算成一次运行，详情也不该把形状对不上的东西返回。
+      const ForeignDoc = defineDocFamily({
+        kind: "pageqa.archive",
+        version: 1,
+        family: true,
+        scope: "session",
+        initial: (seed) => seed,
       });
-      await repo.create({ id: "foreign" }, BACKGROUND_CONTEXT);
-      await repo.close(BACKGROUND_CONTEXT);
+      const storage = await openNodeSqliteStorage(databasePath(dir));
+      const session = createSession(storage);
+      try {
+        await session.commit(
+          async (tx) => {
+            await tx.doc(ForeignDoc, "foreign", { format: "someone-else" });
+          },
+          BACKGROUND_CONTEXT,
+        );
+      } finally {
+        await session.close(BACKGROUND_CONTEXT);
+      }
 
       await writeArchive(
         new SessionCollector(params(), { id: "ours", now: () => 1 }).finish({ status: "pass" }),
@@ -379,7 +390,7 @@ describe("存档落盘与读取（SQLite 单容器）", () => {
         (await listArchives(dir)).map((s) => s.id),
         ["ours"],
       );
-      await assert.rejects(() => readArchive("foreign", dir), /缺少参数/);
+      await assert.rejects(() => readArchive("foreign", dir), /找不到运行存档/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

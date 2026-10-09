@@ -19,10 +19,21 @@ import { info } from "./log.js";
 import { writeHtmlReport } from "./report-html.js";
 import type { TestReport } from "./report.js";
 
+/**
+ * 被 CLI 标志 `--no-side-outputs` 显式全关时的报告结果。
+ *
+ * 与「用户在 `/setting` 里关掉」区分开（见 `renderSideOutputLines` 的 `off` 分支）：两者
+ * 都落到 `kind: "off"`，但文案必须如实说明是谁关的，否则 `/setting` 明明开着却背锅。
+ */
+export function reportDisabledByFlag(): ReportOutcome {
+  return { kind: "off", reason: "flag" };
+}
+
 /** 测试报告的落盘结果。 */
 export type ReportOutcome =
   | { kind: "written"; path: string }
-  | { kind: "off" }
+  /** 没生成：要么 `/setting` 里把开关关了，要么本次带了 `--no-side-outputs`（`reason: "flag"`）。 */
+  | { kind: "off"; reason?: "setting" | "flag" }
   /** 本次一条用例都没跑（空会话，或全部未开始就被取消）：没有可报告的东西，不落盘。 */
   | { kind: "skipped" }
   | { kind: "failed"; error: string };
@@ -41,7 +52,7 @@ export type ScriptOutcome =
       /** 同一次运行里被跳过的「无落点」场景数（多于 0 时清单追加一行说明）。 */
       noTarget?: number;
     }
-  | { kind: "off" }
+  | { kind: "off"; reason?: "setting" | "flag" }
   | { kind: "none" }
   | { kind: "no-target"; count: number }
   | { kind: "failed"; error: string }
@@ -67,7 +78,13 @@ export function renderSideOutputLines(
       lines.push(t("log.sideOutputReport", { path: report.path }));
       break;
     case "off":
-      lines.push(t("log.sideOutputReportOff"));
+      // 关掉的原因不同，说法也得不同：把锅甩给 `/setting` 会让人误以为开关坏了
+      // （真实场景是带了 `--no-side-outputs`，而 `/setting` 里其实开着）。
+      lines.push(
+        report.reason === "flag"
+          ? t("log.sideOutputReportOffFlag")
+          : t("log.sideOutputReportOff"),
+      );
       break;
     case "skipped":
       lines.push(t("log.sideOutputReportSkipped"));
@@ -93,7 +110,11 @@ export function renderSideOutputLines(
       }
       break;
     case "off":
-      lines.push(t("log.sideOutputScriptOff"));
+      lines.push(
+        script.reason === "flag"
+          ? t("log.sideOutputScriptOffFlag")
+          : t("log.sideOutputScriptOff"),
+      );
       break;
     case "none":
       lines.push(t("log.sideOutputScriptNone"));

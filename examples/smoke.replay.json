@@ -1,9 +1,9 @@
 {
   "format": "pageqa-replay",
   "version": 1,
-  "recordedAt": "2026-09-29T07:33:13.855Z",
+  "recordedAt": "2026-10-08T06:14:19.064Z",
   "source": {
-    "path": ".\\examples/smoke.md",
+    "path": "D:/1project/page-test-agent/examples/smoke.md",
     "hash": "4eef45f9c15430f0"
   },
   "scenarios": [
@@ -17,11 +17,6 @@
           "kind": "navigate",
           "step": 1,
           "url": "https://example.com"
-        },
-        {
-          "kind": "wait_for",
-          "step": 1,
-          "text": "Example Domain"
         },
         {
           "kind": "assert_text",
@@ -38,17 +33,12 @@
       "steps": [
         {
           "kind": "navigate",
-          "step": 1,
+          "step": null,
           "url": "https://example.com"
         },
         {
-          "kind": "wait_for",
-          "step": 1,
-          "text": "This domain is for use in documentation examples without needing permission."
-        },
-        {
           "kind": "click",
-          "step": 1,
+          "step": null,
           "target": "@e1",
           "locator": {
             "role": "link",
@@ -61,13 +51,8 @@
           }
         },
         {
-          "kind": "wait_for",
-          "step": 1,
-          "text": "Example Domains A number of domains such as example.com and example.org are maintained for documentation purposes."
-        },
-        {
           "kind": "assert_text",
-          "step": 1,
+          "step": null,
           "expectation": "IANA"
         }
       ]

@@ -6,12 +6,14 @@
 
 ```text
 pageqa/
-  package.json          # 包元数据、bin 入口、依赖（pi-agent-core, pi-ai, pi-session-backend-sqlite-node, pi-tui）
+  package.json          # 包元数据、bin 入口、依赖（pi-agent-core, pi-ai, pi-durable, chord, pi-tui）
   tsconfig.json         # TypeScript 编译配置
   src/
     index.ts            # CLI 入口：解析参数（含 sessions 子命令）、装配 agent、连 bsk session、返回退出码
     agent.ts            # 编排器：pi-agent-core Agent + bsk 工具 + 报告（含默认系统提示）
     llm.ts              # LLM 后端：pi-ai 自定义 provider -> CodeBuddy 反代（混元）
+    free-providers.ts   # 免费网关目录（数据取自 pi-free）：内置快照 + 动态 /v1/models，只列免费条目
+    proxy.ts            # 模型请求的代理路由：按域名规则 direct / proxy / fallback（~/.pageqa/proxy.json）
     bsk/tools.ts        # browserskill 操作层（BskOps）与工具层（13 个 AgentTool）
     bsk/picker.ts       # 选择类控件（下拉/日期）的页面侧探针：表达式构造与结果解析（纯逻辑）
     bsk/condition.ts    # wait_for 的页面侧探针与轮询框架
@@ -36,6 +38,10 @@ pageqa/
 - 模型定义需包含 pi-ai `Model` 必填字段：`api`、`provider`、`baseUrl`、`input`、`contextWindow`、`maxTokens`/`maxOutput`、`cost`（含 `tiers` 等价字段）、`compat`。
 - 可通过环境变量 `PAGEQA_LLM_BASE_URL` / `PAGEQA_LLM_API_KEY` / `PAGEQA_LLM_MODEL` 覆盖；也可切换到 pi-ai 其他已配置 provider。
 - `streamFn` 使用 `models.streamSimple.bind(models)`，供 `pi-agent-core` 的 Agent 驱动 LLM。
+
+- **出口（`src/proxy.ts`）**：模型端点直连不通时要能改走代理，但 `127.0.0.1` 上的本地端点与 bsk daemon 必须直连——一刀切设 `HTTP_PROXY` 会把它们也塞进代理（症状是「连上了但不回话」）。因此按域名逐条决定：`direct` / `proxy` / `fallback`（先直连、遇网络层错误再走代理），规则自上而下第一条命中者胜，都不命中按全局 `mode`。装配点是替换 `globalThis.fetch`（pi-ai 每次请求才构造 SDK 客户端，取的是当时的全局 fetch），走代理时用 undici 自带的 fetch + `ProxyAgent`（外部 undici 的 dispatcher 与 Node 内置 fetch 跨大版本不兼容）。配置在 `~/.pageqa/proxy.json`（`--init-config` 生成模板），环境变量 `PAGEQA_PROXY_URL` / `_ENABLED` / `_MODE` 优先，交互模式 `/proxy` 面板可开关并查看统计与规则。详见 `docs/adr/0016`。
+
+- **免费网关（`src/free-providers.ts`）**：`/model` 除自定义端点与 pi-ai 内置 provider 外，还自带一批免费 OpenAI 兼容网关（cline / llm7 / fastrouter / orcarouter / xkiro），目录数据取自 pi-free 的 `docs/providers.md` 与 `docs/free_models.md`（2026-08-26 审计）。每个网关的模型目录是「内置快照（基线）+ 动态 `fetchModels` 打公开 `/v1/models`」，只保留免费条目（快照命中或该网关自己声明的命名规律，llm7 只认快照）；刷新失败静默回落快照，因此断网也总有模型可选。允许匿名的三个（cline / llm7 / fastrouter）无凭据也 resolve，因此照常出现在 `/model`，其余两个需 key。详见 `docs/adr/0017`。
 
 ## 3. 浏览器驱动（browserskill / bsk）
 
@@ -159,17 +165,15 @@ pageqa sessions [选项]        # 子命令：起运行存档查询服务（见�
 
 出问题时能看到多少现场，决定了能不能查下去：默认日志（stderr）只留工具名与一行失败原因，`--debug` 也只够眼看它滚过去、事后无从翻查。因此每次运行把「交给 agent 的参数」与「运行中的完整交互」持久化下来，由 `pageqa sessions` 起服务回看。
 
-- **存储（`src/session-archive.ts`）**：走 pi 官方的 SQLite session 后端（`@earendil-works/pi-session-backend-sqlite-node`，底层是 `node:sqlite`），全部运行落在**一个容器** `~/.pageqa/sessions/sessions.sqlite`：
-  - 一次运行 = 一个 Session（id 即运行 id）；
-  - 参数快照、列表摘要、终态 = Session 的 `Value`（命名空间 `pageqa`）；
-  - 每轮上下文、每次工具调用 = Session 的 `ValueList`；
-  - 会话名 = 后端内置的 `sessionName`。
-  写入是**一次事务**（`session.mutate(...)` 里 `commit(writes)`）：一次运行的档案要么整条可读、要么一条都不存在，不会留下「看着有、实际缺」的半截记录。刻意**不用**它的 Branch / Entry / fork 语义——档案是只写一次、之后只读的运行记录，不是可续跑的对话。
+- **存储（`src/session-archive.ts`）**：走 pi 官方的 `@earendil-works/pi-durable`（底层是 `node:sqlite`），全部运行落在**一个容器** `~/.pageqa/sessions/sessions.sqlite`。只用它的 **Session + 文档**这一层，不牵进 Harness / 模型 / 工具运行时：
+  - 一次运行 = 文档族 `pageqa.archive` 的一个成员，**键就是运行 id**（按 id 取存档是一次直接查表）；
+  - 列表页要的摘要 = 单例文档 `pageqa.index`（一次读就能列全，不必把每份档案的轮次与工具调用都读出来）。
+  写入是**一次提交**（`session.commit(...)` 里档案与索引一起写）：一次运行的档案要么整条可读、要么一条都不存在，不会留下「看着有、实际缺」的半截记录。刻意**不用**它的 Conversation / Entry / Task 语义——档案是只写一次、之后只读的运行记录，不是可续跑的对话。
 - **采集（`src/agent.ts`）**：`initializeAgent` 记录参数（系统提示词、模型、工具声明含 schema、编号后的 prompt、用例原文、步骤清单、占位符取值、bsk session、debug 开关）；`transformContext` 钩子记录**每轮实际发出**的上下文（裁剪后的版本 + 裁剪前字符数，因此「模型是不是把前面的步骤挤掉了」有据可查）；`subscribeProgress` 从 agent 事件里记录每轮耗时/用量，以及每次工具调用的入参、结果、耗时、成败。单段文本按 4000 字符截断并标注原始长度。
 - **落盘时机**：正常路径在 `finalizeResult` 之后写入（带结论与总用量）；编排中途抛错时由 `runAgent` 的 `finally` 兜底写一次——那正是最需要现场的时刻。落盘**绝不影响测试结论**：写失败只提示一句、不改退出码（与旁路产物同一条口径）。
 - **查询服务（`src/session-server.ts`）**：零依赖的 `node:http` 服务，服务端渲染列表页（`/`）与详情页（`/s/<id>`），另提供 JSON（`/api/sessions`、`/api/sessions/<id>`）。动态文本一律经 `escapeHtml`；`id` 走 `assertSafeId` 校验（`[A-Za-z0-9._-]`），URL 编码过的目录穿越撞在校验上返回 404。只监听回环地址——存档含系统提示词、用例文本与页面快照。
 - **清理**：默认只保留最近 200 次运行（按容器里的创建时间倒序），清理失败静默（它只是维护动作，不该冒泡成「这次运行出错了」）。容器文件不存在时 `list` / `read` / `prune` 一律直接返回，不会为「看一眼列表」在磁盘上建出一个空数据库。
-- **旧格式不迁移**：早期版本按「一次运行两个 JSON 文件」写在 `~/.pageqa/sessions/*.json`；换存储格式时不做迁移，那些文件不再被读取（帮助文案里已说明，可手动删除）。
+- **旧格式不迁移**：早期版本按「一次运行两个 JSON 文件」写在 `~/.pageqa/sessions/*.json`；再早一版把存档放在 pi 自带 session 后端的 SQLite 容器里（文件名同样是 `sessions.sqlite`，但表结构不同）。换存储格式时都不做迁移，旧数据不再被读取（列表页会显示为空，可手动删除容器文件）。
 
 ## 9. 验收映射
 
