@@ -238,13 +238,16 @@ describe("--only / --no-side-outputs 的参数解析", () => {
 });
 
 describe("子进程入口解析：绝不能是 process.argv[1]", () => {
-  test("默认入口是与 suite.js 同目录的 index.js，而不是当前进程的 argv[1]", () => {
+  test("默认入口是 dist 根目录的 index.js，而不是当前进程的 argv[1]", () => {
     const entry = resolveCliEntry();
     assert.equal(basename(entry), "index.js");
+    // suite 编译到 dist/agent/，入口仍在 dist 根：向上退一级才是 CLI 自己。
+    // 断言的是「入口确实存在于 dist 根」而不是同目录——同目录只是旧布局的巧合。
+    assert.equal(basename(dirname(entry)), "dist");
     assert.equal(
-      existsSync(join(dirname(entry), "suite.js")),
+      existsSync(join(dirname(entry), "agent", "suite.js")),
       true,
-      "应与 suite.js 同目录",
+      "suite 应编译到 dist/agent/",
     );
     assert.equal(existsSync(entry), true, "入口必须真实存在");
 
