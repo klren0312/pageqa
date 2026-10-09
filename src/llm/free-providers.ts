@@ -447,24 +447,31 @@ const clineOAuth: OAuthAuth = {
       const authorizeUrl = await fetchClineAuthorizeUrl(server.callbackUrl, interaction.signal);
       interaction.notify({ type: "auth_url", url: authorizeUrl });
 
+      // 超时与中止都要真正参与 race：两条监听都挂在同一个「永不 resolve」的 promise 上，
+      // 先到者reject。判断「哪个先到」必须靠监听，不能靠 `signal.aborted`——
+      // 那是同步快照，刚建好的定时器必然还是 false，于是等超时的分支永远不会被选中。
       const timeout = AbortSignal.timeout(CLINE_LOGIN_TIMEOUT_MS);
-      const signal = AbortSignal.any([interaction.signal, timeout]);
       const code = await Promise.race([
         server.waitForCode,
-        // 超时/中止要把原因分清：用户自己按了 Esc 是「已取消」，等超时是「回调没到达」。
-        timeout.aborted
-          ? new Promise<never>((_, reject) => {
-              timeout.addEventListener("abort", () =>
-                reject(new Error(t("tui.login.errCallbackTimeout"))),
-              );
-            })
-          : new Promise<never>((_, reject) => {
-              interaction.signal.addEventListener(
-                "abort",
-                () => reject(new Error(t("tui.login.cancelled", { provider: "cline" }))),
-                { once: true },
-              );
-            }),
+        new Promise<never>((_, reject) => {
+          // 进来时可能已经按过 Esc：addEventListener 不会再触发，必须当场 reject，
+          // 否则这次登录会一直挂到超时才结束。
+          if (interaction.signal.aborted) {
+            reject(new Error(t("tui.login.cancelled", { provider: "cline" })));
+            return;
+          }
+          // 超时/中止要把原因分清：用户自己按了 Esc 是「已取消」，等超时是「回调没到达」。
+          timeout.addEventListener(
+            "abort",
+            () => reject(new Error(t("tui.login.errCallbackTimeout"))),
+            { once: true },
+          );
+          interaction.signal.addEventListener(
+            "abort",
+            () => reject(new Error(t("tui.login.cancelled", { provider: "cline" }))),
+            { once: true },
+          );
+        }),
       ]);
 
       interaction.notify({ type: "progress", message: t("tui.login.stepExchange") });

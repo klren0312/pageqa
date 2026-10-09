@@ -179,6 +179,16 @@ after(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
+/**
+ * OAuth 那几条用例会真的起回环监听、等定时器，因此给它们一个显式上限。
+ *
+ * node:test 默认没有超时（Infinity）：一旦等待的东西永远不来（监听没起来、定时器被
+ * 替身吃掉、断言提前return……），整个 `node --test` 会挂在那儿不动——不报错、不退出，
+ * 看起来就是「卡死」。这里的上限远大于这些用例的实际耗时（回环最多等 2s、设备码 2 轮 3s），
+ * 正常情况下不会触发；触发了就说明真的有人在无限等，直接失败比挂住好排查。
+ */
+const OAUTH_TIMEOUT_MS = 30_000;
+
 describe("免费网关目录", () => {
   test("FREE_PROVIDER_IDS 就是这批网关，且 isFreeProvider 与之一致", () => {
     assert.deepEqual(
@@ -460,128 +470,140 @@ describe("免费网关的动态目录", () => {
 });
 
 describe("浏览器登录（OAuth）", () => {
-  test("Cline：回环回调打通 → 换令牌 → 存成 OAuth 凭据", async () => {
-    const expiresAt = new Date(Date.now() + 3600_000).toISOString();
-    const seen = [];
-    const restore = stubWithLoopbackPassthrough(async (href, init) => {
-      seen.push(href);
-      if (href === "https://api.cline.bot/auth/authorize") {
-        // 必须走 302 + Location：授权链接不是 baseUrl 拼得出来的。
-        return new Response(null, {
-          status: 302,
-          headers: { Location: "https://app.cline.bot/authorize?state=xyz" },
-        });
-      }
-      if (href === "https://api.cline.bot/auth/token") {
-        const body = JSON.parse(init.body);
-        // provider 由回调带回来，必须原样回传。
-        assert.equal(body.grant_type, "authorization_code");
-        assert.equal(body.provider, "google");
-        assert.equal(body.code, "auth-code-1");
-        assert.match(body.redirect_uri, /^http:\/\/127\.0\.0\.1:488\d\d\/auth$/);
-        return new Response(
-          JSON.stringify({
-            success: true,
-            data: { accessToken: "access-1", refreshToken: "refresh-1", expiresAt },
-          }),
-          { status: 200 },
-        );
-      }
-      return new Response("not found", { status: 404 });
-    });
-    try {
-      const cline = createFreeProviders().find((p) => p.id === "cline");
-      const events = [];
-      const loginPromise = cline.auth.oauth.login(fakeInteraction(events), undefined);
-      const delivered = await deliverClineCallback("code=auth-code-1&provider=google");
-      assert.match(delivered.html, /登录完成/);
-      const credential = await loginPromise;
+  test(
+    "Cline：回环回调打通 → 换令牌 → 存成 OAuth 凭据",
+    { timeout: OAUTH_TIMEOUT_MS },
+    async () => {
+      const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+      const seen = [];
+      const restore = stubWithLoopbackPassthrough(async (href, init) => {
+        seen.push(href);
+        if (href === "https://api.cline.bot/auth/authorize") {
+          // 必须走 302 + Location：授权链接不是 baseUrl 拼得出来的。
+          return new Response(null, {
+            status: 302,
+            headers: { Location: "https://app.cline.bot/authorize?state=xyz" },
+          });
+        }
+        if (href === "https://api.cline.bot/auth/token") {
+          const body = JSON.parse(init.body);
+          // provider 由回调带回来，必须原样回传。
+          assert.equal(body.grant_type, "authorization_code");
+          assert.equal(body.provider, "google");
+          assert.equal(body.code, "auth-code-1");
+          assert.match(body.redirect_uri, /^http:\/\/127\.0\.0\.1:488\d\d\/auth$/);
+          return new Response(
+            JSON.stringify({
+              success: true,
+              data: { accessToken: "access-1", refreshToken: "refresh-1", expiresAt },
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      });
+      try {
+        const cline = createFreeProviders().find((p) => p.id === "cline");
+        const events = [];
+        const loginPromise = cline.auth.oauth.login(fakeInteraction(events), undefined);
+        const delivered = await deliverClineCallback("code=auth-code-1&provider=google");
+        assert.match(delivered.html, /登录完成/);
+        const credential = await loginPromise;
 
-      assert.equal(credential.type, "oauth");
-      assert.equal(credential.access, "access-1");
-      assert.equal(credential.refresh, "refresh-1");
-      assert.ok(credential.expires > Date.now(), "到期时间应在未来");
-      // 过期时间只减 60s 余量：pi-ai 自己在剩余不足 5 分钟时就刷新，
-      // 若这里再减 5 分钟就会变成「每次请求都刷新一次」。
-      assert.ok(
-        credential.expires > Date.now() + 3000_000,
-        "不应把有效期削到 5 分钟以内",
-      );
-      // 授权链接确实回显给用户了（否则用户无从授权）。
-      const authUrl = events.find((e) => e.type === "auth_url");
-      assert.equal(authUrl.url, "https://app.cline.bot/authorize?state=xyz");
-      assert.ok(seen.includes("https://api.cline.bot/auth/authorize"));
-    } finally {
-      restore();
-    }
-  });
-
-  test("Cline：回环回调没到达时报出可操作的超时原因", async () => {
-    const restore = stubWithLoopbackPassthrough(async (href) => {
-      if (href === "https://api.cline.bot/auth/authorize") {
-        return new Response(null, {
-          status: 302,
-          headers: { Location: "https://app.cline.bot/authorize?state=xyz" },
-        });
-      }
-      return new Response("not found", { status: 404 });
-    });
-    // 不缩短真实超时（那是 5 分钟），而是替掉定时器：只证明「等不到」这条路走得通。
-    const realTimeout = globalThis.AbortSignal.timeout;
-    globalThis.AbortSignal.timeout = (ms) =>
-      ms === 5 * 60 * 1000 ? realTimeout(60) : realTimeout(ms);
-    try {
-      const cline = createFreeProviders().find((p) => p.id === "cline");
-      await assert.rejects(
-        () => cline.auth.oauth.login(fakeInteraction([]), undefined),
-        /没有收到浏览器回调/,
-      );
-    } finally {
-      globalThis.AbortSignal.timeout = realTimeout;
-      restore();
-    }
-  });
-
-  test("Kilo：设备码 → 轮询到批准 → 存成一年有效期的 OAuth 凭据", async () => {
-    let polls = 0;
-    const restore = stubWithLoopbackPassthrough(async (href) => {
-      if (href === "https://api.kilo.ai/api/device-auth/codes") {
-        return new Response(
-          JSON.stringify({
-            code: "ABCD-1234",
-            verificationUrl: "https://kilo.ai/device",
-            expiresIn: 900,
-          }),
-          { status: 200 },
+        assert.equal(credential.type, "oauth");
+        assert.equal(credential.access, "access-1");
+        assert.equal(credential.refresh, "refresh-1");
+        assert.ok(credential.expires > Date.now(), "到期时间应在未来");
+        // 过期时间只减 60s 余量：pi-ai 自己在剩余不足 5 分钟时就刷新，
+        // 若这里再减 5 分钟就会变成「每次请求都刷新一次」。
+        assert.ok(
+          credential.expires > Date.now() + 3000_000,
+          "不应把有效期削到 5 分钟以内",
         );
+        // 授权链接确实回显给用户了（否则用户无从授权）。
+        const authUrl = events.find((e) => e.type === "auth_url");
+        assert.equal(authUrl.url, "https://app.cline.bot/authorize?state=xyz");
+        assert.ok(seen.includes("https://api.cline.bot/auth/authorize"));
+      } finally {
+        restore();
       }
-      if (href === "https://api.kilo.ai/api/device-auth/codes/ABCD-1234") {
-        polls += 1;
-        // 未决在 HTTP 状态上（202），不靠响应体。
-        if (polls < 2) return new Response(null, { status: 202 });
-        return new Response(
-          JSON.stringify({ status: "approved", token: "kilo-token-1" }),
-          { status: 200 },
+    },
+  );
+
+  test(
+    "Cline：回环回调没到达时报出可操作的超时原因",
+    { timeout: OAUTH_TIMEOUT_MS },
+    async () => {
+      const restore = stubWithLoopbackPassthrough(async (href) => {
+        if (href === "https://api.cline.bot/auth/authorize") {
+          return new Response(null, {
+            status: 302,
+            headers: { Location: "https://app.cline.bot/authorize?state=xyz" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      });
+      // 不缩短真实超时（那是 5 分钟），而是替掉定时器：只证明「等不到」这条路走得通。
+      const realTimeout = globalThis.AbortSignal.timeout;
+      globalThis.AbortSignal.timeout = (ms) =>
+        ms === 5 * 60 * 1000 ? realTimeout(60) : realTimeout(ms);
+      try {
+        const cline = createFreeProviders().find((p) => p.id === "cline");
+        await assert.rejects(
+          () => cline.auth.oauth.login(fakeInteraction([]), undefined),
+          /没有收到浏览器回调/,
         );
+      } finally {
+        globalThis.AbortSignal.timeout = realTimeout;
+        restore();
       }
-      return new Response("not found", { status: 404 });
-    });
-    try {
-      const kilo = createFreeProviders().find((p) => p.id === "kilo");
-      const events = [];
-      const credential = await kilo.auth.oauth.login(fakeInteraction(events), undefined);
-      assert.equal(credential.type, "oauth");
-      assert.equal(credential.access, "kilo-token-1");
-      assert.ok(credential.expires > Date.now() + 300 * 24 * 3600_000);
-      // 设备码与地址都回显了，用户才知道要去哪输入。
-      const device = events.find((e) => e.type === "device_code");
-      assert.equal(device.userCode, "ABCD-1234");
-      assert.equal(device.verificationUri, "https://kilo.ai/device");
-      assert.equal(polls, 2);
-    } finally {
-      restore();
-    }
-  });
+    },
+  );
+
+  test(
+    "Kilo：设备码 → 轮询到批准 → 存成一年有效期的 OAuth 凭据",
+    { timeout: OAUTH_TIMEOUT_MS },
+    async () => {
+      let polls = 0;
+      const restore = stubWithLoopbackPassthrough(async (href) => {
+        if (href === "https://api.kilo.ai/api/device-auth/codes") {
+          return new Response(
+            JSON.stringify({
+              code: "ABCD-1234",
+              verificationUrl: "https://kilo.ai/device",
+              expiresIn: 900,
+            }),
+            { status: 200 },
+          );
+        }
+        if (href === "https://api.kilo.ai/api/device-auth/codes/ABCD-1234") {
+          polls += 1;
+          // 未决在 HTTP 状态上（202），不靠响应体。
+          if (polls < 2) return new Response(null, { status: 202 });
+          return new Response(
+            JSON.stringify({ status: "approved", token: "kilo-token-1" }),
+            { status: 200 },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      });
+      try {
+        const kilo = createFreeProviders().find((p) => p.id === "kilo");
+        const events = [];
+        const credential = await kilo.auth.oauth.login(fakeInteraction(events), undefined);
+        assert.equal(credential.type, "oauth");
+        assert.equal(credential.access, "kilo-token-1");
+        assert.ok(credential.expires > Date.now() + 300 * 24 * 3600_000);
+        // 设备码与地址都回显了，用户才知道要去哪输入。
+        const device = events.find((e) => e.type === "device_code");
+        assert.equal(device.userCode, "ABCD-1234");
+        assert.equal(device.verificationUri, "https://kilo.ai/device");
+        assert.equal(polls, 2);
+      } finally {
+        restore();
+      }
+    },
+  );
 
   test("Kilo：申请设备码被限流时把「稍后再试」说出来", async () => {
     const restore = stubWithLoopbackPassthrough(
