@@ -587,11 +587,6 @@ export function buildClearMarksExpression(): string {
 /** 命中标记的选择器（交给 `bsk click` 用真实点击路径点它）。 */
 export const PICK_SELECTOR = `[${PICK_ATTR}="1"]`;
 
-/** 一批候选里第一个**可用**的（在 Node 侧做静态选择，页面侧再逐个试）。 */
-export function firstSelector(candidates: readonly string[]): string | null {
-  return candidates.length > 0 ? candidates[0] : null;
-}
-
 /** 目标日期（面板要导航到的年月日）。 */
 export interface DateSpec {
   y: number;

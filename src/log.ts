@@ -28,11 +28,6 @@ export function setDebug(enabled: boolean): void {
   debugEnabled = enabled;
 }
 
-/** 当前是否处于调试模式。 */
-export function isDebug(): boolean {
-  return debugEnabled;
-}
-
 /**
  * 替换日志落点（交互模式把它接进界面视口）。
  * 传 `null` 恢复默认的 stderr——退出交互模式时应当复位，避免日志继续往已销毁的界面里写。
