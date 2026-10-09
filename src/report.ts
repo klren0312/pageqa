@@ -147,20 +147,48 @@ export function mergeUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
 }
 
 /**
+ * token 数 → 紧凑文本：千以下原样，之后 k / m（与模型目录里的 ctx 写法对齐）。
+ *
+ * 为什么要有这个：TUI 那一行里同时出现两种单位会让人多读一遍——上下文是 `24.1k`，
+ * 隔壁的输入/输出却是 `24123`。长流程跑到几十万 token 时，原始数字能把这一行撑到
+ * 两倍宽，把真正要看的「占比」挤出视口。千以下保持原样，因为 `830` 比 `0.8k` 更好读。
+ *
+ * 纯函数（不看语言环境），因此可单测。
+ */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n)) return String(n);
+  const abs = Math.abs(n);
+  if (abs < 1000) return String(n);
+  if (abs < 1_000_000) {
+    const k = n / 1000;
+    return `${k >= 100 ? Math.round(k) : Math.round(k * 10) / 10}k`;
+  }
+  return `${Math.round((n / 1_000_000) * 10) / 10}m`;
+}
+
+/**
  * 渲染成一行文本（报告末行）。
  * 端点未返回 usage 时如实标注，避免把「0 token」误读成真实消耗。
+ *
+ * `compact` 把五个数字换成 k/m 紧凑写法，给**同一屏里反复刷新**的地方用（TUI 的
+ * token 行）；报告与 HTML 报告不给——它们是一次性产物，用户要的是能对账的精确值。
  */
-export function formatUsage(usage?: TokenUsage, mode?: TestReport["mode"]): string {
+export function formatUsage(
+  usage?: TokenUsage,
+  mode?: TestReport["mode"],
+  opts?: { compact?: boolean },
+): string {
   // 回放模式没有也不该有 token 消耗：直接写明「未调用大模型」，
   // 否则「合计 0」会被误读成端点没返回 usage。
   if (mode === "replay") return t("report.usage.replay");
   if (!usage) return t("report.usage.unavailable");
+  const num = opts?.compact ? formatTokens : (n: number) => String(n);
   const line = t("report.usage.line", {
-    in: usage.input,
-    out: usage.output,
-    cr: usage.cacheRead,
-    cw: usage.cacheWrite,
-    total: usage.total,
+    in: num(usage.input),
+    out: num(usage.output),
+    cr: num(usage.cacheRead),
+    cw: num(usage.cacheWrite),
+    total: num(usage.total),
     calls: usage.calls,
   });
   return usage.calls > 0 && usage.total === 0

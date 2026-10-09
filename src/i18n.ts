@@ -69,7 +69,8 @@ const catalogs: Record<Locale, Catalog> = {
     "log.toolsReady":
       "[pageqa] 工具已就绪：{n} 个；用例已编号为 {steps} 个步骤（报告按此定位卡点）",
     "log.toolStart": "[pageqa] ▶ #{n} {tool} …",
-    "log.modelOutput": "[pageqa] 模型已开始输出，正在推进步骤…",
+    "log.modelOutputStart": "[pageqa] 模型输出中（第 {n} 轮）…",
+    "log.modelOutputEnd": "[pageqa] 第 {n} 轮模型输出结束",
     "log.toolEnd":
       "[pageqa] {mark} #{n} {tool}{reason}{retry} {cost}ms",
     "log.cancelledBeforeStart":
@@ -478,10 +479,10 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.kanban.pass": "成功",
     "tui.kanban.fail": "失败",
     "tui.kanban.more": "更多",
-    "tui.sceneStart": '场景「{name}」{appended}',
+    "tui.sceneStart": '场景 #{i}「{name}」{appended}',
     "tui.sceneEnd":
-      '场景「{name}」结束：{tag}（断言 {n} 条，耗时 {duration}）',
-    "tui.sceneError": '场景「{name}」执行出错：{msg}',
+      '场景 #{i}「{name}」结束：{tag}（断言 {n} 条，耗时 {duration}）',
+    "tui.sceneError": '场景 #{i}「{name}」执行出错：{msg}',
     "tui.wroteBack": "已写回源用例文件：## {name}",
     "tui.writeBackFail":
       "写回源用例文件失败（该场景仍会执行）：{msg}",
@@ -551,6 +552,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.proxy.unbypass": "恢复按配置走（取消本次会话的直连）",
     "tui.proxy.reload": "重新加载配置文件",
     "tui.proxy.stats": "查看统计与规则",
+    "tui.proxy.statsDesc": "打印到日志后关闭面板",
     "tui.proxy.saved": "代理路由已{state}，已写回 {path}",
     "tui.proxy.reloadOk": "已重新加载 {path}：{state} · 代理 {proxy} · 模式 {mode}",
     "tui.proxy.failed": "操作失败：{msg}",
@@ -1168,7 +1170,8 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "log.toolsReady":
       "[pageqa] tools ready: {n}; case numbered into {steps} steps (report locates the stuck step by these)",
     "log.toolStart": "[pageqa] ▶ #{n} {tool} …",
-    "log.modelOutput": "[pageqa] model started outputting, advancing steps…",
+    "log.modelOutputStart": "[pageqa] model is outputting (turn {n})…",
+    "log.modelOutputEnd": "[pageqa] turn {n} model output finished",
     "log.toolEnd":
       "[pageqa] {mark} #{n} {tool}{reason}{retry} {cost}ms",
     "log.cancelledBeforeStart":
@@ -1596,10 +1599,10 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.kanban.pass": "Pass",
     "tui.kanban.fail": "Failed",
     "tui.kanban.more": "more",
-    "tui.sceneStart": 'scenario "{name}"{appended}',
+    "tui.sceneStart": 'scenario #{i} "{name}"{appended}',
     "tui.sceneEnd":
-      'scenario "{name}" ended: {tag} ({n} assertions, elapsed {duration})',
-    "tui.sceneError": 'scenario "{name}" errored: {msg}',
+      'scenario #{i} "{name}" ended: {tag} ({n} assertions, elapsed {duration})',
+    "tui.sceneError": 'scenario #{i} "{name}" errored: {msg}',
     "tui.wroteBack": "written back to source case file: ## {name}",
     "tui.writeBackFail":
       "failed to write back to source case file (scenario still runs): {msg}",
@@ -1675,6 +1678,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.proxy.unbypass": "go back to the configured routing",
     "tui.proxy.reload": "reload the config file",
     "tui.proxy.stats": "show counters and rules",
+    "tui.proxy.statsDesc": "print to the log, then close this panel",
     "tui.proxy.saved": "proxy routing {state}; written to {path}",
     "tui.proxy.reloadOk":
       "reloaded {path}: {state} · proxy {proxy} · mode {mode}",
