@@ -52,6 +52,8 @@ pi-ai 在**每次请求时**才构造 SDK 客户端，客户端默认取当时�
 
 面板在环境变量在场时补一条提示（`tui.proxy.envOverride`），与 ADR-0015 决策三同理：env 优先级更高，不点破就会出现「我改了怎么没变」。
 
+前三项执行完**留在面板里**（它们的 label / description 当场变，用户看得到变化）；「查看统计与规则」执行完**关掉面板**：它是给人读的文本，不是面板状态，留着就会被居中的浮层（`maxHeight: 70%`）盖住刚写进日志末尾的那几行，而面板里又没有任何会动的地方可作反馈——按回车的结果看起来只能是「什么都没发生」。这一项的 description 因此写明「打印到日志后关闭面板」，让行为在按下之前就是已知的。
+
 ### 8. 不引入 `HTTPS_PROXY` 等标准环境变量
 只认 `PAGEQA_PROXY_URL` / `PAGEQA_PROXY_ENABLED` / `PAGEQA_PROXY_MODE`。想要沿用 shell 里的变量就显式传：`PAGEQA_PROXY_URL=$HTTPS_PROXY pageqa 用例.md`。
 
