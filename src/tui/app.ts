@@ -67,11 +67,16 @@ import {
   type AgentRunResult,
 } from "../agent.js";
 // 场景在独立子进程里执行（ADR-0013）：交互模式与批处理共用同一个执行器。
-import { EnvironmentUnavailableError, runScenarioInChild } from "../suite.js";
+import {
+  EnvironmentUnavailableError,
+  runScenarioInChild,
+  scenarioLogTag,
+} from "../suite.js";
 import { info, setSink } from "../log.js";
 import {
   cacheHitRate,
   emptyUsage,
+  formatTokens,
   formatUsage,
   mergeUsage,
   numberSteps,
@@ -521,15 +526,8 @@ export async function runInteractive(
   /** 上一次上报的累计用量：算增量用。场景结束时随实时值一起清掉。 */
   const prevRunningUsages = new Map<number, TokenUsage>();
 
-  /** token 数 → 紧凑文本：千以下原样，之后用 k/m（和模型目录的 ctx 写法对齐）。 */
-  function fmtTokens(n: number): string {
-    if (n < 1000) return String(n);
-    if (n < 1_000_000) {
-      const k = n / 1000;
-      return `${k >= 100 ? Math.round(k) : Math.round(k * 10) / 10}k`;
-    }
-    return `${Math.round((n / 1_000_000) * 10) / 10}m`;
-  }
+  /** token 数 → 紧凑文本：与报告同源（report.ts 的 `formatTokens`），这里只做转发。 */
+  const fmtTokens = formatTokens;
 
   /**
    * 本次会话累计 token 用量 = 已结束场景的结算值 + 正在跑的场景的实时值。
@@ -1159,7 +1157,11 @@ export async function runInteractive(
             : t("tui.setting.off"),
         },
         { value: "reload", label: t("tui.proxy.reload"), description: PROXY_CONFIG_PATH },
-        { value: "stats", label: t("tui.proxy.stats"), description: "" },
+        {
+          value: "stats",
+          label: t("tui.proxy.stats"),
+          description: t("tui.proxy.statsDesc"),
+        },
       ];
       const pick = await openSelector(
         t("tui.proxy.title", {
@@ -1194,7 +1196,11 @@ export async function runInteractive(
         ) {
           append(warn(t("tui.proxy.envOverride")));
         }
-        continue;
+        // 打印完就**关掉面板**，不接着 `continue` 重开：这一项是给人读的，不是面板状态。
+        // 重开的话浮层（`maxHeight: 70%`、居中）正好盖住刚追加到日志末尾的几行，
+        // 而面板里又没有会变化的状态可作反馈——按回车看起来就是「什么都没发生」。
+        // 其余三项 `continue` 是没问题的：它们的 label/description 会当场变，用户看得到变化。
+        return;
       }
       if (pick.value === "reload") {
         const cfg = reloadProxyConfig();
@@ -1450,7 +1456,9 @@ export async function runInteractive(
    * 一个 0%——那会被读成「完全没命中」。缓存读/写的绝对值本来就在同一行里，不重复。
    */
   function tuiUsageLine(usage: TokenUsage): string {
-    const parts: string[] = [formatUsage(usage)];
+    // 紧凑写法（k/m）：这一行每轮 LLM 调用后都刷新，精确到个位的五位数会把
+    // 「占比」这类真正要看的东西挤出视口。报告末行仍是精确值，口径同源。
+    const parts: string[] = [formatUsage(usage, undefined, { compact: true })];
     const hit = cacheHitRate(usage);
     if (hit !== null) {
       parts.push(t("tui.usage.cacheHit", { pct: Math.round(hit * 100) }));
@@ -1571,11 +1579,15 @@ export async function runInteractive(
     append(
       title(
         t("tui.sceneStart", {
+          i: item.id,
           name: item.name,
           appended: item.origin.kind === "added" ? t("tui.appended") : "",
         }),
       ),
     );
+    // 并发时日志必然交错，子进程的行只有带上编号才认得出是谁的（ADR-0013 决策九）。
+    // 判定在派发这一刻求值：并发量之后被 `/setting` 改过的话，只有改完之后派发的场景带前缀。
+    const parallel = concurrency > 1 && queue.all().length > 1;
     let result: AgentRunResult;
     // 上下文窗口取「开跑那一刻」的模型，与传给子进程的 model 参数同源。
     runningContexts.set(item.id, {
@@ -1600,6 +1612,8 @@ export async function runInteractive(
         abortSignal: item.abort.signal,
         // 子进程的进度日志直接进日志视口：它自带时间戳，与 log.ts 的输出同形。
         onChildLog: append,
+        // 并发时给每行加 `[#k 场景名]` 前缀，串行时原样转发。
+        ...(parallel ? { logTag: scenarioLogTag(item.id, item.name) } : {}),
         // 每轮 LLM 调用后刷新状态栏里的 token 累计：长流程跑到一半就能看出已经烧了多少。
         // 上报的是累计值，上下文取相邻两次的增量（即最近一轮喂给模型的 token 数）。
         onUsage: (usage) => {
@@ -1616,7 +1630,7 @@ export async function runInteractive(
         },
       });
     } catch (err2) {
-      append(err(t("tui.sceneError", { name: item.name, msg: msgOf(err2) })));
+      append(err(t("tui.sceneError", { i: item.id, name: item.name, msg: msgOf(err2) })));
       if (err2 instanceof ModelUnreachableError) {
         // 模型不通：这个场景如实记为失败（**不是**「已取消」——它是配置错误，
         // 混进「不计入退出码」的类别会让 CI 把「模型连不上」当成通过），
@@ -1640,6 +1654,7 @@ export async function runInteractive(
     try {
       const tag = statusTag(result.report.status);
       const line = t("tui.sceneEnd", {
+        i: item.id,
         name: item.name,
         tag,
         n: result.report.assertions.length,
@@ -1648,7 +1663,8 @@ export async function runInteractive(
       append(result.report.status === "pass" ? ok(line) : result.report.status === "cancelled" ? warn(line) : err(line));
       // 这一条场景花了多少：状态栏只有会话累计，看不出单条成本。没发生过 LLM 调用
       // （排队中被取消、模型探活就失败）时不打这行——那只会是一串 0。
-      if (result.usage.calls > 0) append(dim(formatUsage(result.usage)));
+      if (result.usage.calls > 0)
+        append(dim(formatUsage(result.usage, undefined, { compact: true })));
       return result.report.status;
     } finally {
       // 结算值已进 results，实时值必须清掉，否则这份消耗会在状态栏里被算两遍。

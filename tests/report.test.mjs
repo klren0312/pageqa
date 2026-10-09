@@ -8,6 +8,7 @@ import {
   countAssertions,
   emptyUsage,
   extractTrace,
+  formatTokens,
   formatUsage,
   mergeUsage,
   numberSteps,
@@ -404,6 +405,51 @@ describe("Token 用量统计", () => {
 
   test("无用量数据时给出不可用提示", () => {
     assert.ok(formatUsage(undefined).includes("不可用"));
+  });
+
+  test("compact 只换数字写法，不改这一行的结构与顺序", () => {
+    const usage = addUsage(
+      emptyUsage(),
+      { input: 24_120, output: 3_400, cacheRead: 12_000, cacheWrite: 0, totalTokens: 39_520 },
+    );
+    const compact = formatUsage(usage, undefined, { compact: true });
+    // 与不压缩时逐段对应：只有数字变短了，图例（⬇/⬆/读/写/总）与次序原样不动。
+    assert.equal(
+      compact,
+      "Token: ⬇ 24.1k / ⬆ 3.4k / 读 12k / 写 0 / 总 39.5k（LLM 调用 1 次）",
+    );
+    assert.equal(
+      formatUsage(usage),
+      "Token: ⬇ 24120 / ⬆ 3400 / 读 12000 / 写 0 / 总 39520（LLM 调用 1 次）",
+    );
+  });
+});
+
+/**
+ * token 数的紧凑写法（TUI 那一行用）。
+ *
+ * 千以下保持原样是有意的：`830` 比 `0.8k` 好读，缩写只用来救「位数太多」的场景。
+ */
+describe("token 数的紧凑单位", () => {
+  test("千以下原样，之后 k", () => {
+    assert.equal(formatTokens(0), "0");
+    assert.equal(formatTokens(830), "830");
+    assert.equal(formatTokens(999), "999");
+    assert.equal(formatTokens(1000), "1k");
+    assert.equal(formatTokens(1500), "1.5k");
+    assert.equal(formatTokens(24_120), "24.1k");
+    // 到三位有效数字就不再带小数点：多一位只是噪声
+    assert.equal(formatTokens(123_400), "123k");
+  });
+
+  test("百万级用 m", () => {
+    assert.equal(formatTokens(1_000_000), "1m");
+    assert.equal(formatTokens(1_234_567), "1.2m");
+  });
+
+  test("不是有限数就原样返回，不产出 NaN/undefined", () => {
+    assert.equal(formatTokens(Number.NaN), "NaN");
+    assert.equal(formatTokens(Number.POSITIVE_INFINITY), "Infinity");
   });
 });
 

@@ -18,6 +18,7 @@ import {
   resolveCliEntry,
   runScenarioChild,
   runSuiteInChildren,
+  scenarioLogTag,
   USAGE_LINE_PREFIX,
 } from "../dist/suite.js";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -389,6 +390,32 @@ describe("子进程执行器：父进程侧", () => {
     }
   });
 
+  // 并发时日志必然交错，行首必须能认出是谁的（ADR-0013 决策九）。
+  // 用量行是例外：它被吞掉交给状态栏，不该混进日志，也就不需要前缀。
+  test("给了 logTag：每行日志带场景前缀，用量行照旧不进来", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pageqa-fakechild-"));
+    try {
+      const entry = makeFixture(dir);
+      const logs = [];
+      const usages = [];
+      await runScenarioChild(
+        opts(entry, {
+          usageStream: true,
+          logTag: scenarioLogTag(2, "下单"),
+          emitLog: (line) => logs.push(line),
+          onUsage: (u) => usages.push(u),
+        }),
+      );
+      assert.deepEqual(logs, [
+        "[#2 下单] 17:00:00 [pageqa] 假子进程启动",
+        "[#2 下单] 17:00:01 [pageqa] 假子进程跑完",
+      ]);
+      assert.deepEqual(usages, [usage]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("子进程没吐报告时如实说「没有」，并把退出方式带回来", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pageqa-fakechild-"));
     try {
@@ -654,5 +681,25 @@ describe("场景级执行上限的解析（ADR-0013 决策八）", () => {
     } finally {
       if (previous !== undefined) process.env.PAGEQA_SCENARIO_TIMEOUT = previous;
     }
+  });
+});
+
+/**
+ * 场景日志前缀（`scenarioLogTag`）。
+ *
+ * 它是「并发时每行日志属于谁」的唯一凭据，所以格式要稳定：编号在前（与报告次序、
+ * `--only k` 对得上），名字在后只作辨认用，且必须截断——前缀比正文还长就本末倒置了。
+ */
+describe("场景日志前缀", () => {
+  test("编号 + 场景名", () => {
+    assert.equal(scenarioLogTag(2, "下单"), "[#2 下单]");
+    // 名字里的换行/多余空格压平：前缀必须只占一行，否则日志行会被撑成两行
+    assert.equal(scenarioLogTag(1, "  下单\n  流程 "), "[#1 下单 流程]");
+  });
+
+  test("名字过长时截断并补省略号", () => {
+    const tag = scenarioLogTag(3, "下单支付成功后的订单列表校验与导出");
+    assert.equal(tag, "[#3 下单支付成功后的订单列表校验与导…]");
+    assert.ok(tag.length < 30, "前缀不该比日志正文还长");
   });
 });

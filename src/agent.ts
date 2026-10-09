@@ -780,8 +780,12 @@ export function turnUsage(event: AgentEvent): RawUsage | null {
 /**
  * 订阅 agent 事件，把工具调用与模型输出记入 events，并把进度回显到 stderr。
  *
- * 工具执行进度始终打印（默认可见），让长流程每跑一步都有回显；
+ * 工具调用进度始终打印（默认可见），让长流程每跑一步都有回显；
  * 避免出现「终端长时间无输出、不知道卡在哪一步」的观感。
+ *
+ * 模型状态同样**每轮**都打印：一次运行常常是「模型输出 → 调工具 → 模型输出 → …」，
+ * 只在第一段文本出现时打一行的话，后面每轮等待模型的那几秒就成了空白，
+ * 界面里看不到任何「它还在动」的证据。
  * 每轮 LLM 调用后再把累计用量交给 `onUsage`，供界面实时显示 token 消耗。
  */
 function subscribeProgress(
@@ -795,7 +799,8 @@ function subscribeProgress(
   const log = debugLog;
   let toolCount = 0;
   let toolStartedAt = 0;
-  let firstTextLogged = false;
+  /** LLM 轮次序号：每轮打一对「输出中 / 输出结束」，让模型状态在日志里逐轮可见。 */
+  let turnSeq = 0;
   let liveUsage = emptyUsage();
 
   agent.subscribe((e) => {
@@ -807,11 +812,17 @@ function subscribeProgress(
     // 耗时构成：一轮 LLM = turn_start → turn_end；工具 = 各自 start/end 配对。
     // 这里只记时间点，判断与汇总都在 timing.ts（纯逻辑，可单测）。
     if (e.type === "turn_start") {
+      turnSeq += 1;
+      // turn_start = 一次 provider 请求开始，此刻起界面就该有「在等模型」的提示。
+      info(t("log.modelOutputStart", { n: turnSeq }));
       timing.noteTurnStart();
       collector.noteTurnStart();
     } else if (e.type === "turn_end") {
       timing.noteTurnEnd();
       collector.noteTurnEnd(turn);
+      // 只在 assistant 轮收尾：`turn_end` 也会为 user / toolResult 触发，
+      // 那时并没有「模型输出结束」这回事，打出来会让人以为多跑了几轮。
+      if (turn) info(t("log.modelOutputEnd", { n: turnSeq }));
     }
     if (e.type === "tool_execution_start") {
       timing.noteToolStart(e.toolCallId);
@@ -853,10 +864,6 @@ function subscribeProgress(
       e.type === "message_update" &&
       e.assistantMessageEvent?.type === "text_delta"
     ) {
-      if (!firstTextLogged) {
-        firstTextLogged = true;
-        info(t("log.modelOutput"));
-      }
       events.push(e.assistantMessageEvent.delta);
       // 顺带给录制器喂文本：从「第 k 步完成」自述里跟踪进度，
       // 把后续工具调用映射回用例步骤号（映射不准时为 null，不影响回放）。

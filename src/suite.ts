@@ -240,11 +240,6 @@ export async function runSuiteInChildren(
     /** 跑一个场景（下标 i）。并发上限由外面的调度器管，这里只管这一个怎么跑。 */
     const runOne = async (i: number): Promise<void> => {
       const sc = scenarios[i];
-      // 并发时日志必然交错，父进程的「开始/结束」行已经分不清谁是谁——
-      // 只有这时才给每行加场景前缀（逐个跑时加了只会污染文案，见 ADR-0013 决策九）。
-      const scenarioLog: ChildLogSink = parallel
-        ? (line) => emitLog(`[${sc.name}] ${line}`)
-        : emitLog;
       info(
         t("log.suiteScenario", {
           i: i + 1,
@@ -282,7 +277,10 @@ export async function runSuiteInChildren(
         scriptPath,
         debug: opts.debug,
         timeoutMs: opts.timeoutMs,
-        emitLog: scenarioLog,
+        emitLog,
+        // 并发时日志必然交错，父进程的「开始/结束」行已经分不清谁是谁——
+        // 只有这时才给每行加场景编号前缀（逐个跑时加了只会挤掉日志正文，见 ADR-0013 决策九）。
+        ...(parallel ? { logTag: scenarioLogTag(i + 1, sc.name) } : {}),
         usageStream: opts.usageStream,
         ...(opts.onChildUsage ? { onUsage: opts.onChildUsage } : {}),
       });
@@ -487,6 +485,12 @@ export interface RunChildOptions extends ChildInvocation {
   total: number;
   timeoutMs: number;
   emitLog: ChildLogSink;
+  /**
+   * 每行日志前缀（形如 `[#2 场景名]`）：**只在并发时**给，见 ADR-0013 决策九。
+   *
+   * 传了就给每个非用量行加上，用量行照旧被吞掉（状态栏自己渲染，不需要归属）。
+   */
+  logTag?: string;
   /** 让子进程把 LLM 用量逐次打到 stderr（`--usage-stream`）。 */
   usageStream?: boolean;
   /** 本次会话的模型选择：用既有的 `PAGEQA_LLM_*` 环境变量传下去（交互模式 /model 要用）。 */
@@ -494,6 +498,27 @@ export interface RunChildOptions extends ChildInvocation {
   /** 用户中止（交互模式按 Esc）。 */
   abortSignal?: AbortSignal;
   onUsage?: (usage: TokenUsage) => void;
+}
+
+/** 日志前缀里场景名的长度上限：再长就把日志正文挤出屏幕，归属反而看不清了。 */
+const LOG_TAG_NAME_MAX = 16;
+
+/**
+ * 拼一条日志的「场景归属」前缀：`[#2 场景名]`。
+ *
+ * 编号在前是有意的：它与报告里的场景次序、`--only k` 的 k、看板与 `/status` 里的编号
+ * 都是同一个数，用户可以直接拿它去别处查；名字只负责「一眼认出是哪条」。
+ * 名字截断到 {@link LOG_TAG_NAME_MAX}，超长补 `…`——前缀是标签，不该比正文还长。
+ *
+ * 纯函数（无 I/O、不看语言环境），因此可以单测。
+ */
+export function scenarioLogTag(index: number, name: string): string {
+  const flat = name.replace(/\s+/g, " ").trim();
+  const shown =
+    flat.length > LOG_TAG_NAME_MAX
+      ? flat.slice(0, LOG_TAG_NAME_MAX) + "…"
+      : flat;
+  return `[#${index} ${shown}]`;
 }
 
 /**
@@ -543,12 +568,13 @@ export async function runScenarioChild(opts: RunChildOptions): Promise<ChildRunR
   // 子进程的 stderr **原样**转发（ADR-0013 决策九）：它自带时间戳，再加一层前缀
   // 会污染既有日志文案与 i18n。按行切是为了让交互模式那一侧能当作「一行日志」消费。
   // 用量行是唯一的例外：它被吞掉（状态栏自己会渲染），不混进日志视口。
+  // 并发时是另一个例外：日志必然交错，靠 `logTag` 认出行属于哪个场景（决策三）。
   let pending = "";
   let lastUsage: TokenUsage | undefined;
   const handleLine = (line: string) => {
     const usage = parseUsageLine(line);
     if (!usage) {
-      opts.emitLog(line);
+      opts.emitLog(opts.logTag ? opts.logTag + " " + line : line);
       return;
     }
     lastUsage = usage;
@@ -823,6 +849,12 @@ export interface ChildScenarioOptions {
   onUsage?: (usage: TokenUsage) => void;
   /** 子进程日志的落点（交互模式接进日志视口）。 */
   onChildLog?: ChildLogSink;
+  /**
+   * 每行日志的场景前缀（形如 `[#3 场景名]`）：交互模式并发时给，否则不给。
+   *
+   * 判定在调用方（TUI 知道自己的并发量与队列长度），这里只负责透传。
+   */
+  logTag?: string;
   entry?: string;
 }
 
@@ -866,6 +898,7 @@ export async function runScenarioInChild(
       scriptPath,
       usageStream: true,
       model: opts.model,
+      ...(opts.logTag ? { logTag: opts.logTag } : {}),
       abortSignal: opts.abortSignal,
       timeoutMs: opts.timeoutMs,
       debug: opts.debug,
