@@ -46,7 +46,7 @@ pageqa examples/smoke.md     # open a case file and run it interactively
 pageqa --tui examples/smoke.md   # force interactive (errors immediately in a non-TTY)
 ```
 
-Auto-entry condition: a TTY with no `--json`, and either **a case file is given** or **nothing is given**. **Inline text does not enter the TUI** (it runs in batch); `--json` / `--replay` / `--session` block the TUI. To disable: `pageqa --no-tui` or `PAGEQA_NO_TUI=1`.
+Auto-entry condition: a TTY with no `--json`, and either **a case file is given** or **nothing is given**. **Inline text does not enter the TUI** (it runs in batch); `--json` / `--replay` / `--session` / `--only` block the TUI (`--tui` together with `--only` errors immediately). To disable: `pageqa --no-tui` or `PAGEQA_NO_TUI=1`.
 
 ### Layout
 
@@ -67,15 +67,15 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 └──────────────────────────────────────────────────────────┘
 ```
 
-- **Kanban band**: all scenarios grouped into 5 columns by state (waiting / running / pass / fail / cancelled); the running column shows live elapsed time. Only the most recent few cards per column fit, with `+N more` when exceeded. Display-only (no click actions); hidden entirely below 90 columns so the log keeps the space.
-- **Status line** always shows: current model, pending count, written-back count, and the **write-back target** (the case file appended scenarios are written back to; when none, it says so — appended scenarios then live only in this session and are lost on exit).
-- **Token line** (under the input box) is the same sentence as the report's last line, with the running scenarios' live values, **plus the cache hit rate**:
+- **Kanban band**: all scenarios grouped into 5 columns by state (waiting / running / pass / fail / cancelled); each running card carries its own live elapsed time. Each column shows the first few cards **in queue order**, with `+N more` when exceeded. Display-only (no click actions); hidden entirely below 90 columns so the log keeps the space.
+- **Status line** always shows the current model, the pending count and the **write-back target** (the case file appended scenarios are written back to; when none, it says so — appended scenarios then live only in this session and are lost on exit). The written-back count joins in once something has actually been written back.
+- **Token line** (under the input box) is the same sentence as the report's last line, with the running scenarios' live values, **plus the cache hit rate and the current context length**:
 
   ```text
-  Token: ⬇ 1234 / ⬆ 567 / read 8901 / write 42 / total 10744 (LLM calls 3)  ·  hit 92%
+  Token: ⬇ 1.2k / ⬆ 567 / read 8.9k / write 42 / total 10.7k (LLM calls 3)  ·  hit 92%  ·  context 24.1k/128k (19%)
   ```
 
-  The short words work because the **order is the legend**: `⬇` = input (fed into the model), `⬆` = output, `read`/`write` = cache read / cache write, `total` = the sum. The trailing `hit 92%` = cache read / (input + cache read), i.e. how much of this input came back from the prompt cache. Seeing it hold steady while a run is in progress means the prompt prefix is stable and the cache keeps hitting. When the denominator is zero (replay, endpoint returned no usage, nothing called yet) that part is simply not shown, rather than printing a 0%.
+  The short words work because the **order is the legend**: `⬇` = input (fed into the model), `⬆` = output, `read`/`write` = cache read / cache write, `total` = the sum. The trailing `hit 92%` = cache read / (input + cache read), i.e. how much of this input came back from the prompt cache. Seeing it hold steady while a run is in progress means the prompt prefix is stable and the cache keeps hitting. When the denominator is zero (replay, endpoint returned no usage, nothing called yet) that part is simply not shown, rather than printing a 0%. The `context 24.1k/128k (19%)` part is what the last turn actually sent, against the model's window (it is dropped when the window size is unknown, and never shown when nothing is running). This line refreshes on every call, so it uses the compact `1.2k` / `24.1k` form; the report's last line keeps the exact numbers.
 
 ### Submitting scenarios
 
@@ -90,7 +90,7 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 | `/status` | View the run queue (one line per scenario with state and origin) |
 | `/cancel <n>` | Cancel the not-yet-started queued scenario #n |
 | `/new` | New session: clears viewport and queue, resets token counter, but **archives the previous batch** (still in the exit report and replay script). Refuses while something is running/pending |
-| `/model` | Switch this session's model (`Enter` applies now, `Ctrl+S` also saves as the startup default). The list ships with a set of **free gateways** carrying a `free` badge — see [Free model gateways](#free-model-gateways) |
+| `/model` | Switch this session's model — `Enter` applies it now **and** saves it as the startup default. The list ships with a set of **free gateways** carrying a `free` badge — see [Free model gateways](#free-model-gateways) |
 | `/login` · `/logout` | Sign in / remove a provider's local credentials (`~/.pageqa/auth.json`) |
 | `/setting` | Persistent prefs: test report (HTML) / replay script toggles, language, **concurrency** (1/2/3/4/6/8) |
 | `/proxy` | Proxy routing for model requests: on/off (saved to `~/.pageqa/proxy.json`), bypass for this session, reload the file, show counters and rules — see [Proxy for model requests](#proxy-for-model-requests) |
@@ -108,8 +108,8 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 | `↑`/`↓` | Scroll the log when the input box is empty (some terminals report the wheel as these) |
 | `Ctrl+↑`/`Ctrl+↓` | Scroll the log one line (works while writing a multi-line case) |
 | `Ctrl+P`/`Ctrl+N` | Input history previous / next |
-| `Home`/`End` | Jump to log start / back to end (resume following) |
-| Mouse wheel | Scroll the log (3 lines per notch; scrolling up pauses following — click the last-row hint or `End` to return) |
+| `Ctrl+Home`/`Ctrl+End` | Jump to log start / back to end (resume following) |
+| Mouse wheel | Scroll the log (3 lines per notch; scrolling up pauses following — click the last-row hint or `Ctrl+End` to return) |
 
 > `/run` loads scenarios are **not** written back (they're already in the file); only your appended scenarios are. Appended scenarios with no target are lost on exit, and the count is reported honestly at exit.
 
@@ -139,7 +139,7 @@ pageqa --out report.txt ...     # write the report to a file
 
 A crash or a timeout is recorded as a failure and does not drag anyone else down; only environment-level failures (unreachable model endpoint, unusable bsk/browser) mark the remaining scenarios as "cancelled". Sessions and browser windows are owned by the parent, so a hard-killed child leaves no orphan windows.
 
-**Running scenarios in parallel**: by default they run **one at a time** (that order is what protects implicit sequences such as create → edit → delete). Once you know they are independent, `--concurrency <n>` (or `PAGEQA_CONCURRENCY` / the `concurrency` config field) runs up to n at once: each scenario still gets its own child process, its own session and its own **browser window** — so n is literally how many windows are open at the same time, hence the cap of 8 and an error (not a silent clamp) when exceeded. Result order is unchanged: the report and the replay script always follow the case's source order, no matter who finishes first. While parallel, every log line carries a `[scenario name]` prefix, otherwise the interleaved output is unreadable.
+**Running scenarios in parallel**: by default they run **one at a time** (that order is what protects implicit sequences such as create → edit → delete). Once you know they are independent, `--concurrency <n>` (or `PAGEQA_CONCURRENCY` / the `concurrency` config field) runs up to n at once: each scenario still gets its own child process, its own session and its own **browser window** — so n is literally how many windows are open at the same time, hence the cap of 8 and an error (not a silent clamp) when exceeded. Result order is unchanged: the report and the replay script always follow the case's source order, no matter who finishes first. While parallel, every log line carries a `[#<index> <scenario name>]` prefix, otherwise the interleaved output is unreadable.
 
 **Interactive mode honours concurrency too**: `--concurrency` at startup is just the starting point for the session; inside, `/setting` > concurrency changes it at any time (levels 1/2/3/4/6/8). The change **takes effect immediately** — scenarios dispatched from then on use the new value, ones already running are left alone — and is written back to `~/.pageqa/config.json`. While parallel, the kanban band's "running" column holds several cards (each with its own live elapsed time), the status line swaps "k/n" for "N running · oldest … for …", and `Esc` aborts **all** running scenarios (once more than one can run, "the current scenario" is no longer a single thing). `--replay` never uses the scenario scheduler, so concurrency is inert there.
 
@@ -164,7 +164,7 @@ Notes: the script stores **semantic locators** (role + accessible name + same-na
 
 A case is natural-language text split into steps by non-empty lines (`#`/`>` comment lines don't count). Use `## title` to separate independent scenarios (each gets its own bsk session and browser window).
 
-**Assertion lines must line up with assertion tool calls**: the report checks "how many lines contain 断言/assert" against "how many assertion results were actually produced" — they must match. Each `assert_text` yields one assertion, and so do `download`, `assert_no_console_error` and `assert_network` (don't add a separate "assert downloaded" line for `download`). Comment lines never inflate the count.
+**Assertion lines must line up with assertion tool calls**: the report checks "how many lines contain 断言" (the literal Chinese word — an English `assert` does not count) against "how many assertion results were actually produced" — they must match. Each `assert_text` yields one assertion, and so do `download`, `assert_no_console_error` and `assert_network` (don't add a separate "assert downloaded" line for `download`). Comment lines never inflate the count.
 
 **Runtime placeholders** (expanded once; because each scenario runs in its own child process the moment is taken **per scenario**, not once per run — see ADR-0013):
 
@@ -193,8 +193,8 @@ Step and assertion counts come from the very code the runtime uses (`numberSteps
 
 | Severity | Rules |
 | --- | --- |
-| `error` (exit code 1) | text before the first `## ` (dropped), empty scenario, duplicate scenario title, `@e3` snapshot ref, `打开`/`open` without http/https, unknown placeholder (`${PATH}` is kept verbatim), upload without an absolute path |
-| `warn` (non-zero under `--strict`) | fixed `wait N seconds`, a dropdown written as "fill in", a separate "assert the filename…" line after a download, prose mistaken for a step, a scenario with no assertion, **an assertion with no literal text to match** ("the table has rows", "the dialog is open") |
+| `error` (exit code 1) | empty scenario, duplicate scenario title, `@e3` snapshot ref, a navigation verb (`打开`/`访问`/`前往`/`跳转到`/`进入`) without http/https, unknown placeholder (`${PATH}` is kept verbatim), upload without an absolute path |
+| `warn` (non-zero under `--strict`) | text before the first `## ` (dropped), fixed `wait N seconds`, a dropdown written as "fill in", a separate "assert the filename…" line after a download, prose mistaken for a step, a scenario with no assertion, **an assertion with no literal text to match** ("the table has rows", "the dialog is open") |
 
 Exit code: `0` clean; `1` has an `error` (or a `warn` under `--strict`).
 
@@ -206,7 +206,7 @@ Exit code: `0` clean; `1` has an `error` (or a `warn` under `--strict`).
 
 ## Config & optional enhancements
 
-- **Config file**: `~/.pageqa/config.json` with fields `baseUrl`/`apiKey`/`model`/`locale`/`htmlReport`/`replayScript`/`downloadDir`/`downloadCleanup`/`autoScreenshot`/`scenarioTimeoutMs`/`concurrency`. Precedence: `PAGEQA_*` env vars > config file > built-in defaults.
+- **Config file**: `~/.pageqa/config.json` with fields `baseUrl`/`apiKey`/`model`/`modelProvider`/`locale`/`htmlReport`/`replayScript`/`downloadDir`/`downloadCleanup`/`autoScreenshot`/`scenarioTimeoutMs`/`concurrency`. Precedence: `PAGEQA_*` env vars > config file > built-in defaults — but only the endpoint / model / locale / timeout / concurrency fields have env-var overrides; the side-output switches (`htmlReport`, `replayScript`, `downloadDir`, `downloadCleanup`, `autoScreenshot`) are read from the file only.
 - **Parallelism (optional)**: `concurrency` or `PAGEQA_CONCURRENCY` (**default 1** = one at a time, capped at 8). Parallelism is a claim that the scenarios are independent, hence off by default; the value is literally how many browser windows are open at once.
 - **Per-scenario execution limit (optional)**: `scenarioTimeoutMs` or `PAGEQA_SCENARIO_TIMEOUT` (milliseconds, **unlimited by default**). In suite mode a scenario that exceeds it has its child process killed, is recorded as failed (`reason: "timeout"` in the report), and **the following scenarios still run**. Off by default: ten-plus-minute flows are normal here, so an assumed default would just be a new source of failures — set it explicitly when CI needs a gate.
 - **Jev semantic assertion (optional)**: add a `jev` field to config (or `PAGEQA_JEV_*` env vars) for a semantic re-check when a literal match misses, correcting false FAILs from synonyms/near-synonyms/formatting; on API failure it degrades back to string match automatically.
@@ -241,12 +241,14 @@ Alongside the custom endpoint and pi-ai's built-in providers, `/model` ships wit
 | `fastrouter` | `https://api.fastrouter.ai/api/v1` | `FASTROUTER_API_KEY` | public catalog; `:free` routes have per-minute / per-day caps |
 | `orcarouter` | `https://api.orcarouter.ai/v1` | `ORCAROUTER_API_KEY` | key required; only `-free` routes are listed |
 | `xkiro` | `https://api.xkiro.com/v1` | `XKIRO_API_KEY` | key required; only `:free` routes are listed |
+| `kilo` | `https://api.kilo.ai/api/gateway` | `KILO_API_KEY` | key required, or sign in with the device-code flow (`/login kilo`); the only gateway whose `/models` carries an authoritative per-model `isFree` flag, so its free list does not rely on naming patterns |
+| `opencode-free` | `https://opencode.ai/zen/v1` | *(none — fixed anonymous bearer `public`)* | OpenCode Zen's anonymous free lane; always listed and needs no credential, but the request must carry the tool fingerprint described below |
 
 - **No Pi CLI needed**: pi-free itself is a Pi extension (it depends on `@earendil-works/pi-coding-agent`), so pageqa only borrows the catalog data it curated.
 - **Catalog: remote first, snapshot as fallback**: opening `/model` fetches each gateway's public `/v1/models` concurrently and keeps only the free entries; when that fails the built-in snapshot (pi-free's 2026-08-26 audit) is used, so there is always something to pick even offline. A failed refresh is silent — it just falls back.
-- **Credentials**: set the env var or use `/login <provider>`; both land in `~/.pageqa/auth.json`. `cline` / `llm7` / `fastrouter` work without a key, the other two only appear once you configure one.
+- **Credentials**: set the env var or use `/login <provider>`; both land in `~/.pageqa/auth.json`. `cline` / `llm7` / `fastrouter` / `opencode-free` work without a key and are listed out of the box; `kilo` / `orcarouter` / `xkiro` only appear once you configure one (kilo also accepts `/login kilo`).
 - **No guarantees**: rate limits, model retirements and catalog renames are entirely upstream's business. That is what the pre-flight probe (the `ping` before a run starts) is for — an unreachable model aborts with a readable reason instead of producing a pile of bogus scenario failures.
-- **`opencode-free` from pi-free is not ported**: OpenCode Zen's free tier fingerprints the request's tool list (it must carry `bash`/`edit`/`glob`/`grep`/`read`). pageqa's tool set is browser actions, and stuffing in five dead tools just to satisfy the fingerprint would pollute every turn. Use pi-ai's built-in `opencode` / `opencode-go` (with `OPENCODE_API_KEY`) for Zen instead.
+- **`opencode-free` is ported, behind a fingerprint gate**: OpenCode Zen's free tier fingerprints the request's tool list — `tools[]` must carry `bash`/`edit`/`glob`/`grep`/`read`, otherwise 403 `FreeTierError`. pageqa's tool set is browser actions and has none of the five, so **while that gateway is the selected model** it appends five placeholder tools: they exist only to pass the gate and answer "not implemented in pageqa, use the browser tools" if the model ever calls one. No other provider pays for this (the stubs are appended per run, not globally), and the accepted cost is a few hundred tokens per turn on that one lane.
 
 ---
 
@@ -310,7 +312,9 @@ Rules are matched top-down, first match wins; anything unmatched falls back to `
 | `--replay <file>` | Replay an existing script with zero models |
 | `--semantic` | At replay, assertions use Jev semantic judgment |
 | `--fail-fast` | At replay, stop a scenario on first failure |
-| `--init-config` | Create/reset the config file |
+| `--settle-waits` | At replay, run `wait` steps as "wait until the page settles, capped at the recorded milliseconds" instead of sleeping the full time. Faster, but a wait that existed for something outside the page (a server-side export, a background queue) can be released early |
+| `--locate-timeout <ms>` | At replay, how long a step waits for the page to become ready when the locator's whole region is missing (default 8000; `0` = judge "element not found" at once) |
+| `--init-config` | Create the config file if it is missing (it does not reset an existing one) |
 | `--out <file>` | Write the report to a file |
 | `--debug` | Debug logs (bsk commands & timings, snapshot slimming, Jev requests…) |
 | `sessions` (subcommand) | `pageqa sessions`: start the local archive server to review the parameters handed to the model and the full interaction (`--port <n>` / `--dir <path>` / `--no-open`) |
@@ -339,102 +343,44 @@ Archives are written automatically by every run, with no extra switch; in suite 
 
 ## Architecture (layered / module view)
 
-The diagram below is the **layered/module view** — which layer owns what and how artifacts flow between modules; the runtime sequence is in "How it works" right after.
+The diagram below is the **layered view** — one box per layer (the module list is inside each box), and only the main flow between layers. The runtime sequence is in "How it works" right after; the per-file breakdown lives in `src/`.
 
 ```mermaid
 flowchart TD
-  subgraph ENTRY["CLI entry · src/index.ts"]
-    CLI["parseArgs · main · detectInteractive<br/>batch / interactive --tui / replay --replay / --help·--version·--init-config"]
-  end
-
-  subgraph ORCH["Orchestration · src/agent"]
-    RUN["runAgent / runSuite: initialize → run (≤5 continuations) → finalize"]
-  end
-
-  subgraph LLMC["LLM & config · src/config + src/llm"]
-    MODELS["models.ts model catalog · probe · resolve"]
-    LLMP["llm.ts OpenAI-compatible provider"]
-    FREE["free-providers.ts free gateway catalog (pi-free)"]
-    AUTH["auth.ts credentials (~/.pageqa/auth.json)"]
-    CONFIG["config.ts config (~/.pageqa/config.json)"]
-    PROXY["proxy.ts proxy routing (~/.pageqa/proxy.json)"]
-    JEV["jev.ts semantic assertion (optional)"]
-  end
-
-  subgraph BSK["bsk tool layer · src/bsk"]
-    TOOLS["tools.ts 21 tools<br/>navigate·snapshot·click·fill·select_option·pick_date·upload·download·hover·scroll·press·wheel·focus·blur·get_html·screenshot·wait·wait_for·assert_text·assert_no_console_error·assert_network<br/>async · abortable · globally serial"]
-    DIAG["navigate-diagnosis.ts turn navigation failures into plain language"]
-    SNAP["snapshot.ts snapshot slimming"]
-  end
-
-  BROWSER["Real browser (connected by the bsk daemon)"]
-
-  subgraph REC["Recording → replay (zero model) · src/agent + src/shared"]
-    RECORDER["record.ts records successful operations"]
-    LOCATOR["locator.ts semantic locators"]
-    ENGINE["replay.ts replay script & engine"]
-  end
-
-  subgraph REP["Report & side outputs · src/report + src/agent"]
-    REPORT["report.ts text / JSON and suite summary"]
-    HTML["report-html.ts self-contained HTML"]
-    SIDE["side-outputs.ts artifact manifest (stderr)"]
-    VARS["vars.ts placeholder expansion / restore"]
+  subgraph ENTRY["Entry & orchestration · src/index.ts + src/agent"]
+    CLI["index.ts<br/>parseArgs · main<br/>batch / interactive --tui / replay / lint / sessions"]
+    RUN["agent.ts · suite.ts · record.ts · replay.ts · lint.ts · vars.ts · timing.ts<br/>runAgent / runSuite (one child process per scenario)<br/>record operations → zero-model replay · case-format lint"]
   end
 
   subgraph TUI["Interactive mode · src/tui"]
-    APP["app.ts full-screen TUI (kanban band + log viewport + bottom input)"]
-    QUEUE["queue.ts run queue (serial)"]
-    WB["writeback.ts write appended scenarios back to the case file"]
-    CS["case-source.ts /run resolution"]
-    BATCH["batches.ts session batch snapshots"]
+    APP["app.ts · queue.ts · writeback.ts · case-source.ts · batches.ts<br/>kanban band + log viewport + bottom input<br/>serial by default, concurrency 1/2/3/4/6/8"]
   end
 
-  XCUT["Cross-cutting · src/shared: i18n.ts localization · log.ts logging (sink) · version.ts · locator.ts · snapshot.ts"]
+  subgraph BSK["bsk tool layer · src/bsk"]
+    TOOLS["tools.ts — 21 tools<br/>async · abortable · globally serial<br/>picker.ts · condition.ts · settle.ts<br/>ipc.ts · navigate-diagnosis.ts"]
+  end
 
-  CLI -->|"batch"| RUN
-  CLI -->|"--replay"| ENGINE
+  subgraph LLMC["LLM & config · src/config + src/llm"]
+    MODELS["models.ts · llm.ts · free-providers.ts<br/>auth.ts · config.ts · proxy.ts · jev.ts"]
+  end
+
+  subgraph SIDE["Report & archives · src/report + src/session"]
+    REPORT["report.ts · report-html.ts · side-outputs.ts<br/>downloads.ts · screenshots.ts"]
+    ARCHIVE["archive.ts (one SQLite container)<br/>server.ts (pageqa sessions)"]
+  end
+
+  XCUT["Cross-cutting · src/shared: i18n.ts localization · log.ts logging · locator.ts semantic locators · snapshot.ts snapshot slimming · version.ts"]
+  BROWSER["Real browser (connected by the bsk daemon)"]
+
+  CLI -->|"batch / --replay"| RUN
   CLI -->|"--tui / auto-detected TTY"| APP
-  CLI -.->|"locale"| XCUT
-
-  RUN -->|"init: probe → bsk ready → session → build Agent"| MODELS
-  RUN --> JEV
+  CLI -->|"sessions"| ARCHIVE
+  APP -->|"runAgent"| RUN
+  RUN --> MODELS
   RUN --> TOOLS
-  RUN -->|"finalize"| REPORT
-  RUN -.->|"onExec reporting"| RECORDER
-  RUN -->|"--emit-script"| ENGINE
-
-  MODELS --> LLMP
-   MODELS --> FREE
-  MODELS --> AUTH
-  MODELS --> CONFIG
-  MODELS -.->|"per-request fetch"| PROXY
-  JEV -.-> PROXY
-
-  TOOLS --> DIAG
-  TOOLS --> SNAP
-  TOOLS -->|"bsk commands"| BROWSER
-
-  RECORDER --> LOCATOR
-  LOCATOR --> ENGINE
-  ENGINE -->|"reuses the bsk op layer (createBskOps)"| TOOLS
-  ENGINE -->|"assertions / conclusion"| REPORT
-
-  REPORT --> HTML
-  HTML --> SIDE
-  ENGINE -->|"script paths"| SIDE
-  VARS -.-> RECORDER
-  VARS -.-> ENGINE
-
-  APP --> QUEUE
-  APP --> WB
-  APP --> CS
-  APP --> BATCH
-  QUEUE -->|"runAgent"| RUN
-  BATCH -->|"exit summary"| REPORT
-  XCUT -.->|"setSink merges logs"| APP
-  XCUT -.-> RUN
-  XCUT -.-> REPORT
+  RUN --> REPORT
+  RUN --> ARCHIVE
+  TOOLS --> BROWSER
 ```
 
 ### How it works
@@ -452,17 +398,17 @@ Replay script -> pageqa --replay -> reuses the same bsk op layer -> real browser
 
 Interactive mode (pageqa --tui <case file>)
    ├─> TUI: kanban band (5 status columns) + scrolling log viewport (progress logs merged via setSink) + fixed bottom input box
-   ├─> run queue: serial execution; submitted new scenarios are written back to the target then enqueued
+   ├─> run queue: serial by default (concurrency 1/2/3/4/6/8 via /setting); submitted new scenarios are written back to the target then enqueued
    └─> exit -> restore main screen -> summary report (stdout/--out) + exit code (cancelled not counted)
 ```
 
-Available tools (`src/bsk/tools.ts`): `navigate` opens a page; `snapshot` reads the page's aria tree and visible text (with slimming and reuse; the `refs` mode keeps only the interactive-element list); `click`/`fill`/`hover` element interactions (pass `showPage: true` to get a post-action element list appended, saving the follow-up snapshot); `select_option` picks a dropdown/cascader option in one call (open -> wait for the overlay -> match by visible text; it **appends** a post-action interactive-element list by default, since such an action always changes the page and invalidates old `@eN` refs — pass `showPage: false` to opt out); `pick_date` picks a date in one call (open the panel -> navigate to the target month -> click the day; accepts `2026-09-29` / `today` / `+3` / `-7`; for **date ranges** pass the end date as `endDate` and it walks "pick start -> pick end -> confirm", failing loudly when the panel type and the arguments disagree instead of leaving a half-finished range); `upload` uploads a local file; `download` captures a browser download (itself an assertion); `scroll` scrolls to an element; `press` sends a **real** keyboard key (Enter to submit in an input, `Escape` to close a dialog, `Tab` through focus order; pass `target` to focus an element first, otherwise the key goes to the current focus, i.e. wherever the previous `fill` left it); `wheel` dispatches a **real wheel event** (infinite-scroll bottom callbacks and horizontal scrollers only respond to this — `scroll` is "scroll the element into view" and fires no scroll event; positive `deltaY` scrolls down, roughly 600–800 per screen); `focus`/`blur` focus and blur an element (form validation usually hangs off blur, so "fill → blur → assert the error message" is a standard chain, and blur is cleaner than clicking elsewhere); `get_html` dumps the raw DOM HTML (covers what the snapshot cannot see — `class`/`data-*`/`value` **attributes**; capped at 16 KiB inline by default, pass `out` to write a larger dump to a file); `screenshot` captures evidence (viewport by default, `fullPage: true` for the whole page, `target` with an `@eN` ref to crop to one element; images are **inlined into the HTML report** and also kept under `~/.pageqa/screenshots` — it is a read-only action that **produces no assertion**); `wait`/`wait_for` wait; `assert_text` asserts the page contains the specified text; `assert_no_console_error` asserts the page raised no JavaScript errors (uncaught exceptions plus `console.error` / browser error logs — **these never surface as page text**, so `assert_text` can never see them; `ignore` whitelists known noise and `warnings: true` counts warnings too); `assert_network` asserts a request happened and its status matches (`url` is matched as a substring, `status` takes `200` or `2xx`, and omitting `status` means "the request completed successfully").
+Available tools (`src/bsk/tools.ts`): `navigate` opens a page; `snapshot` reads the page's aria tree and visible text (with slimming and reuse; the `refs` mode keeps only the interactive-element list); `click`/`fill`/`hover` element interactions (pass `showPage: true` to get a post-action element list appended, saving the follow-up snapshot); `select_option` picks a dropdown/cascader option in one call (open -> wait for the overlay -> match by visible text; it **appends** a post-action interactive-element list by default, since such an action always changes the page and invalidates old `@eN` refs — pass `showPage: false` to opt out); `pick_date` picks a date in one call (open the panel -> navigate to the target month -> click the day; accepts `2026-09-29` / `today` / `+3` / `-7`; for **date ranges** pass the end date as `endDate` and it walks "pick start -> pick end -> confirm", failing loudly when the panel type and the arguments disagree instead of leaving a half-finished range); `upload` uploads a local file; `download` captures a browser download (itself an assertion); `scroll` scrolls to an element; `press` sends a **real** keyboard key (Enter to submit in an input, `Escape` to close a dialog, `Tab` through focus order; pass `target` to focus an element first, otherwise the key goes to the current focus, i.e. wherever the previous `fill` left it); `wheel` dispatches a **real wheel event** (infinite-scroll bottom callbacks and horizontal scrollers only respond to this — `scroll` is "scroll the element into view" and fires no scroll event; positive `deltaY` scrolls down, roughly 600–800 per screen); `focus`/`blur` focus and blur an element (form validation usually hangs off blur, so "fill → blur → assert the error message" is a standard chain, and blur is cleaner than clicking elsewhere); `get_html` dumps the raw DOM HTML (covers what the snapshot cannot see — `class`/`data-*`/`value` **attributes**; capped at 16 KiB inline by default, pass `out` to write a larger dump to a file); `screenshot` captures evidence (viewport by default, `fullPage: true` for the whole page, `target` with an `@eN` ref to crop to one element; images are **inlined into the HTML report** and also kept under `~/.pageqa/screenshots` — it is a read-only action that **produces no assertion**); `wait`/`wait_for` wait; `assert_text` asserts the page contains the specified text (pass `absent: true` to assert it **does not** contain it — negation belongs in that flag, not in the expectation string); `assert_no_console_error` asserts the page raised no JavaScript errors (uncaught exceptions plus `console.error` / browser error logs — **these never surface as page text**, so `assert_text` can never see them; `ignore` whitelists known noise and `warnings: true` counts warnings too); `assert_network` asserts a request happened and its status matches (`url` is matched as a substring, `status` takes `200` or `2xx`, and omitting `status` means "the request completed successfully").
 
 **Stale refs self-heal**: any action using an expired `@eN` is refused — that is what keeps it from silently clicking whatever element now holds that number (see the header of `locator.ts`) — and the error carries the **current interactive-element list** right in it, so the model retries with a fresh ref instead of spending another round trip on a snapshot (`select_option` / `pick_date` also append that list on **success**, so "select one widget, then the next" no longer costs an extra turn).
 
 Picker widgets (Element Plus and friends) use a **mixed strategy**: `.el-*` class contracts first (steadier than the aria tree), then generic ARIA selectors such as `[role=listbox]`; when neither hits, the tool fails honestly and lists the currently selectable options so the model can fall back to the generic "look at the snapshot and click" path — it **never guesses** at an element. Why a dedicated layer: on the generic path "open -> snapshot -> click the option" costs three LLM round trips, and stepping through calendar months costs one snapshot per click; collapsing that into a single call takes picking a date from over ten seconds down to a few.
 
-Long-flow protection (auto-retry): after one conversation round, if the agent's self-reported progress isn't full (`steps done: k/n` with `k < n`), or the case had assertions but the report only parsed some, pageqa automatically appends a "continue remaining steps" prompt and keeps going, at most 5 rounds.
+Long-flow protection (auto-retry): after one conversation round, if the agent's self-reported progress isn't full (`steps done: k/n` with `k < n`), or the case had assertions but the report only parsed some, pageqa automatically appends a "continue remaining steps" prompt and keeps going, at most 5 rounds; if a continuation round moves neither progress nor the assertion count, it stops there instead of burning the remaining rounds.
 
 See `src/` for the full directory breakdown.
 

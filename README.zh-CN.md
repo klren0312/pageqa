@@ -46,7 +46,7 @@ pageqa examples/smoke.md     # 打开一个用例文件并交互式运行
 pageqa --tui examples/smoke.md   # 显式强制进入（非 TTY 下会直接报错）
 ```
 
-进入条件（自动）：终端是 TTY 且未给 `--json`，且满足「给了用例文件」或「什么都没给」。**内联文本不会进入 TUI**（走批处理）；`--json` / `--replay` / `--session` 会阻止进入。想关掉交互：`pageqa --no-tui` 或 `PAGEQA_NO_TUI=1`。
+进入条件（自动）：终端是 TTY 且未给 `--json`，且满足「给了用例文件」或「什么都没给」。**内联文本不会进入 TUI**（走批处理）；`--json` / `--replay` / `--session` / `--only` 会阻止进入（`--tui` 与 `--only` 同给则直接报错）。想关掉交互：`pageqa --no-tui` 或 `PAGEQA_NO_TUI=1`。
 
 ### 界面布局
 
@@ -65,15 +65,15 @@ pageqa --tui examples/smoke.md   # 显式强制进入（非 TTY 下会直接报�
 └──────────────────────────────────────────────────────────┘
 ```
 
-- **看板带**：把当前全部场景按状态分成 5 列（等待中 / 进行中 / 成功 / 失败 / 已取消），进行中的场景尾部带实时耗时；列内只放得下的最近若干张，超出显示 `+N 更多`。纯展示、点击不做操作；终端列宽低于 90 时不渲染，整片留给日志视口。
-- **状态栏**常驻显示：当前模型、待办数、已写回数、**落点**（追加场景写回的用例文件；无落点时提示「无」，此时追加场景只存在于本次会话、关掉就没）。
-- **Token 行**（输入框下方）与报告末行同一句话，含正在跑的场景的实时值，**外加缓存命中率**：
+- **看板带**：把当前全部场景按状态分成 5 列（等待中 / 进行中 / 成功 / 失败 / 已取消），进行中的每张卡尾部带自己的实时耗时；列内按**入队顺序**取放得下的前若干张，超出显示 `+N 更多`。纯展示、点击不做操作；终端列宽低于 90 时不渲染，整片留给日志视口。
+- **状态栏**常驻显示：当前模型、待办数与**落点**（追加场景写回的用例文件；无落点时提示「无」，此时追加场景只存在于本次会话、关掉就没）；**已写回数**只在真的写过之后才出现。
+- **Token 行**（输入框下方）与报告末行同一句话，含正在跑的场景的实时值，**外加缓存命中率与当前上下文长度**：
 
   ```text
-  Token: ⬇ 1234 / ⬆ 567 / 读 8901 / 写 42 / 总 10744（LLM 调用 3 次）  ·  命中 92%
+  Token: ⬇ 1.2k / ⬆ 567 / 读 8.9k / 写 42 / 总 10.7k（LLM 调用 3 次）  ·  命中 92%  ·  上下文 24.1k/128k（19%）
   ```
 
-  省字全靠**位置**当图例：`⬇` = 输入（喂进模型的）、`⬆` = 输出、`读`/`写` = 缓存读/缓存写、`总` = 合计。末尾那段 `命中 92%` = 缓存读 /（输入 + 缓存读），也就是这次输入里几成是命中缓存的。跑着看到它稳定在高位，说明 prompt 前缀没被改动、缓存一直在命中。分母为 0（回放、端点没返回用量、还没开始调用）时不显示这一段，而不是写个 0%。
+  省字全靠**位置**当图例：`⬇` = 输入（喂进模型的）、`⬆` = 输出、`读`/`写` = 缓存读/缓存写、`总` = 合计。末尾那段 `命中 92%` = 缓存读 /（输入 + 缓存读），也就是这次输入里几成是命中缓存的。跑着看到它稳定在高位，说明 prompt 前缀没被改动、缓存一直在命中。分母为 0（回放、端点没返回用量、还没开始调用）时不显示这一段，而不是写个 0%。`上下文 24.1k/128k（19%）` 是最近一轮**实际发出去**的 token 数，对照模型窗口（窗口大小未知时只显示 `上下文 24.1k`；没有场景在跑时不显示，免得留着上一条场景的残影）。这行每轮刷新，所以用 `1.2k` / `24.1k` 的紧凑写法；报告末行仍是精确值。
 
 ### 提交场景
 
@@ -88,7 +88,7 @@ pageqa --tui examples/smoke.md   # 显式强制进入（非 TTY 下会直接报�
 | `/status` | 查看运行队列（每场景一行带状态与来源） |
 | `/cancel <n>` | 取消队列里还没开始的第 n 个场景 |
 | `/new` | 开新会话：清空视口与队列、token 重新计，但**上一批归档**（仍进退出报告与回放脚本）。队列还有在跑/待办时拒绝 |
-| `/model` | 切换本会话模型（`Enter` 本次生效，`Ctrl+S` 同时存为启动默认）。列表自带一批**免费网关**，带「免费」标记——见[免费模型网关](#免费模型网关) |
+| `/model` | 切换本会话模型——`Enter` 即切换**并**存为启动默认。列表自带一批**免费网关**，带「免费」标记——见[免费模型网关](#免费模型网关) |
 | `/login` · `/logout` | 登录 / 移除某 provider 的本地凭据（写入 `~/.pageqa/auth.json`） |
 | `/setting` | 改持久化偏好：测试报告(HTML) / 回放脚本 开关、语言、**并发量**（1/2/3/4/6/8） |
 | `/proxy` | 模型请求的代理路由：开关（写回 `~/.pageqa/proxy.json`）、仅本次会话直连、重新加载配置、查看统计与规则——见[模型请求的代理](#模型请求的代理) |
@@ -106,8 +106,8 @@ pageqa --tui examples/smoke.md   # 显式强制进入（非 TTY 下会直接报�
 | `↑`/`↓` | 输入框为空时滚日志（部分终端把滚轮翻译成这两个键） |
 | `Ctrl+↑`/`Ctrl+↓` | 日志逐行滚（写多行用例时也生效） |
 | `Ctrl+P`/`Ctrl+N` | 输入历史上/下 |
-| `Home`/`End` | 跳到日志开头 / 回到底部（恢复跟随） |
-| 鼠标滚轮 | 日志滚动（每次 3 行；上滚暂停跟随，点末行提示或 `End` 回底部） |
+| `Ctrl+Home`/`Ctrl+End` | 跳到日志开头 / 回到底部（恢复跟随） |
+| 鼠标滚轮 | 日志滚动（每次 3 行；上滚暂停跟随，点末行提示或 `Ctrl+End` 回底部） |
 
 > `/run` 加载的场景**不写回**（本就在文件里），仅切换落点；只有你追加的场景才写回。无落点的追加场景关掉即丢，退出时会如实说明数量。
 
@@ -135,7 +135,7 @@ pageqa --out report.txt ...     # 报告另存文件
 
 **场景隔离**（见 `docs/adr/0013-scenario-process-isolation.md`）：套件模式下**每个场景在独立的子进程里执行**，父进程 fork 并汇总。因此某个场景把浏览器或 bsk daemon 搞崩（原生崩溃、被 OOM 杀掉）时，只会记这一个场景失败（报告里带 `reason: "crash"`），后面的场景照跑；失败后想单独重跑它，用 `--only <序号|标题>` 即可——`--only` 与父进程 fork 子进程走的是**同一条代码路径**。
 
-**并行跑场景**：默认**逐个**跑（顺序是「场景之间可能有隐含顺序依赖」的保护，比如「创建 → 编辑 → 删除」）。确认这些场景互不依赖时，用 `--concurrency <n>`（或 `PAGEQA_CONCURRENCY` / 配置项 `concurrency`）同时跑最多 n 个：每个场景仍然各自一个子进程、一个 session、一个**浏览器窗口**（n 就是同时开着的窗口数，所以上限 8，超过直接报错而不是静默截断）。结果顺序不变——报告与回放脚本一律按用例原文排，谁先跑完不影响。并发时每行日志会带 `[场景名]` 前缀，否则几路输出混在一起没法看。
+**并行跑场景**：默认**逐个**跑（顺序是「场景之间可能有隐含顺序依赖」的保护，比如「创建 → 编辑 → 删除」）。确认这些场景互不依赖时，用 `--concurrency <n>`（或 `PAGEQA_CONCURRENCY` / 配置项 `concurrency`）同时跑最多 n 个：每个场景仍然各自一个子进程、一个 session、一个**浏览器窗口**（n 就是同时开着的窗口数，所以上限 8，超过直接报错而不是静默截断）。结果顺序不变——报告与回放脚本一律按用例原文排，谁先跑完不影响。并发时每行日志会带 `[#序号 场景名]` 前缀，否则几路输出混在一起没法看。
 
 **交互模式同样认并发量**：启动时的 `--concurrency` 只是本次会话的起点，进去之后用 `/setting` → 「并发量」随时改（档位 1/2/3/4/6/8），**改完立刻生效**——之后派发的场景就按新值来，已经在跑的不受打扰——并写回 `~/.pageqa/config.json`。并发时看板带的「进行中」列会同时挂多张卡（各带自己的实时耗时），状态栏那句「第 k/n 个」换成「运行中 N 个 · 最早…已跑 …」，`Esc` 则一次中止**全部**在跑的场景（并发之后「当前场景」不再唯一）。`--replay` 不走场景调度器，并发对回放没有意义。
 
@@ -191,8 +191,8 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 
 | 级别 | 规则 |
 | --- | --- |
-| `error`（退出码 1） | `## ` 之前的正文被丢弃、空场景、重名场景、`@e3` 快照编号、`打开` 后面缺 http/https、未知占位符（`${PATH}` 会被原样保留）、上传没给绝对路径 |
-| `warn`（`--strict` 时也非零） | `等待 N 秒` 这类固定等待、下拉框写成「填写/填入」、下载后又单写一行「断言文件名…」、说明性文字被当成步骤、整个场景没有断言、**断言里没有可字面匹配的文本**（如「存在数据行」「弹框已打开」） |
+| `error`（退出码 1） | 空场景、重名场景、`@e3` 快照编号、导航动词（`打开`/`访问`/`前往`/`跳转到`/`进入`）后面缺 http/https、未知占位符（`${PATH}` 会被原样保留）、上传没给绝对路径 |
+| `warn`（`--strict` 时也非零） | `## ` 之前的正文被丢弃、`等待 N 秒` 这类固定等待、下拉框写成「填写/填入」、下载后又单写一行「断言文件名…」、说明性文字被当成步骤、整个场景没有断言、**断言里没有可字面匹配的文本**（如「存在数据行」「弹框已打开」） |
 
 退出码：`0` 没问题；`1` 有 `error`（`--strict` 时 `warn` 也算）。
 
@@ -204,7 +204,7 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 
 ## 配置与可选增强
 
-- **配置文件**：`~/.pageqa/config.json`，字段 `baseUrl`/`apiKey`/`model`/`locale`/`htmlReport`/`replayScript`/`downloadDir`/`downloadCleanup`/`autoScreenshot`/`scenarioTimeoutMs`/`concurrency`。优先级：环境变量 `PAGEQA_*` > 配置文件 > 内置默认。
+- **配置文件**：`~/.pageqa/config.json`，字段 `baseUrl`/`apiKey`/`model`/`modelProvider`/`locale`/`htmlReport`/`replayScript`/`downloadDir`/`downloadCleanup`/`autoScreenshot`/`scenarioTimeoutMs`/`concurrency`。优先级：环境变量 `PAGEQA_*` > 配置文件 > 内置默认——但只有端点 / 模型 / 语言 / 超时 / 并发这几组有环境变量覆盖；旁路产物开关（`htmlReport`、`replayScript`、`downloadDir`、`downloadCleanup`、`autoScreenshot`）只读配置文件。
 - **并行度（可选）**：`concurrency` 或 `PAGEQA_CONCURRENCY`（**默认 1** = 逐个跑，上限 8）。并行等于声明「这些场景互不依赖」，所以默认不开；同时开着的浏览器窗口数就等于这个值。
 - **场景级执行上限（可选）**：`scenarioTimeoutMs` 或 `PAGEQA_SCENARIO_TIMEOUT`（毫秒，**默认不限**）。套件模式下单个场景超过上限即终止它的子进程、该场景记失败（报告里带 `reason: "timeout"`）、**继续跑后面的场景**。默认关着：长流程十几分钟是常态，凭空定一个上限就是给自己造新的失败来源；CI 要门禁时显式设。
 - **Jev 语义断言（可选）**：在 config 加 `jev` 字段（或 `PAGEQA_JEV_*` 环境变量），用于字面未命中时的语义复检，纠正同义/近义/格式差异造成的假 FAIL；调用失败自动降级回字符串匹配。
@@ -239,12 +239,14 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 | `fastrouter` | `https://api.fastrouter.ai/api/v1` | `FASTROUTER_API_KEY` | 目录公开；`:free` 路由有每分钟/每天限额 |
 | `orcarouter` | `https://api.orcarouter.ai/v1` | `ORCAROUTER_API_KEY` | 需 key；只列 `-free` 路由 |
 | `xkiro` | `https://api.xkiro.com/v1` | `XKIRO_API_KEY` | 需 key；只列 `:free` 路由 |
+| `kilo` | `https://api.kilo.ai/api/gateway` | `KILO_API_KEY` | 需 key，或用设备码登录（`/login kilo`）；唯一一个 `/models` 带权威 `isFree` 标记的网关，免费清单不靠命名规律猜 |
+| `opencode-free` | `https://opencode.ai/zen/v1` | *（无，固定匿名 bearer `public`）* | OpenCode Zen 的匿名免费车道；恒出现在列表里、无需任何凭据，但请求必须带下面的工具指纹 |
 
 - **不用装 Pi CLI**：pi-free 本身是 Pi 的扩展（依赖 `@earendil-works/pi-coding-agent`），pageqa 只把它整理出来的数据搬了过来。
 - **目录先远端后快照**：打开 `/model` 时并发拉各网关的公开 `/v1/models`，只保留免费条目；拉不到就用内置快照（pi-free 2026-08-26 审计的结果），因此断网也总有模型可选。刷新失败不报错，静默回落。
-- **凭据**：写环境变量或直接 `/login <provider>`，都落 `~/.pageqa/auth.json`。`cline` / `llm7` / `fastrouter` 不配也能用，其余两个必须配 key 才出现。
+- **凭据**：写环境变量或直接 `/login <provider>`，都落 `~/.pageqa/auth.json`。`cline` / `llm7` / `fastrouter` / `opencode-free` 不配也能用、装完就出现在列表里；`kilo` / `orcarouter` / `xkiro` 必须配 key 才出现（kilo 也可用 `/login kilo`）。
 - **不保证**：免费网关的限流、模型下线、目录改名都由上游说了算。探活（开跑前那次 `ping`）就是为此存在的——不通会直接中止并说明原因，不会让场景跑出一堆假失败。
-- **pi-free 里的 `opencode-free` 没有搬**：OpenCode Zen 的免费层会指纹请求里的工具列表（必须含 `bash`/`edit`/`glob`/`grep`/`read`），pageqa 的工具集是浏览器动作，为过这个指纹塞五个死工具会污染每一轮上下文。要用 Zen 就走 pi-ai 内置的 `opencode` / `opencode-go`（配 `OPENCODE_API_KEY`）。
+- **`opencode-free` 也搬了，代价是一道指纹门禁**：OpenCode Zen 的免费层会指纹请求里的工具列表——`tools[]` 必须同时含 `bash`/`edit`/`glob`/`grep`/`read`，否则 403 `FreeTierError`。pageqa 的工具集是浏览器动作，五个一个都没有，所以**只在选中这个网关时**才补五个占位工具：它们只为过门禁而声明，模型真去调时如实回答「pageqa 未实现，请改用浏览器工具」。别的 provider 不受影响（桩是**按运行**追加的，不是全局的），代价是这条车道上每轮多几百 token。
 
 ---
 
@@ -308,7 +310,9 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 | `--replay <file>` | 零模型回放已有脚本 |
 | `--semantic` | 回放时断言用 Jev 语义判断 |
 | `--fail-fast` | 回放时任一失败即停该场景 |
-| `--init-config` | 创建/重置配置文件 |
+| `--settle-waits` | 回放时把 `wait` 步骤执行成「等页面稳定，上限为脚本记下的毫秒数」而不是等满。更快，但「为页面之外的事情留的等待」（服务端导出、后台排队）可能被提前放行 |
+| `--locate-timeout <ms>` | 回放时，定位符**所在区域整体缺失**时等页面就绪的上限（默认 8000；`0` = 不等，立刻判「元素未找到」） |
+| `--init-config` | 配置文件不存在时创建它（不会重置已有的那份） |
 | `--out <file>` | 报告另存文件 |
 | `--debug` | 调试日志（bsk 命令与耗时、快照瘦身、Jev 请求等） |
 | `sessions`（子命令） | `pageqa sessions`：起本地存档查询服务，回看每次运行交给模型的参数与完整交互（`--port <n>` / `--dir <path>` / `--no-open`） |
@@ -337,102 +341,44 @@ pageqa sessions --no-open        # 不自动打开浏览器
 
 ## 架构（分层 / 模块视图）
 
-下图是**分层与模块视图**——各层职责与模块间产物流向；运行时的实际时序见下方「工作原理」。
+下图是**分层视图**——一层一个框（模块清单写在框里），只画层与层之间的主流程；运行时的实际时序见下方「工作原理」，逐文件的结构见 `src/`。
 
 ```mermaid
 flowchart TD
-  subgraph ENTRY["CLI 入口 · src/index.ts"]
-    CLI["parseArgs · main · detectInteractive<br/>batch / 交互 --tui / 回放 --replay / --help·--version·--init-config"]
-  end
-
-  subgraph ORCH["编排 · src/agent"]
-    RUN["runAgent / runSuite：初始化 → 运行（≤5 次续跑）→ 收尾"]
-  end
-
-  subgraph LLMC["LLM 与配置 · src/config + src/llm"]
-    MODELS["models.ts 模型目录 · 探活 · 解析"]
-    LLMP["llm.ts OpenAI 兼容 provider"]
-    FREE["free-providers.ts 免费网关目录（pi-free）"]
-    AUTH["auth.ts 凭据（~/.pageqa/auth.json）"]
-    CONFIG["config.ts 配置（~/.pageqa/config.json）"]
-    PROXY["proxy.ts 代理路由（~/.pageqa/proxy.json）"]
-    JEV["jev.ts 语义断言（可选）"]
-  end
-
-  subgraph BSK["bsk 工具层 · src/bsk"]
-    TOOLS["tools.ts 21 个工具<br/>navigate·snapshot·click·fill·select_option·pick_date·upload·download·hover·scroll·press·wheel·focus·blur·get_html·screenshot·wait·wait_for·assert_text·assert_no_console_error·assert_network<br/>异步 · 可中止 · 全局串行"]
-    DIAG["navigate-diagnosis.ts 把导航失败翻译成大白话"]
-    SNAP["snapshot.ts 快照瘦身"]
-  end
-
-  BROWSER["真实浏览器（由 bsk daemon 连接）"]
-
-  subgraph REC["录制 → 回放（零模型）· src/agent + src/shared"]
-    RECORDER["record.ts 记录成功操作"]
-    LOCATOR["locator.ts 语义定位符"]
-    ENGINE["replay.ts 回放脚本与引擎"]
-  end
-
-  subgraph REP["报告与旁路产物 · src/report + src/agent"]
-    REPORT["report.ts 文本 / JSON 与套件汇总"]
-    HTML["report-html.ts 自包含 HTML"]
-    SIDE["side-outputs.ts 产物清单（stderr）"]
-    VARS["vars.ts 占位符展开 / 还原"]
+  subgraph ENTRY["入口与编排 · src/index.ts + src/agent"]
+    CLI["index.ts<br/>parseArgs · main<br/>batch / 交互 --tui / 回放 / lint / sessions"]
+    RUN["agent.ts · suite.ts · record.ts · replay.ts · lint.ts · vars.ts · timing.ts<br/>runAgent / runSuite（每场景一个子进程）<br/>录制操作 → 零模型回放 · 用例格式校验"]
   end
 
   subgraph TUI["交互模式 · src/tui"]
-    APP["app.ts 全屏 TUI（看板带 + 日志视口 + 底部输入框）"]
-    QUEUE["queue.ts 运行队列（串行）"]
-    WB["writeback.ts 把追加场景写回用例文件"]
-    CS["case-source.ts /run 解析"]
-    BATCH["batches.ts 会话批次快照"]
+    APP["app.ts · queue.ts · writeback.ts · case-source.ts · batches.ts<br/>看板带 + 日志视口 + 底部输入框<br/>默认串行，并发 1/2/3/4/6/8"]
   end
 
-  XCUT["横切 · src/shared：i18n.ts 本地化 · log.ts 日志（sink）· version.ts · locator.ts · snapshot.ts"]
+  subgraph BSK["bsk 工具层 · src/bsk"]
+    TOOLS["tools.ts — 21 个工具<br/>异步 · 可中止 · 全局串行<br/>picker.ts · condition.ts · settle.ts<br/>ipc.ts · navigate-diagnosis.ts"]
+  end
 
-  CLI -->|"batch"| RUN
-  CLI -->|"--replay"| ENGINE
+  subgraph LLMC["LLM 与配置 · src/config + src/llm"]
+    MODELS["models.ts · llm.ts · free-providers.ts<br/>auth.ts · config.ts · proxy.ts · jev.ts"]
+  end
+
+  subgraph SIDE["报告与存档 · src/report + src/session"]
+    REPORT["report.ts · report-html.ts · side-outputs.ts<br/>downloads.ts · screenshots.ts"]
+    ARCHIVE["archive.ts（单个 SQLite 容器）<br/>server.ts（pageqa sessions）"]
+  end
+
+  XCUT["横切 · src/shared：i18n.ts 本地化 · log.ts 日志 · locator.ts 语义定位符 · snapshot.ts 快照瘦身 · version.ts"]
+  BROWSER["真实浏览器（由 bsk daemon 连接）"]
+
+  CLI -->|"batch / --replay"| RUN
   CLI -->|"--tui / 自动识别 TTY"| APP
-  CLI -.->|"locale"| XCUT
-
-  RUN -->|"init：探活 → bsk 就绪 → session → 构建 Agent"| MODELS
-  RUN --> JEV
+  CLI -->|"sessions"| ARCHIVE
+  APP -->|"runAgent"| RUN
+  RUN --> MODELS
   RUN --> TOOLS
-  RUN -->|"收尾"| REPORT
-  RUN -.->|"onExec 上报"| RECORDER
-  RUN -->|"--emit-script"| ENGINE
-
-  MODELS --> LLMP
-   MODELS --> FREE
-  MODELS --> AUTH
-  MODELS --> CONFIG
-  MODELS -.->|"每次请求的 fetch"| PROXY
-  JEV -.-> PROXY
-
-  TOOLS --> DIAG
-  TOOLS --> SNAP
-  TOOLS -->|"bsk 命令"| BROWSER
-
-  RECORDER --> LOCATOR
-  LOCATOR --> ENGINE
-  ENGINE -->|"复用 bsk 操作层（createBskOps）"| TOOLS
-  ENGINE -->|"断言 / 结论"| REPORT
-
-  REPORT --> HTML
-  HTML --> SIDE
-  ENGINE -->|"脚本路径"| SIDE
-  VARS -.-> RECORDER
-  VARS -.-> ENGINE
-
-  APP --> QUEUE
-  APP --> WB
-  APP --> CS
-  APP --> BATCH
-  QUEUE -->|"runAgent"| RUN
-  BATCH -->|"退出汇总"| REPORT
-  XCUT -.->|"setSink 合并日志"| APP
-  XCUT -.-> RUN
-  XCUT -.-> REPORT
+  RUN --> REPORT
+  RUN --> ARCHIVE
+  TOOLS --> BROWSER
 ```
 
 ### 工作原理
@@ -450,11 +396,11 @@ flowchart TD
 
 交互模式（pageqa --tui <用例文件>）
    ├─> TUI：看板带（按状态 5 列）+ 滚动日志视口（经 setSink 合并进度日志）+ 底部固定输入框
-   ├─> 运行队列：串行执行；提交的新场景先写回落点再入队
+   ├─> 运行队列：默认串行（并发量 1/2/3/4/6/8 可在 /setting 改）；提交的新场景先写回落点再入队
    └─> 退出 → 还原主屏 → 汇总报告（stdout/--out）+ 退出码（已取消不计入）
 ```
 
-可用工具（`src/bsk/tools.ts`）：`navigate` 打开页面；`snapshot` 读取页面 aria 树与可见文本（含瘦身与复用，`refs` 档位只留可交互元素清单）；`click`/`fill`/`hover` 元素交互（带 `showPage: true` 时在结果里附一份动作后的元素清单，省掉紧接着的那次 snapshot）；`select_option` 一步完成下拉框/级联选择（点开 → 等浮层 → 按可见文本选中；**默认附**一份动作后的可交互元素清单，因为这类操作必然改动页面、旧 `@eN` 随即失效，传 `showPage: false` 可关）；`pick_date` 一步完成日期选择（点开面板 → 翻到目标年月 → 点中那一天，支持 `2026-09-29` / `today` / `+3` / `-7`；**日期范围**控件把结束日期传进 `endDate`，工具按「选开始 → 选结束 → 确定」走，类型与参数不一致时明确报错而不是留下半截范围）；`upload` 上传本地文件；`download` 捕获浏览器下载（本身即一项断言）；`scroll` 滚动到元素；`press` 真实键盘按键（输入框里回车提交、`Escape` 关掉弹窗、`Tab` 走焦点顺序；传 `target` 可先聚焦某个元素，不传则按在当前焦点上，即上一步 `fill` 的位置）；`wheel` 派发**真实滚轮事件**（无限加载的触底回调、横向滚动容器只认它——`scroll` 是「把元素滚进视口」、不产生滚动事件；`deltaY` 向下为正，一屏约 600–800）；`focus`/`blur` 聚焦与失焦（表单校验大多挂在 blur 上，「填完 → 失焦 → 断言报错提示」是常规链路，比「点一下别处」干净）；`get_html` 取原始 DOM HTML（补快照的盲区——`class`/`data-*`/`value` 这些**属性**快照看不到；默认只回 16KiB，要更大范围就传 `out` 落盘）；`screenshot` 截图留证（默认截视口，`fullPage: true` 截整页，`target` 传 `@eN` 只截那个元素；**图会内联进 HTML 报告**，`~/.pageqa/screenshots` 下也留一份；它是只读动作、**不产生断言**）；`wait`/`wait_for` 等待；`assert_text` 断言页面含指定文本；`assert_no_console_error` 断言页面没有 JavaScript 报错（未捕获异常与 `console.error`/浏览器错误日志——**这类错误不体现在页面文字上**，`assert_text` 永远看不到它；`ignore` 可放行已知噪音，`warnings: true` 把警告也算失败）；`assert_network` 断言某个请求发生了且状态符合期望（`url` 按子串匹配，`status` 写 `200` 或 `2xx`，不给 `status` 表示「请求成功完成」）。
+可用工具（`src/bsk/tools.ts`）：`navigate` 打开页面；`snapshot` 读取页面 aria 树与可见文本（含瘦身与复用，`refs` 档位只留可交互元素清单）；`click`/`fill`/`hover` 元素交互（带 `showPage: true` 时在结果里附一份动作后的元素清单，省掉紧接着的那次 snapshot）；`select_option` 一步完成下拉框/级联选择（点开 → 等浮层 → 按可见文本选中；**默认附**一份动作后的可交互元素清单，因为这类操作必然改动页面、旧 `@eN` 随即失效，传 `showPage: false` 可关）；`pick_date` 一步完成日期选择（点开面板 → 翻到目标年月 → 点中那一天，支持 `2026-09-29` / `today` / `+3` / `-7`；**日期范围**控件把结束日期传进 `endDate`，工具按「选开始 → 选结束 → 确定」走，类型与参数不一致时明确报错而不是留下半截范围）；`upload` 上传本地文件；`download` 捕获浏览器下载（本身即一项断言）；`scroll` 滚动到元素；`press` 真实键盘按键（输入框里回车提交、`Escape` 关掉弹窗、`Tab` 走焦点顺序；传 `target` 可先聚焦某个元素，不传则按在当前焦点上，即上一步 `fill` 的位置）；`wheel` 派发**真实滚轮事件**（无限加载的触底回调、横向滚动容器只认它——`scroll` 是「把元素滚进视口」、不产生滚动事件；`deltaY` 向下为正，一屏约 600–800）；`focus`/`blur` 聚焦与失焦（表单校验大多挂在 blur 上，「填完 → 失焦 → 断言报错提示」是常规链路，比「点一下别处」干净）；`get_html` 取原始 DOM HTML（补快照的盲区——`class`/`data-*`/`value` 这些**属性**快照看不到；默认只回 16KiB，要更大范围就传 `out` 落盘）；`screenshot` 截图留证（默认截视口，`fullPage: true` 截整页，`target` 传 `@eN` 只截那个元素；**图会内联进 HTML 报告**，`~/.pageqa/screenshots` 下也留一份；它是只读动作、**不产生断言**）；`wait`/`wait_for` 等待；`assert_text` 断言页面含指定文本（传 `absent: true` 反过来断言页面**不含**该文本——否定写在参数里，不要写进被断言的文本）；`assert_no_console_error` 断言页面没有 JavaScript 报错（未捕获异常与 `console.error`/浏览器错误日志——**这类错误不体现在页面文字上**，`assert_text` 永远看不到它；`ignore` 可放行已知噪音，`warnings: true` 把警告也算失败）；`assert_network` 断言某个请求发生了且状态符合期望（`url` 按子串匹配，`status` 写 `200` 或 `2xx`，不给 `status` 表示「请求成功完成」）。
 
 **引用失效是自愈的**：任何动作用了过期的 `@eN` 都会被拒——这是为了防止静默点到同编号的另一个元素（见 `locator.ts` 的文件头）——而报错里会**直接附上当前页面的可交互元素清单**，模型不必再单独拍一次快照，拿新编号重试即可（`select_option` / `pick_date` 还会在**成功**结果里主动附上那份清单，「选完一个控件接着选下一个」因此不再多付一轮）。
 
