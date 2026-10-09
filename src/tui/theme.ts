@@ -29,7 +29,7 @@ function style(
 export const dim = style("90", [138, 138, 148]);
 export const accent = style("36", [86, 182, 255]);
 export const title = style("1;36", [96, 196, 255]);
-export const bold = style("1");
+
 export const ok = style("32", [106, 190, 120]);
 export const warn = style("33", [222, 184, 92]);
 export const err = style("31", [228, 108, 108]);

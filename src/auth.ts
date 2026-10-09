@@ -22,7 +22,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { CONFIG_DIR, ensureConfigDir } from "./config.js";
+import { CONFIG_DIR } from "./config.js";
 import type {
   AuthOperationOptions,
   Credential,
@@ -161,14 +161,4 @@ export class FileCredentialStore implements CredentialStore {
       this.save(data);
     });
   }
-}
-
-/** 确保凭据目录存在（登录前调用，让权限设置先于文件落盘）。 */
-export function ensureAuthDir(): string {
-  return ensureConfigDir();
-}
-
-/** 平台无关地展示凭据文件位置（帮助/文档用）。 */
-export function describeAuthLocation(): string {
-  return AUTH_PATH;
 }

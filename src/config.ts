@@ -1,4 +1,4 @@
-import { homedir, platform } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   chmodSync,
@@ -558,11 +558,4 @@ export function ensureConfigDir(): string {
     mkdirSync(CONFIG_DIR, { recursive: true });
   }
   return CONFIG_DIR;
-}
-
-/** 平台无关地展示用户配置目录（便于 README/帮助说明）。 */
-export function describeConfigLocation(): string {
-  const home = homedir();
-  const tail = platform() === "win32" ? "%USERPROFILE%\\.pageqa" : "~/.pageqa";
-  return `${CONFIG_DIR} (${tail} → ${home})`;
 }
