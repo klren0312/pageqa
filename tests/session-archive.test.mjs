@@ -9,8 +9,11 @@ import { createSession, defineDocFamily } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import {
   assertSafeId,
+  clearArchives,
   clipText,
   databasePath,
+  deleteArchive,
+  isSafeId,
   listArchives,
   MAX_TEXT_CHARS,
   pruneArchives,
@@ -315,6 +318,123 @@ describe("存档落盘与读取（SQLite 单容器）", () => {
         (await listArchives(dir)).map((s) => s.id),
         ["new", "old"],
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("deleteArchive 删掉一条：列表与详情同时消失，其余不动", async () => {
+    const dir = tempDir();
+    try {
+      const mk = (id, at) =>
+        new SessionCollector(params(), { id, now: () => at }).finish({ status: "pass" });
+      await writeArchive(mk("keep-1", 1_000), dir);
+      await writeArchive(mk("drop", 2_000), dir);
+      await writeArchive(mk("keep-2", 3_000), dir);
+
+      assert.equal(await deleteArchive("drop", dir), true);
+      assert.deepEqual(
+        (await listArchives(dir)).map((s) => s.id),
+        ["keep-2", "keep-1"],
+      );
+      // 被删的档案是**真的没了**（详情也读不回来），而不是只从列表里隐藏。
+      await assert.rejects(() => readArchive("drop", dir), /找不到运行存档/);
+      // 其余记录连同详情都还能读出来。
+      assert.equal((await readArchive("keep-1", dir)).id, "keep-1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("deleteArchive 对没有的 id 返回 false（页面据此答「没有这条」，而不是假装删掉了）", async () => {
+    const dir = tempDir();
+    try {
+      await writeArchive(
+        new SessionCollector(params(), { id: "only" }).finish({ status: "pass" }),
+        dir,
+      );
+      assert.equal(await deleteArchive("no-such-run", dir), false);
+      // 没删掉的那次不能顺手把别的记录带走。
+      assert.deepEqual(
+        (await listArchives(dir)).map((s) => s.id),
+        ["only"],
+      );
+      // 同一个 id 再删一次：第二次同样如实答 false（幂等，不报错）。
+      assert.equal(await deleteArchive("only", dir), true);
+      assert.equal(await deleteArchive("only", dir), false);
+      assert.deepEqual(await listArchives(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("deleteArchive 拒绝非法 id（它在 URL 与文档键里都出现过）", async () => {
+    const dir = tempDir();
+    try {
+      await assert.rejects(() => deleteArchive("../escape", dir), /非法的 session id/);
+      assert.equal(isSafeId("20260929-120000-abcd"), true);
+      assert.equal(isSafeId("../escape"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("clearArchives 清空全部并返回删掉的条数", async () => {
+    const dir = tempDir();
+    try {
+      for (let i = 1; i <= 3; i++) {
+        await writeArchive(
+          new SessionCollector(params(), { id: `s-${i}`, now: () => i * 1_000 }).finish({
+            status: "pass",
+          }),
+          dir,
+        );
+      }
+      assert.equal(await clearArchives(dir), 3);
+      assert.deepEqual(await listArchives(dir), []);
+      // 详情也读不回来——清空是删掉，不是隐藏。
+      await assert.rejects(() => readArchive("s-2", dir), /找不到运行存档/);
+      // 已经空了再清一次是 0，不是报错。
+      assert.equal(await clearArchives(dir), 0);
+      // 清空后还能继续写新记录。
+      await writeArchive(
+        new SessionCollector(params(), { id: "after-clear" }).finish({ status: "pass" }),
+        dir,
+      );
+      assert.deepEqual(
+        (await listArchives(dir)).map((s) => s.id),
+        ["after-clear"],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("目录不存在时删除与清空都答「没什么可删」，且不在磁盘上留下容器", async () => {
+    const parent = tempDir();
+    const dir = join(parent, "not-yet");
+    try {
+      assert.equal(await deleteArchive("any", dir), false);
+      assert.equal(await clearArchives(dir), 0);
+      assert.equal(existsSync(dir), false);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  test("旧格式容器上删除与清空都会如实报错（不静默说成功）", async () => {
+    const dir = tempDir();
+    const legacy = new DatabaseSync(join(dir, "sessions.sqlite"));
+    try {
+      legacy.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, storage_version INTEGER)");
+      legacy.exec("CREATE TABLE entries (session_id TEXT, id INTEGER)");
+    } finally {
+      legacy.close();
+    }
+    try {
+      // 与 writeArchive 同一条口径：删不掉就说清原因，页面才能提示「没删掉」。
+      await assert.rejects(() => deleteArchive("any", dir), /不是 pageqa 当前格式/);
+      await assert.rejects(() => clearArchives(dir), /不是 pageqa 当前格式/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

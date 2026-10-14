@@ -331,6 +331,8 @@ How much of the scene you can inspect decides whether you can debug it at all. E
 - **Per-turn LLM context**: the messages actually sent on that turn (including context trimming) — answering "what did the model really see, and were earlier steps pushed out?";
 - **Every tool call**: the arguments the model supplied, the result or failure reason, duration and verdict.
 
+You can clean up straight from the page: a "delete" button on every list row, a "clear all" in the header, and "delete this run" on the detail page. Each asks for confirmation first (what is deleted is really gone, from both the list and the detail view); the same thing is available as `DELETE /api/sessions/<id>` and `DELETE /api/sessions`.
+
 ```bash
 pageqa sessions                  # default http://127.0.0.1:7331/ (the port is bumped upward if taken)
 pageqa sessions --port 8080      # pick a port

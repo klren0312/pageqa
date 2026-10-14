@@ -617,10 +617,20 @@ function byStartedAtDesc(a: SessionSummary, b: SessionSummary): number {
  * 「按 id 取一条记录」这条路里没有任何好处。
  */
 export function assertSafeId(id: string): string {
-  if (!/^[A-Za-z0-9._-]+$/.test(id) || id.includes("..")) {
+  if (!isSafeId(id)) {
     throw new Error(`非法的 session id：${id}`);
   }
   return id;
+}
+
+/**
+ * 同一个判定，不抛错的版本。
+ *
+ * 只需要「问一句合不合法」的地方（HTTP 路由要在动手之前先分清 400 与 404）用它，
+ * 省得把 `assertSafeId` 的异常当控制流——那份错误文案是给直接调用 `readArchive` 的代码看的。
+ */
+export function isSafeId(id: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(id) && !id.includes("..");
 }
 
 /** 从完整存档派生列表摘要。 */
@@ -735,6 +745,65 @@ export async function listArchives(
   if (kind === "missing" || kind === "empty" || kind === "foreign") return [];
   const found = await withSession(dir, readIndex);
   return found.slice().sort(byStartedAtDesc);
+}
+
+/**
+ * 删掉一条存档：索引里去掉摘要，`retireDoc` 掉档案文档。
+ *
+ * 与 {@link pruneArchives} 同一条口径——**索引与文档在同一次提交里一起动**，所以「列表里没有」
+ * 与「详情也读不回来」始终是同一件事，不会留下点开才发现缺东西的半截记录。
+ *
+ * 返回是否真的删掉了：索引里没有这条（从来没记录过、或已经被清理掉）时返回 false，让调用方
+ * 如实答「没有这条」而不是假装成功。
+ */
+export async function deleteArchive(
+  id: string,
+  dir: string = SESSIONS_DIR,
+): Promise<boolean> {
+  assertSafeId(id);
+  // 容器不存在时没有可删的东西，也不要为了「删一条」在磁盘上建出一个空库。
+  if (!existsSync(databasePath(dir))) return false;
+  return await withSession(dir, async (session) => {
+    let removed = false;
+    await session.commit(async (tx) => {
+      const index = await tx.doc(IndexDoc);
+      const runs = index.runs as SessionSummary[];
+      const kept = runs.filter((item) => item?.id !== id);
+      // 索引里根本没有这一条：不写任何东西（无谓的提交只会徒增库文件体积）。
+      if (kept.length === runs.length) return;
+      removed = true;
+      index.runs = kept;
+      await tx.retireDoc(ArchiveDoc, id);
+    }, BACKGROUND_CONTEXT);
+    return removed;
+  });
+}
+
+/**
+ * 清空全部存档（列表页的「清空」按钮）：归档档文档，只留下一个空索引。
+ *
+ * 「清空」在页面上是不可撤销的，因此要求调用方**已经**在界面上跟用户确认过；这里只管做。
+ *
+ * 返回删掉的条数。不抛错语义与 {@link pruneArchives} 不同——它是一次用户明确要求的删除，
+ * 失败必须让调用方知道（页面得给出「没删掉」而不是刷新后记录还在）。
+ */
+export async function clearArchives(dir: string = SESSIONS_DIR): Promise<number> {
+  const kind = inspectContainer(databasePath(dir));
+  // 没有存档可清的三种情形：目录/容器不存在、容器是个空文件、容器不是当前格式。
+  // 前两种直接答 0（没有东西可删）；第三种交给 `withSession` 报「旧格式」，那是需要说清的原因。
+  if (kind === "missing" || kind === "empty") return 0;
+  return await withSession(dir, async (session) => {
+    const runs = (await readIndex(session)).slice().sort(byStartedAtDesc);
+    if (runs.length === 0) return 0;
+    await session.commit(async (tx) => {
+      const index = await tx.doc(IndexDoc);
+      index.runs = [];
+      for (const summary of runs) {
+        await tx.retireDoc(ArchiveDoc, summary.id);
+      }
+    }, BACKGROUND_CONTEXT);
+    return runs.length;
+  });
 }
 
 /**

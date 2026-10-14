@@ -18,8 +18,11 @@ import { escapeHtml, formatDurationMs } from "../report/report-html.js";
 import { getLocale, t } from "../shared/i18n.js";
 import { info } from "../shared/log.js";
 import {
+  clearArchives,
   databasePath,
+  deleteArchive,
   isForeignContainer,
+  isSafeId,
   listArchives,
   readArchive,
   SESSIONS_DIR,
@@ -53,9 +56,17 @@ const CSS = `
 body { margin: 0; padding: 0 0 48px; font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   background: #f6f7f9; color: #1f2328; }
 header { padding: 20px 28px; background: #fff; border-bottom: 1px solid #e5e7eb; }
+header .hrow { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 header h1 { margin: 0; font-size: 18px; }
 header .sub { margin: 4px 0 0; color: #6b7280; font-size: 12px; }
+header .count { margin: 12px 0 0; color: #6b7280; font-size: 12px; }
 main { padding: 20px 28px; max-width: 1280px; }
+button { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid #d0d7de;
+  border-radius: 6px; background: #fff; color: #1f2328; cursor: pointer; white-space: nowrap; }
+button:hover { background: #f3f4f6; }
+button.danger { color: #cf222e; border-color: #f0c2c0; }
+button.danger:hover { background: #ffebe9; }
+td.ops, th.ops { width: 1%; white-space: nowrap; text-align: right; }
 a { color: #2563eb; text-decoration: none; }
 a:hover { text-decoration: underline; }
 table { width: 100%; border-collapse: collapse; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
@@ -88,6 +99,25 @@ details .body { padding: 10px 12px; }
 
 /** 页面的公共外壳（head + 样式 + 头部）。 */
 function shell(title: string, heading: string, sub: string, body: string): string {
+  return shellWith(title, heading, sub, body, {});
+}
+
+/**
+ * 带页面级操作的外壳：`actions` 是头部右侧的按钮区，`script` 是行内脚本。
+ *
+ * 页面全部服务端渲染（没有前端框架、也没有构建步骤），所以删除/清空这两件事就靠这一段
+ * 行内脚本 + `DELETE /api/sessions…` 完成，不引任何依赖。
+ */
+function shellWith(
+  title: string,
+  heading: string,
+  sub: string,
+  body: string,
+  extra: { actions?: string; script?: string; count?: string },
+): string {
+  const actions = extra.actions
+    ? `<div class="actions">${extra.actions}</div>`
+    : "";
   return `<!doctype html>
 <html lang="${getLocale()}">
 <head>
@@ -98,12 +128,78 @@ function shell(title: string, heading: string, sub: string, body: string): strin
 </head>
 <body>
 <header>
+<div class="hrow">
+<div>
 <h1>${escapeHtml(heading)}</h1>
 <p class="sub">${escapeHtml(sub)}</p>
+${extra.count ? `<p class="count">${escapeHtml(extra.count)}</p>` : ""}
+</div>
+${actions}
+</div>
 </header>
 <main>${body}</main>
+${extra.script ?? ""}
 </body>
 </html>`;
+}
+
+/**
+ * 嵌进行内脚本的字面量（单引号形式）。
+ *
+ * 与 `escapeHtml` 的区别是这里**不能**用 HTML 实体：`<script>` 里的内容不会被实体解码，
+ * `&quot;` 会原样留在字符串里。真正的风险只有一个——字面量里出现结束脚本标签就能提前收尾，
+ * 所以把每一个小于号都写成 JS 的 unicode 转义（同一个字符，浏览器认）。
+ *
+ * 刻意用单引号而不是 `JSON.stringify`：后者给内层引号加的反斜杠能活过 `escapeHtml`，
+ * 到了浏览器里就成了 `\"` ——`&quot;` 解码回 `"` 之后它把字符串的收尾引号也转义掉了，
+ * 脚本直接是坏的。
+ */
+function jsString(value: string): string {
+  const escaped = value
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/</g, "\\u003c");
+  return `'${escaped}'`;
+}
+
+/**
+ * 同上，但用在 `onclick="…"` 的**参数位**（形如 `pageqaRemove('id')`）。
+ *
+ * 属性值里的 HTML 实体会在解析时解码回原字符，所以这里可以放心再过一遍 `escapeHtml`：
+ * 不加它，生成的引号会直接把这个属性提前结束掉。
+ */
+function attrJsString(value: string): string {
+  return escapeHtml(jsString(value));
+}
+
+/** 删除/清空按钮的公共脚本：确认 → DELETE → 回列表。失败时如实弹出来，而不是刷新后记录还在。 */
+function actionsScript(): string {
+  // `{msg}` / `{n}` 在这里**故意**不填：留到浏览器里由响应文本与条数补上（`t` 不认识的名字原样留下）。
+  const deleteFailed = t("sessions.deleteFailed", { msg: "{msg}" });
+  const clearFailed = t("sessions.clearFailed", { msg: "{msg}" });
+  const confirmClear = t("sessions.confirmClear", { n: "{n}" });
+  return `<script>
+async function pageqaRemove(id) {
+  if (!confirm(${jsString(t("sessions.confirmDelete"))})) return;
+  const res = await fetch('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
+  if (!res.ok) {
+    alert(${jsString(deleteFailed)} + (await res.text()).trim());
+    return;
+  }
+  location.href = '/';
+}
+async function pageqaClearAll(total) {
+  if (!confirm(${jsString(confirmClear)}.replace('{n}', total))) return;
+  const res = await fetch('/api/sessions', { method: 'DELETE' });
+  if (!res.ok) {
+    alert(${jsString(clearFailed)} + (await res.text()).trim());
+    return;
+  }
+  location.reload();
+}
+</script>`;
 }
 
 function statusBadge(status: string | undefined): string {
@@ -142,6 +238,15 @@ function pre(text: string, truncated?: boolean, chars?: number): string {
   return `<pre class="mono">${escapeHtml(text)}</pre>${note}`;
 }
 
+/**
+ * 整行点击进详情的 `onclick` 语句（已自带引号，调用方只需 `escapeHtml` 收进属性里）。
+ *
+ * 存档 id 是从容器里读出来的，因此不把它拼成一段「信任它不会带引号」的代码。
+ */
+function rowNav(id: string): string {
+  return `location.href=${jsString("/s/" + encodeURIComponent(id))}`;
+}
+
 /** 列表页。 */
 export function renderIndexPage(sessions: readonly SessionSummary[]): string {
   const body =
@@ -156,22 +261,45 @@ export function renderIndexPage(sessions: readonly SessionSummary[]): string {
         `<th>${escapeHtml(t("sessions.colSteps"))}</th>` +
         `<th>${escapeHtml(t("sessions.colTools"))}</th>` +
         `<th>${escapeHtml(t("sessions.colTurns"))}</th>` +
+        `<th class="ops">${escapeHtml(t("sessions.colActions"))}</th>` +
         `</tr></thead><tbody>` +
         sessions
           .map(
             (s) =>
-              `<tr onclick="location.href='/s/${encodeURIComponent(s.id)}'">` +
+              `<tr onclick="${escapeHtml(rowNav(s.id))}">` +
               `<td class="mono">${escapeHtml(shortTime(s.startedAt))}</td>` +
               `<td>${escapeHtml(s.casePreview)}</td>` +
               `<td>${escapeHtml(s.scenarioName ?? "—")}</td>` +
               `<td class="mono">${escapeHtml(s.model)}</td>` +
               `<td>${statusBadge(s.status)}</td>` +
               `<td>${s.steps}</td><td>${s.toolCalls}</td><td>${s.turns}</td>` +
+              // 整行可点进详情，所以按钮要先 `stopPropagation`——否则删记录会变成「点开详情」。
+              `<td class="ops"><button type="button" class="danger" ` +
+              `onclick="event.stopPropagation();pageqaRemove(${attrJsString(s.id)})">` +
+              `${escapeHtml(t("sessions.delete"))}</button></td>` +
               `</tr>`,
           )
           .join("") +
         `</tbody></table>`;
-  return shell(t("sessions.pageTitle"), t("sessions.heading"), t("sessions.subtitle"), body);
+  // 列表为空时没有「清空全部」可点：按钮只在真有东西要清时出现。
+  const actions =
+    sessions.length === 0
+      ? undefined
+      : `<button type="button" class="danger" onclick="pageqaClearAll(${sessions.length})">` +
+        `${escapeHtml(t("sessions.clearAll"))}</button>`;
+  return shellWith(
+    t("sessions.pageTitle"),
+    t("sessions.heading"),
+    t("sessions.subtitle"),
+    body,
+    {
+      ...(actions ? { actions } : {}),
+      // 一条都没有时连脚本都不给：没有可删的东西，就不该往页面里塞两段没人会点的代码。
+      ...(sessions.length > 0
+        ? { count: t("sessions.count", { n: sessions.length }), script: actionsScript() }
+        : {}),
+    },
+  );
 }
 
 /** 「传给 agent 的参数」区块。 */
@@ -320,11 +448,16 @@ export function renderDetailPage(a: SessionArchive): string {
     (a.note ? `<span><b>${escapeHtml(t("sessions.detailNote"))}</b> ${escapeHtml(a.note)}</span>` : "") +
     `<span><a href="/api/sessions/${encodeURIComponent(a.id)}">${escapeHtml(t("sessions.raw"))}</a></span>` +
     `</div>`;
-  return shell(
+  // 详情页也给一条删除：直接从地址栏/收藏进来看记录的人，不该先回列表才删得掉。
+  const actions =
+    `<button type="button" class="danger" onclick="pageqaRemove(${attrJsString(a.id)})">` +
+    `${escapeHtml(t("sessions.detailDelete"))}</button>`;
+  return shellWith(
     t("sessions.pageTitle"),
     a.params.caseText.replace(/\s+/g, " ").trim().slice(0, 80) || a.id,
     t("sessions.detailSubtitle", { id: a.id }),
     meta + paramsSection(a) + turnsSection(a) + toolsSection(a),
+    { actions, script: actionsScript() },
   );
 }
 
@@ -338,6 +471,11 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
   sendText(res, status, JSON.stringify(value, null, 2), "application/json; charset=utf-8");
 }
 
+/** 把任意抛出的东西变成一句能直接弹给人看的消息。 */
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** 处理一次请求；返回 false 表示路由没命中（由调用方给 404）。 */
 async function route(
   req: IncomingMessage,
@@ -346,6 +484,7 @@ async function route(
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const path = url.pathname;
+  const method = req.method ?? "GET";
 
   if (path === "/" || path === "/index.html") {
     sendText(
@@ -357,13 +496,39 @@ async function route(
     return true;
   }
   if (path === "/api/sessions") {
+    // 「清空全部」= 整个索引归零：与单条删除同一个提交口径，列表与详情同时消失。
+    if (method === "DELETE") {
+      try {
+        sendJson(res, 200, { deleted: await clearArchives(dir) });
+      } catch (err) {
+        // 容器是旧格式之类时读不出来，刷新页面记录会一条不少——必须让页面知道没删成。
+        sendJson(res, 500, { error: errMessage(err) });
+      }
+      return true;
+    }
     sendJson(res, 200, await listArchives(dir));
     return true;
   }
   const api = path.match(/^\/api\/sessions\/([^/]+)$/);
   if (api) {
+    const id = decodeURIComponent(api[1]);
+    if (method === "DELETE") {
+      // id 非法是请求本身的问题（400）；容器读不出来是本机状态的问题（500）。两者都答 JSON，
+      // 页面把消息弹出来——删不掉却说「成功」比不删更糟。
+      if (!isSafeId(id)) {
+        sendJson(res, 400, { error: t("sessions.badId") });
+        return true;
+      }
+      try {
+        const deleted = await deleteArchive(id, dir);
+        sendJson(res, deleted ? 200 : 404, { deleted });
+      } catch (err) {
+        sendJson(res, 500, { error: errMessage(err) });
+      }
+      return true;
+    }
     try {
-      sendJson(res, 200, await readArchive(decodeURIComponent(api[1]), dir));
+      sendJson(res, 200, await readArchive(id, dir));
     } catch {
       sendJson(res, 404, { error: t("sessions.detailNotFound") });
     }
@@ -446,13 +611,12 @@ export async function runSessionServer(opts: SessionServerOptions = {}): Promise
         if (!handled) sendText(res, 404, "not found");
       })
       .catch((err) => {
-        const msg = err instanceof Error ? err.message : String(err);
         // 响应已经开写（路由里发过一部分）时只能收尾，再写头会抛。
         if (res.headersSent) {
           res.end();
           return;
         }
-        sendText(res, 500, msg);
+        sendText(res, 500, errMessage(err));
       });
   });
 

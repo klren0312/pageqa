@@ -156,8 +156,18 @@ const catalogs: Record<Locale, Catalog> = {
     "sessions.compactReason.none": "—",
     "sessions.detailTruncated": "（已截断，原始 {chars} 字符）",
     "sessions.detailNotFound": "找不到这条运行记录（存档可能已被清理）",
+    "sessions.badId": "非法的运行记录 id",
     "sessions.turn": "第 {n} 轮",
     "sessions.raw": "JSON",
+    "sessions.colActions": "操作",
+    "sessions.count": "共 {n} 条",
+    "sessions.delete": "删除",
+    "sessions.detailDelete": "删除这条",
+    "sessions.clearAll": "清空全部",
+    "sessions.confirmDelete": "确定删除这条运行记录？删除后无法恢复。",
+    "sessions.confirmClear": "确定清空全部 {n} 条运行记录？删除后无法恢复。",
+    "sessions.deleteFailed": "删除失败：{msg}",
+    "sessions.clearFailed": "清空失败：{msg}",
     "err.sessionsListenFailed": "[pageqa] session 查询服务无法监听端口：{msg}",
     "err.portRequired": "--port 需要一个端口号",
     "err.portInvalid": "--port 只收 1-65535 的整数",
@@ -1078,6 +1088,9 @@ const catalogs: Record<Locale, Catalog> = {
   - 每轮实际发出的上下文：模型这一轮到底看到了什么、有没有被裁剪
   - 每次工具调用的入参、结果、耗时与成败
 
+页面上可以直接删：列表每行一个「删除」、页头一个「清空全部」，详情页也有「删除这条」
+（都会先确认；删掉的就真的没了，列表与详情一起消失）。
+
 选项:
   --port <n>   监听端口（默认 7331；被占用时自动向上顺延）
   --dir <path> 存档目录（默认 ~/.pageqa/sessions）
@@ -1309,8 +1322,18 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "sessions.compactReason.none": "—",
     "sessions.detailTruncated": "(truncated; {chars} chars originally)",
     "sessions.detailNotFound": "run not found (the archive may have been pruned)",
+    "sessions.badId": "invalid run id",
     "sessions.turn": "turn {n}",
     "sessions.raw": "JSON",
+    "sessions.colActions": "actions",
+    "sessions.count": "{n} in total",
+    "sessions.delete": "delete",
+    "sessions.detailDelete": "delete this run",
+    "sessions.clearAll": "clear all",
+    "sessions.confirmDelete": "Delete this run archive? This cannot be undone.",
+    "sessions.confirmClear": "Delete all {n} run archives? This cannot be undone.",
+    "sessions.deleteFailed": "Could not delete: {msg}",
+    "sessions.clearFailed": "Could not clear: {msg}",
     "err.sessionsListenFailed":
       "[pageqa] the session query server could not listen on a port: {msg}",
     "err.portRequired": "--port needs a port number",
@@ -2299,6 +2322,10 @@ agent run:
   - the context actually sent on every turn: what the model really saw, and whether
     the context was trimmed
   - every tool call: arguments, result, duration, success or failure
+
+You can delete from the page: a "delete" button on every list row, a "clear all" in the
+header, and "delete this run" on the detail page (each asks for confirmation first — what
+is deleted is really gone, from both the list and the detail view).
 
 Options:
   --port <n>   listen port (default 7331; bumped upward when taken)
