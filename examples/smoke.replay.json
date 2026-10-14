@@ -1,10 +1,10 @@
 {
   "format": "pageqa-replay",
   "version": 1,
-  "recordedAt": "2026-10-08T06:14:19.064Z",
+  "recordedAt": "2026-10-14T02:35:10.469Z",
   "source": {
-    "path": "D:/1project/page-test-agent/examples/smoke.md",
-    "hash": "4eef45f9c15430f0"
+    "path": "./examples\\smoke.md",
+    "hash": "3294ce03ed5fd63f"
   },
   "scenarios": [
     {
@@ -17,6 +17,11 @@
           "kind": "navigate",
           "step": 1,
           "url": "https://example.com"
+        },
+        {
+          "kind": "wait_for",
+          "step": 1,
+          "text": "Example"
         },
         {
           "kind": "assert_text",
@@ -33,12 +38,12 @@
       "steps": [
         {
           "kind": "navigate",
-          "step": null,
+          "step": 1,
           "url": "https://example.com"
         },
         {
           "kind": "click",
-          "step": null,
+          "step": 1,
           "target": "@e1",
           "locator": {
             "role": "link",
@@ -51,8 +56,13 @@
           }
         },
         {
+          "kind": "wait_for",
+          "step": 2,
+          "text": "The IANA functions coordinate the Internet’s globally unique identifiers, and are provided by"
+        },
+        {
           "kind": "assert_text",
-          "step": null,
+          "step": 2,
           "expectation": "IANA"
         }
       ]

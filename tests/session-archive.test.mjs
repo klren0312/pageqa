@@ -1,8 +1,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createSession, defineDocFamily } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -415,5 +416,94 @@ describe("存档落盘与读取（SQLite 单容器）", () => {
     assert.equal(assertSafeId("20260101-000000-abcd"), "20260101-000000-abcd");
     // 非法 id 连仓库都不该去开。
     await assert.rejects(() => readArchive("../etc/passwd"), /非法的 session id/);
+  });
+});
+
+describe("旧格式容器：不迁移，也不会把读列表变成一次异常", () => {
+  /** 造一个早先版本留下的同名容器：表结构完全不同，且没有 durable_schema。 */
+  function writeLegacyContainer(dir) {
+    const db = new DatabaseSync(databasePath(dir));
+    try {
+      db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, storage_version INTEGER)");
+      db.exec("CREATE TABLE entries (session_id TEXT, id INTEGER)");
+      db.exec("INSERT INTO sessions (id, storage_version) VALUES ('old-run', 1)");
+    } finally {
+      db.close();
+    }
+  }
+
+  test("列表为空；详情与写入如实报「不是当前格式」；旧容器的数据一个字节都不动", async () => {
+    const dir = tempDir();
+    try {
+      writeLegacyContainer(dir);
+      // 关键是「不抛异常」：迁移此前会撞在 `table entries already exists` 上，
+      // `pageqa sessions` 起服务时读一次列表就当场失败退出（用户遇到的正是这个）。
+      assert.deepEqual(await listArchives(dir), []);
+      // 详情读不回来，但说法要能照做（而不是把 SQLite 的原话端出来）。
+      await assert.rejects(() => readArchive("old-run", dir), /不是 pageqa 当前格式/);
+      // 写入如实报错（agent 侧吞掉并记一行日志，不改退出码）。
+      await assert.rejects(
+        () =>
+          writeArchive(
+            new SessionCollector(params(), { id: "new-run" }).finish({ status: "pass" }),
+            dir,
+          ),
+        /不是 pageqa 当前格式/,
+      );
+      // 清理是维护动作：静默返回 0，而不是把异常冒成「这次运行出错了」。
+      assert.equal(await pruneArchives(dir, 1), 0);
+
+      const db = new DatabaseSync(databasePath(dir), { readOnly: true });
+      try {
+        assert.equal(db.prepare("SELECT count(*) AS c FROM sessions").get().c, 1);
+        // 没有被就地「升级」成 durable 的库：表还是旧容器那两张。
+        const tables = db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all()
+          .map((row) => row.name)
+          .sort();
+        assert.deepEqual(tables, ["entries", "sessions"]);
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("容器文件根本不是 SQLite（被别的工具写坏）时同样不把列表读崩", async () => {
+    const dir = tempDir();
+    try {
+      writeFileSync(databasePath(dir), "这不是一个 SQLite 文件");
+      assert.deepEqual(await listArchives(dir), []);
+      await assert.rejects(
+        () =>
+          writeArchive(
+            new SessionCollector(params(), { id: "new-run" }).finish({ status: "pass" }),
+            dir,
+          ),
+        /不是 pageqa 当前格式/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("容器存在但是空文件时照常写入（不是外来文件，不必让用户先动手）", async () => {
+    const dir = tempDir();
+    try {
+      writeFileSync(databasePath(dir), "");
+      assert.deepEqual(await listArchives(dir), []);
+      await writeArchive(
+        new SessionCollector(params(), { id: "fresh", now: () => 1 }).finish({ status: "pass" }),
+        dir,
+      );
+      assert.deepEqual(
+        (await listArchives(dir)).map((s) => s.id),
+        ["fresh"],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

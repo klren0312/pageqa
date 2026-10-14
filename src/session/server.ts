@@ -19,6 +19,7 @@ import { getLocale, t } from "../shared/i18n.js";
 import { info } from "../shared/log.js";
 import {
   databasePath,
+  isForeignContainer,
   listArchives,
   readArchive,
   SESSIONS_DIR,
@@ -446,8 +447,14 @@ export async function runSessionServer(opts: SessionServerOptions = {}): Promise
   opts.onReady?.({ port, url });
   info(t("log.sessionServing", { url }));
   info(t("log.sessionArchiveDir", { dir: databasePath(dir) }));
-  // 存档目录还没建（没跑过任何用例）时提示一句：空列表页容易让人以为服务坏了。
-  if ((await listArchives(dir)).length === 0) info(t("log.sessionArchiveEmpty"));
+  if (isForeignContainer(dir)) {
+    // 容器是早期版本留下的（表结构不同）：列不出来是**必然**的，当场说清为什么、怎么办——
+    // 否则「一个运行记录都没有」看起来像存档全丢了。
+    info(t("log.sessionArchiveForeign", { dir: databasePath(dir) }));
+  } else if ((await listArchives(dir)).length === 0) {
+    // 存档目录还没建（没跑过任何用例）时提示一句：空列表页容易让人以为服务坏了。
+    info(t("log.sessionArchiveEmpty"));
+  }
   if (opts.open !== false) openBrowser(url);
 
   // 常驻：直到用户 Ctrl+C。刻意不自己退出——它是个「开着看」的服务。

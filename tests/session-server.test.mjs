@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { getLocale, setLocale } from "../dist/shared/i18n.js";
 import {
   SessionCollector,
@@ -164,6 +165,32 @@ describe("session 查询服务（HTTP）", () => {
       process.emit("SIGINT");
       await done;
       setLocale(previous);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("旧格式容器不会让服务起不来：列表按空返回，详情 404", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pageqa-sessions-legacy-"));
+    // 早期版本留下的同名容器（表结构不同、没有 durable_schema）：起服务时那次「列表是否为空」
+    // 的探读此前会撞在迁移上，整个 runSessionServer 直接失败退出。
+    const legacy = new DatabaseSync(join(dir, "sessions.sqlite"));
+    try {
+      legacy.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, storage_version INTEGER)");
+      legacy.exec("CREATE TABLE entries (session_id TEXT, id INTEGER)");
+    } finally {
+      legacy.close();
+    }
+
+    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const { info, done } = await startServer(dir, port);
+    try {
+      const list = await fetch(`${info.url}api/sessions`);
+      assert.equal(list.status, 200);
+      assert.deepEqual(await list.json(), []);
+      assert.equal((await fetch(`${info.url}s/old-run`)).status, 404);
+    } finally {
+      process.emit("SIGINT");
+      await done;
       rmSync(dir, { recursive: true, force: true });
     }
   });

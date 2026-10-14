@@ -30,6 +30,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -42,6 +43,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CONFIG_DIR } from "../config/config.js";
+import { t } from "../shared/i18n.js";
 import type { RawUsage, TokenUsage } from "../report/report.js";
 
 /** 存档默认目录：与配置同处 `~/.pageqa` 下，不随工作目录漂移（跨项目也要能查到）。 */
@@ -181,6 +183,7 @@ export interface SessionTurn {
   context: SessionMessage[];
   /** 该轮上下文的原始字符总数（裁剪前）。 */
   contextCharsBefore?: number;
+
 }
 
 /** 一次工具调用：模型给的入参、工具返回的结果或失败原因、耗时。 */
@@ -468,6 +471,58 @@ export function databasePath(dir: string = SESSIONS_DIR): string {
 }
 
 /**
+ * 容器形态：路径上的这个文件到底是不是 pi-durable 的库。
+ *
+ * 为什么要先探一下：`openNodeSqliteStorage` 是**建库**操作（对一个陌生文件它会跑迁移），
+ * 而 `~/.pageqa/sessions/sessions.sqlite` 这个路径上早先版本留下过表结构完全不同的容器
+ * （`sessions` / `entries` / `usage_ledger` —— 见 spec 第 8 节的「旧格式不迁移」）。
+ * 直接交给 durable 去开，迁移会撞在 `table entries already exists` 上：那是**旧数据**，
+ * 不是坏数据，可结果是「看一眼列表」变成一次异常，`pageqa sessions` 起服务时当场失败退出。
+ *
+ * `unreadable` 与 `foreign` 刻意分开：打不开（被另一个进程占着、权限不足）只是**此刻**读不到，
+ * 不该把一个还在正常工作的容器误判成外来文件、把读和写一起挡下来——那种情况交给 durable
+ * 去开，它会给出真正的原因。
+ */
+type ContainerKind = "missing" | "empty" | "current" | "foreign" | "unreadable";
+
+/** 只读探一次容器（不建库、不改文件）：有 `durable_schema` 才算我们的库。 */
+function inspectContainer(file: string): ContainerKind {
+  if (!existsSync(file)) return "missing";
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
+    if (tables.length === 0) return "empty";
+    return tables.some((row) => row.name === "durable_schema") ? "current" : "foreign";
+  } catch {
+    // 开得了但读不出表（不是 SQLite 文件）算外来；连开都开不了算「此刻读不到」。
+    return db ? "foreign" : "unreadable";
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * 容器是不是**不是** pageqa 当前格式（早期版本留下的同名文件）。
+ *
+ * 查询服务起服务时问一句：这种情况下列表只能是空的，得当场说清原因——「一个运行记录都没有」
+ * 看起来像存档全丢了，而真实原因是换过存储格式、旧容器没被迁走。
+ */
+export function isForeignContainer(dir: string = SESSIONS_DIR): boolean {
+  return inspectContainer(databasePath(dir)) === "foreign";
+}
+
+/**
+ * 外来容器的统一说法：讲清「为什么读不出」与「怎么办」。
+ *
+ * 不把 SQLite 的原话（`table entries already exists`）端给用户：它指向的是我们自己的迁移，
+ * 而用户需要知道的是「这个文件是旧版本的，移走或删掉就能重新开始」。
+ */
+function foreignContainerError(file: string): Error {
+  return new Error(t("err.sessionArchiveForeign", { file }));
+}
+
+/**
  * 开一个 Session、跑一段操作、**必定关闭**它。
  *
  * 读写都走这一个口子：`Session` 持有 SQLite 句柄（单容器模式下就是同一个文件），忘了关会
@@ -479,7 +534,10 @@ async function withSession<T>(
   dir: string,
   fn: (session: Session) => Promise<T>,
 ): Promise<T> {
-  const storage = await openNodeSqliteStorage(databasePath(dir));
+  const file = databasePath(dir);
+  // 外来容器一律不交给 durable 开：迁移会撞在「表已存在」上，而这文件是旧数据不是坏数据。
+  if (inspectContainer(file) === "foreign") throw foreignContainerError(file);
+  const storage = await openNodeSqliteStorage(file);
   const session = createSession(storage);
   try {
     return await fn(session);
@@ -595,6 +653,7 @@ export async function readArchive(
   assertSafeId(id);
   // 容器还不存在时直接报「没有这条」：打开 SQLite 存储是**建库**操作，
   // 为了查一个不存在的 id 在磁盘上留一个空数据库，不是查询该有的副作用。
+  // （容器存在但不是当前格式时，说法由 `withSession` 给出——那是「读不出来」的原因，不是「没有这条」。）
   if (!existsSync(databasePath(dir))) throw new Error(`找不到运行存档：${id}`);
   return await withSession(dir, async (session) => {
     const stored = await session.snapshot(ArchiveDoc, id, BACKGROUND_CONTEXT);
@@ -629,9 +688,11 @@ export async function readArchive(
 export async function listArchives(
   dir: string = SESSIONS_DIR,
 ): Promise<SessionSummary[]> {
-  // 目录或容器还不存在时不去开存储：打开 SQLite 存储会顺手把容器（连目录）建出来，而
-  // 「看一眼列表」不该在磁盘上留下一个新数据库文件。
-  if (!existsSync(databasePath(dir))) return [];
+  // 没有存档可读的三种情形都不去开存储：目录/容器还不存在、容器是个空文件、容器不是当前格式
+  // （早期版本留下的同名文件，见 `inspectContainer`）。打开 SQLite 存储会顺手把容器（连目录）
+  // 建出来，而「看一眼列表」既不该在磁盘上留下一个新数据库，也不该因为一个旧容器而抛异常。
+  const kind = inspectContainer(databasePath(dir));
+  if (kind === "missing" || kind === "empty" || kind === "foreign") return [];
   const found = await withSession(dir, readIndex);
   return found.slice().sort(byStartedAtDesc);
 }

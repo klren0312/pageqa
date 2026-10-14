@@ -89,6 +89,10 @@ const catalogs: Record<Locale, Catalog> = {
     "log.sessionArchiveDir": "[pageqa] 存档容器：{dir}",
     "log.sessionArchiveEmpty":
       "[pageqa] 存档目录里还没有运行记录——先跑一次用例再回来",
+    "log.sessionArchiveForeign":
+      "[pageqa] 存档容器不是 pageqa 当前格式（表结构对不上，多半是早期版本留下的）：{dir}——旧记录读不出来，列表按空处理；把它移走或删除后，下次运行会重建一个新容器",
+    "err.sessionArchiveForeign":
+      "存档容器不是 pageqa 当前格式（表结构对不上，多半是早期版本留下的）：{file}——把它移走或删除，下次运行会重建一个新容器",
     "sessions.pageTitle": "pageqa 运行存档",
     "sessions.heading": "pageqa 运行存档",
     "sessions.subtitle": "每次 agent 运行交给模型的参数、每轮上下文与每次工具调用",
@@ -1191,6 +1195,10 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "log.sessionArchiveDir": "[pageqa] archive container: {dir}",
     "log.sessionArchiveEmpty":
       "[pageqa] no runs archived yet — run a case first, then come back",
+    "log.sessionArchiveForeign":
+      "[pageqa] the archive container is not in pageqa's current format (the tables do not match — usually left over from an earlier version): {dir} — old runs cannot be read, so the list stays empty; move or delete it and the next run rebuilds a fresh container",
+    "err.sessionArchiveForeign":
+      "the archive container is not in pageqa's current format (the tables do not match — usually left over from an earlier version): {file} — move or delete it and the next run rebuilds a fresh container",
     "sessions.pageTitle": "pageqa run archive",
     "sessions.heading": "pageqa run archive",
     "sessions.subtitle":
