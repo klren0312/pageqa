@@ -8,12 +8,14 @@ import {
   createModelCatalog,
   hasProvider,
   loadBuiltinProviders,
+  PAGEQA_PROVIDER_ID,
   probeModel,
   refreshFreeProviders,
   resolveModel,
   type ModelCatalog,
   type ModelChoice,
 } from "../config/models.js";
+import { detectContextWindow } from "../llm/window-detect.js";
 import {
   createOpencodeFreeGateTools,
   isFreeProvider,
@@ -29,7 +31,11 @@ import {
 import { flushDownloadCleanup } from "../report/downloads.js";
 import { resetScreenshots, screenshotsTaken } from "../report/screenshots.js";
 import { JevClient } from "../llm/jev.js";
-import { loadConfig, readAutoScreenshot } from "../config/config.js";
+import {
+  loadConfig,
+  readAutoScreenshot,
+  readCompactPrompt,
+} from "../config/config.js";
 import { debugLog, info, setDebug } from "../shared/log.js";
 import {
   addUsage,
@@ -53,9 +59,34 @@ import {
 import { Recorder } from "./record.js";
 import type { ScenarioRecording } from "./replay.js";
 import {
+  COMPACT_SYSTEM_PROMPT,
+  buildStateNote,
+  calibrateFromUsage,
+  compactTools,
+  contextOverflowError,
+  countMessageChars,
+  createTrimState,
+  dropMiddleMessages,
+  estimateMessageTokens,
+  estimateTokens,
+  forceCalibrationFloor,
+  needsTrim,
+  noteEstimate,
+  resolveContextBudget,
+  resolveWindow,
+  shouldCompactPrefix,
+  snapshotBudgetChars,
+  trimPlan,
+  trimToolResults,
+  windowFromOverflowMessage,
+  type ContextBudget,
+  type TrimState,
+} from "./context.js";
+import {
   pruneArchives,
   SessionCollector,
   writeArchive,
+  type SessionContextInfo,
   type SessionParams,
 } from "../session/archive.js";
 import { TimingCollector, renderTiming } from "./timing.js";
@@ -207,18 +238,24 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "过程中的输出只保留「第 k 步完成：<结果>」这类简报；最终结论只含每个断言的「成立/不成立」与证据，不要输出多余解释。",
 ].join("\n");
 
-// 上下文压力控制：长流程会累积大量页面快照（一次快照几千至上万字符），
-// 默认模型上下文窗口只有 32k token，若不裁剪会把早期的步骤说明挤出上下文，
-// 导致模型「忘记」后续步骤而提前收尾。
-const CONTEXT_CHAR_LIMIT = 40_000;
-const KEEP_RECENT_MESSAGES = 12;
-const MAX_OLD_TOOL_CHARS = 1_500;
-const TRIMMED_MARK = "（较早的快照已省略";
+// 上下文压力控制（按 token 预算，见 context.ts 与 ADR-0014）：长流程会累积大量页面
+// 快照（一次快照几千至上万字符），而模型窗口有大有小（本地小模型常常只有 8192）。
+// 旧实现按字符数比较一个写死的 40k 阈值，对中文（1 字符 ≈ 1 token）早已越过窗口，
+// 请求直接撞端点的 `exceed_context_size_error`——度量衡错了，这里改成跟着窗口缩放。
 
 // 长流程最常见的失败模式：模型做完一两步就自行收尾（不再调用工具、直接给结论），
 // 后面的步骤根本没执行。这里按 agent 自报的进度/已解析断言数补「继续执行」提示，
 // 直到跑满、确实没有进展或达到次数上限为止。
 const MAX_CONTINUATIONS = 5;
+
+/**
+ * 撞上下文窗口后的自救次数（ADR-0014 决策九）。
+ *
+ * 只给一次：预防层的预算估算是近似值，真撞上说明估算失准，给一次激进裁剪后的
+ * 自救机会；第二次还撞就是窗口实在不够（用例 + 页面快照装不下），果断失败并
+ * 在报告里指出路，好过无限恢复循环烧时间。
+ */
+const MAX_OVERFLOW_RECOVERIES = 1;
 
 /** agent 自报的进度（`步骤完成：k/n`）；没输出进度声明时为 null。 */
 export type ContinuationProgress = { done: number; total: number } | null;
@@ -278,6 +315,29 @@ export function continuePrompt(
   );
 }
 
+/**
+ * 撞窗口后的恢复提示（ADR-0014 决策九）。
+ *
+ * 与普通续跑提示的差别必须说清楚：这次不是「你偷懒了」，而是**上下文刚刚被
+ * 紧急压缩**——早先的快照与工具结果已经不在上下文里了，模型若以为还看得见，
+ * 就会凭记忆写 `@eN` 编号，然后被引用闸门一次次拒绝。所以要显式告知两件事：
+ * 压缩发生过、以及重新定位的方式（重新 snapshot 拿新编号）。
+ */
+export function overflowRecoveryPrompt(
+  progress: ContinuationProgress,
+  window: number,
+): string {
+  const where = progress
+    ? `请从第 ${progress.done + 1} 步继续执行剩余步骤（${progress.done}/${progress.total} 已完成，不要重复）`
+    : "请继续执行尚未完成的步骤";
+  return (
+    `上下文紧急压缩：上一次请求超出了模型窗口（${window} tokens），较早的页面快照与工具结果已被压到最小，` +
+    "它们**不再**在上下文里，不要再引用那些编号或内容。" +
+    `${where}；需要定位元素时重新 snapshot 取新的 @eN 编号（或带上 showPage=true 一次拿到新编号）。` +
+    "每完成一步记「第 k 步完成：<结果>」，全部执行完后单独输出一行「步骤完成：<已完成数>/<总数>」。"
+  );
+}
+
 /** 汇总 agent 全部 assistant 消息的 usage（包含每一轮与每次续跑）。 */
 function collectUsage(messages: AgentMessage[]): TokenUsage {
   let acc = emptyUsage();
@@ -292,58 +352,6 @@ function collectUsage(messages: AgentMessage[]): TokenUsage {
 function preview(input: string, max = 60): string {
   const oneLine = input.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? oneLine.slice(0, max) + "…" : oneLine;
-}
-
-/** 粗略估算消息文本总字符数。 */
-function estimateChars(messages: AgentMessage[]): number {
-  let n = 0;
-  for (const m of messages) {
-    const content = (m as { content?: unknown }).content;
-    if (typeof content === "string") {
-      n += content.length;
-    } else if (Array.isArray(content)) {
-      for (const part of content as { text?: string }[]) {
-        if (typeof part?.text === "string") n += part.text.length;
-      }
-    }
-  }
-  return n;
-}
-
-/** 截断较早的工具结果（保留最近若干条完整），避免快照把上下文撑爆。 */
-function trimOldToolResults(
-  messages: AgentMessage[],
-  keepRecent: number,
-  maxChars: number,
-): AgentMessage[] {
-  const cut = messages.length - keepRecent;
-  if (cut <= 0) return messages;
-  return messages.map((m, i) => {
-    if (i >= cut) return m;
-    const msg = m as { role?: string; content?: unknown };
-    if (msg.role !== "toolResult" || !Array.isArray(msg.content)) return m;
-    let changed = false;
-    const content = (msg.content as { type?: string; text?: string }[]).map(
-      (part) => {
-        if (
-          part?.type !== "text" ||
-          typeof part.text !== "string" ||
-          part.text.length <= maxChars ||
-          part.text.includes(TRIMMED_MARK)
-        ) {
-          return part;
-        }
-        changed = true;
-        return {
-          ...part,
-          text:
-            part.text.slice(0, maxChars) +
-            `\n${TRIMMED_MARK}${part.text.length - maxChars} 字符，如需查看请重新 snapshot）`,
-        };
-      },
-    );
-    return changed ? ({ ...m, content } as AgentMessage) : m;
-  });
 }
 
 /**
@@ -437,8 +445,25 @@ interface AgentSession {
    */
   assertions: AssertionResult[];
   startedAt: number;
+  /**
+   * 本次运行的上下文预算（按模型窗口算出的 token 预算）。
+   *
+   * 放在 session 上而不是藏在 `transformContext` 闭包里：溢出恢复要用它判定
+   * 「是不是撞了窗口」，报告要用它写出「窗口多大、该怎么出路」。
+   */
+  budget: ContextBudget;
+  /**
+   * 裁剪档位与估算校准的共享状态（见 context.ts 的 {@link TrimState}）：
+   * 溢出恢复时置激进档、每轮用真实 usage 校准估算，`transformContext` 下一轮就读到它们。
+   *
+   * 用一个可变对象而不是重新构造 Agent：pi-agent-core 没有「换掉 transformContext」
+   * 的口子，而重建 Agent 会丢掉已经跑出来的消息（那正是要继续执行的东西）。
+   */
+  trimState: TrimState;
   /** 调用方传入的中止信号（无则为 undefined）。 */
   abortSignal?: AbortSignal;
+  /** 撞窗口且自救无效时的端点原话（`finalizeResult` 据此写出路建议）。 */
+  fatalOverflow?: string;
 }
 
 /**
@@ -594,6 +619,24 @@ async function initializeAgent(
   const models = catalog.models;
   log("[runAgent] 模型已解析，model=" + choice.provider + "/" + model.id);
 
+  // ── 窗口探测：自配端点问一次引擎自己的加载设置 ──
+  // 用户没声明 `contextWindow` 时，本地引擎（LM Studio / llama.cpp）自报的窗口是唯一
+  // 可信来源：它由**加载设置**决定（同一个 gemma 可以是 8192 也可以是 131072），
+  // 猜 32k 会直接撞端点的 exceed_context_size_error。声明了就以声明为准——那是用户
+  // 对「这个端点到底多大」的显式判断，探测只在没声明时补位。
+  const cfg = loadConfig();
+  let detectedWindow: number | undefined;
+  if (choice.provider === PAGEQA_PROVIDER_ID && !cfg.contextWindow) {
+    detectedWindow = await detectContextWindow(cfg.baseUrl, {
+      modelId: choice.model,
+      signal: opts.abortSignal,
+    });
+    if (detectedWindow) {
+      model.contextWindow = detectedWindow;
+      info(t("log.contextDetected", { window: detectedWindow }));
+    }
+  }
+
   // ── 连通性探活：模型不通就一条用例都不跑 ──
   // 位置很关键：必须在 bsk 就绪检查与建 session **之前**。模型连不上却先把浏览器窗口
   // 开起来，既白等十几秒，也留下一个「看起来跑起来了」的现场。
@@ -609,7 +652,7 @@ async function initializeAgent(
   log("[runAgent] bsk session=" + session);
   info(t("log.session", { id: session }));
 
-  const jevClient = new JevClient(loadConfig().jev, debug);
+  const jevClient = new JevClient(cfg.jev, debug);
   log("[runAgent] Jev enabled=" + jevClient.enabled);
   info(
     t("log.jev", {
@@ -623,10 +666,37 @@ async function initializeAgent(
   const recorder = new Recorder(opts.vars ?? []);
   // 断言结果由工具层逐条上报（见 bsk/tools.ts 的 onExec），报告不再依赖模型措辞。
   const assertions: AssertionResult[] = [];
+
+  // ── 上下文预算：按模型窗口算，而不是按写死的字符数 ──
+  // 窗口来源三级回落（配置 > 模型元数据/探测值 > 32k 兜底，见 context.ts 的 resolveWindow）：
+  // 自配端点不声明又探测不到时，只能按 32k 保守估算——请求直接撞端点的
+  // exceed_context_size_error 就是这么来的。
+  const window = resolveWindow({
+    configured: cfg.contextWindow,
+    modelWindow: model.contextWindow,
+  });
+  const budget = resolveContextBudget(window, {
+    maxOutput: (model as { maxOutput?: number; maxTokens?: number }).maxOutput ??
+      (model as { maxTokens?: number }).maxTokens,
+  });
+  info(
+    t("log.contextBudget", {
+      window: budget.window,
+      input: budget.input,
+      mode: budget.small ? t("log.contextModeSmall") : t("log.contextModeNormal"),
+    }),
+  );
+
+  // 快照预算要等「压缩后的固定前缀实测多大」才知道，而前缀要先有工具声明才能算，
+  // 因此先挂一个读函数、稍后回填（见下面 prefixTokens 那段）。取值在每次取快照时求，
+  // 不存在「用旧值」的问题。
+  const snapshotBudgetRef: { chars?: number } = {};
   const tools = [
     ...createBskTools({
       session,
       jevClient,
+      // 快照也跟着窗口缩：一次快照上万字符，小窗口下它比用例本身还大。
+      snapshotBudgetChars: () => snapshotBudgetRef.chars,
       onExec: (event) => {
         recorder.noteTool(event);
         if (event.assert) {
@@ -655,11 +725,82 @@ async function initializeAgent(
   // ── session 存档：把这次交给 agent 的参数先如实记下来 ──
   // 采集点放在这里（而不是更早）是因为存档要回答的是「模型真正拿到了什么」：
   // 工具声明、编号后的 prompt、模型选择、bsk session 都得先就绪。
-  const systemPrompt = opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+  //
+  // 压缩固定前缀的三条触发条件（见 context.ts 的 shouldCompactPrefix）：
+  // - 窗口装不下：默认提示 7881 字符（≈5665 token）+ 工具声明 ≈6786 token 合计约 12.4k，
+  //   8k 窗口的模型第一个请求就超窗——裁剪历史救不回来，只能把前缀本身压掉；
+  // - 模型名像小模型：4B/7B 的边缘模型即便窗口开到 131072（真实会话就是），
+  //   每轮读 12.4k token 的规则书也纯属浪费——prefill 成本几乎全在这里；
+  // - 用户显式配置。
+  // 压缩只改「怎么向模型解释工具」，窗口预算与工具行为都不变。
+  const compactSetting = readCompactPrompt();
+  const compact = shouldCompactPrefix({
+    budget,
+    modelId: model.id,
+    configured: compactSetting,
+  });
+  const systemPrompt =
+    opts.systemPrompt ??
+    (compact.compact ? COMPACT_SYSTEM_PROMPT : DEFAULT_SYSTEM_PROMPT);
+  const agentTools = compact.compact ? compactTools(tools) : tools;
+  if (compact.compact) {
+    info(
+      t("log.contextCompactPrefix", {
+        window: budget.window,
+        reason: t(
+          compact.reason === "window"
+            ? "log.contextCompactByWindow"
+            : compact.reason === "model"
+              ? "log.contextCompactByModel"
+              : "log.contextCompactByConfig",
+        ),
+      }),
+    );
+  } else if (compactSetting === false) {
+    log("[runAgent] 配置要求不压缩固定前缀（compactPrompt=false）");
+  }
+  // 固定前缀的实测大小（系统提示 + 工具声明，与请求里发出去的那份一致）：
+  // 它是每轮都要付的开销，快照预算必须先把它扣掉，否则会出现「前缀 + 快照 + 用例
+  // 刚好越过窗口」这种一跑就撞墙的组合。
+  const prefixTokens =
+    estimateTokens(systemPrompt) +
+    estimateTokens(
+      JSON.stringify(
+        agentTools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        })),
+      ),
+    );
+  snapshotBudgetRef.chars = snapshotBudgetChars(budget, prefixTokens);
+  // 窗口从哪来的：存档要把依据留下（「为什么我的小模型没被当小模型对待」这个问题，
+  // 只看 systemPrompt/tools 只有结果没有原因）。声明 > 引擎自报 > 目录元数据 > 兜底。
+  const windowSource: SessionContextInfo["windowSource"] = cfg.contextWindow
+    ? "config"
+    : detectedWindow
+      ? "engine"
+      : model.contextWindow
+        ? "metadata"
+        : "fallback";
+  log(
+    "[runAgent] 固定前缀 " +
+      prefixTokens +
+      " tokens（" +
+      (compact.compact ? "压缩版" : "完整版") +
+      (compact.compact ? "，理由 " + compact.reason : "") +
+      "），窗口 " +
+      budget.window +
+      "（来源 " +
+      windowSource +
+      "），快照预算 " +
+      (snapshotBudgetRef.chars ?? "默认") +
+      " 字符",
+  );
   const collector = new SessionCollector({
     systemPrompt,
     model: { provider: choice.provider, id: model.id },
-    tools: tools.map((tool) => ({
+    tools: agentTools.map((tool) => ({
       name: tool.name,
       label: tool.label,
       description: tool.description,
@@ -676,48 +817,115 @@ async function initializeAgent(
       value: v.value,
     })),
     debug,
+    context: {
+      window: budget.window,
+      windowSource,
+      inputBudget: budget.input,
+      outputReserve: budget.outputReserve,
+      compact: compact.compact,
+      compactReason: compact.reason,
+      ...(snapshotBudgetRef.chars !== undefined
+        ? { snapshotBudgetChars: snapshotBudgetRef.chars }
+        : {}),
+    },
   });
   holder.collector = collector;
   log("[runAgent] session 存档 id=" + collector.data.id);
 
   const events: string[] = [];
+  const trimState = createTrimState();
   const agent = new Agent({
     initialState: {
       systemPrompt,
       model,
-      tools,
+      tools: agentTools,
     },
     streamFn: models.streamSimple.bind(models),
-    // 上下文超限前，先把较早的页面快照裁剪掉，保住最近的上下文与用例步骤。
+    // 上下文超预算前，先把较早的页面快照裁剪掉，保住最近的上下文与用例步骤。
+    //
+    // 判定与裁剪都在 context.ts（纯函数、可单测）：这里只负责「读数 → 决定 → 记账」。
+    // 预算是估算值，因此裁剪阈值留了 25% 余量（75% 触发）——估算必然有偏，
+    // 紧贴上限的请求最容易撞端点 400；真的撞了还有一次溢出恢复兜底（见 executeWithContinuations）。
     transformContext: async (messages) => {
-      const before = estimateChars(messages);
-      if (before <= CONTEXT_CHAR_LIMIT) {
-        collector.noteTurnContext(messages, before);
+      const chars = countMessageChars(messages);
+      // 原始估算（用于与端点回报的真实 usage 对标，见 context.ts 的 TokenCalibration）
+      // 与「按校准放大后的占用」是两个数：前者是标定基准，后者才用于判定。
+      const raw = estimateMessageTokens(messages);
+      const scale = trimState.calibration.scale;
+      const before = Math.round(raw * scale);
+      const aggressive = trimState.aggressive;
+      if (!needsTrim(before, budget, aggressive)) {
+        noteEstimate(trimState.calibration, raw);
+        collector.noteTurnContext(messages, chars, before);
         return messages;
       }
-      const trimmed = trimOldToolResults(
-        messages,
-        KEEP_RECENT_MESSAGES,
-        MAX_OLD_TOOL_CHARS,
-      );
+      const plan = trimPlan(before, budget, aggressive);
+      let trimmed: AgentMessage[];
+      let dropped = 0;
+      if (plan.mode === "aggressive") {
+        // 激进档：截断只能缩小单条消息，长流程下条数照样把窗口顶穿——这里整组丢弃
+        // 中间的旧消息（头部永生清单与尾部最近一轮保留），并补一份状态提示进去。
+        const cut = dropMiddleMessages(messages, plan.keepRecentMessages);
+        dropped = cut.dropped;
+        trimmed = trimToolResults(cut.messages, plan);
+        if (dropped > 0) {
+          const progressNow = alignProgress(
+            parseProgress(events.join("")),
+            steps.length,
+          );
+          trimmed.splice(
+            cut.insertAt,
+            0,
+            buildStateNote({
+              ...(progressNow ? { done: progressNow.done } : {}),
+              total: steps.length,
+              assertions: assertions.length,
+              failed: assertions.filter((a) => a.verdict === "fail").length,
+            }),
+          );
+        }
+      } else {
+        trimmed = trimToolResults(messages, plan);
+      }
+      const rawAfter = estimateMessageTokens(trimmed);
+      const after = Math.round(rawAfter * scale);
+      // 标定基准记的是**这一轮真正要发出去的那份**（裁剪后的原始估算）：
+      // 端点回报的 usage 对应的就是它，拿裁剪前的数去对标会得出偏大的系数。
+      noteEstimate(trimState.calibration, rawAfter);
       log(
-        "[runAgent] 上下文裁剪：" +
+        "[runAgent] 上下文裁剪（" +
+          plan.mode +
+          "）：" +
           before +
           " -> " +
-          estimateChars(trimmed) +
-          " 字符（消息 " +
+          after +
+          " tokens（预算 " +
+          budget.input +
+          "，校准 ×" +
+          scale +
+          "，消息 " +
           messages.length +
-          " 条）",
+          " 条" +
+          (dropped > 0 ? "，丢弃中间 " + dropped + " 条并注入状态提示" : "") +
+          "）",
       );
       // 存档记的是**真正发出去**的那一份（裁剪后）：「模型为什么忘了前面的步骤」
       // 这类问题，只有看它实际收到的上下文才答得出来。
-      collector.noteTurnContext(trimmed, before);
+      collector.noteTurnContext(trimmed, chars, before);
       return trimmed;
     },
   });
 
   const timing = new TimingCollector();
-  subscribeProgress(agent, events, recorder, opts.onUsage, timing, collector);
+  subscribeProgress(
+    agent,
+    events,
+    recorder,
+    opts.onUsage,
+    timing,
+    collector,
+    trimState,
+  );
 
   // 用户在交互模式里按 Esc → 中止本轮运行。
   // `Agent.abort()` 是 pi-agent-core 唯一的中断入口：它 abort 内部那个 AbortController，
@@ -739,6 +947,8 @@ async function initializeAgent(
     collector,
     assertions,
     startedAt,
+    budget,
+    trimState,
     abortSignal: opts.abortSignal,
   };
 }
@@ -795,6 +1005,7 @@ function subscribeProgress(
   onUsage: ((usage: TokenUsage) => void) | undefined,
   timing: TimingCollector,
   collector: SessionCollector,
+  trimState: TrimState,
 ): void {
   const log = debugLog;
   let toolCount = 0;
@@ -823,6 +1034,19 @@ function subscribeProgress(
       // 只在 assistant 轮收尾：`turn_end` 也会为 user / toolResult 触发，
       // 那时并没有「模型输出结束」这回事，打出来会让人以为多跑了几轮。
       if (turn) info(t("log.modelOutputEnd", { n: turnSeq }));
+      // 估算校准：端点回报的真实输入才是这一轮「到底多大」的权威答案
+      // （见 context.ts 的 TokenCalibration——比例估算在本地词表上可能偏两成，
+      // 8k 窗口下这就是「以为还剩 1k、其实已经越界」）。
+      if (turn) {
+        const calibrated = calibrateFromUsage(
+          trimState.calibration,
+          (turn.input ?? 0) + (turn.cacheRead ?? 0) + (turn.cacheWrite ?? 0),
+        );
+        if (calibrated !== null) {
+          log("[agent] 估算校准：真实用量比估算大 " + calibrated + " 倍，后续按该系数收紧");
+          info(t("log.contextCalibrated", { scale: calibrated.toFixed(2) }));
+        }
+      }
     }
     if (e.type === "tool_execution_start") {
       timing.noteToolStart(e.toolCallId);
@@ -898,14 +1122,81 @@ async function executeWithContinuations(
 
   const expectedAssertions = countAssertions(input);
   let lastSignature: string | null = null;
-  for (let round = 0; round < MAX_CONTINUATIONS; round++) {
-    if (agent.state.errorMessage) break;
+  /** 续跑次数（执行完整性不足）与溢出恢复次数，各自独立计数、各自有上限。 */
+  let round = 0;
+  let recoveries = 0;
+
+  for (;;) {
     // 被中止的轮次绝不「续跑」：续跑会立刻再发起一轮 LLM 调用，
     // 而用户按下 Esc 表达的正是「我不想再等这个了」。
     if (wasAborted(session.abortSignal, agent)) {
       log("[runAgent] 本轮已被中止，停止续跑");
       break;
     }
+    // ── 溢出优先判定：它比「进度没跑满」更根本，恢复方式也完全不同 ──
+    // 顺序关键：撞窗口时 pi-agent-core 会硬退出、`state.errorMessage` 必然非空，
+    // 若先按 errorMessage 收尾，溢出永远走不到恢复分支（只会留下一句失败）。
+    const overflow = contextOverflowError(
+      agent.state.messages,
+      session.budget.window,
+    );
+    if (overflow !== null) {
+      if (recoveries >= MAX_OVERFLOW_RECOVERIES) {
+        // 第二次仍撞：窗口确实不够（用例 + 页面快照装不下）。如实失败并给出路，
+        // 不再重试——重试只会同名再撞一次，白烧 token。
+        session.fatalOverflow = overflow;
+        events.push("\n[overflow-fatal] " + overflow + "\n");
+        info(t("log.overflowFatal", { window: session.budget.window }));
+        break;
+      }
+      recoveries += 1;
+      // 切激进档：下一轮 transformContext 会把历史压到最小（见 context.ts 的 trimPlan）。
+      session.trimState.aggressive = true;
+      // 同时抬高估算系数下限：这一轮必须**真的**更小。没有 usage 可比对时（出错轮次
+      // 通常也没有用量），估算就是唯一依据，按 1.25 倍保守估计比按原值再赌一次靠谱。
+      forceCalibrationFloor(session.trimState.calibration);
+      // 端点自报的窗口往往比我们猜的小（自配端点没有窗口元数据，只能按 32k 猜）：
+      // 抠出来按它收紧预算——恢复这一轮就是要在更小的空间里塞下同样的内容。
+      const detected = windowFromOverflowMessage(overflow);
+      if (detected && detected < session.budget.window) {
+        const tightened = resolveContextBudget(detected, {
+          maxOutput: session.budget.outputReserve,
+        });
+        Object.assign(session.budget, tightened);
+        log(
+          "[runAgent] 端点自报窗口 " +
+            detected +
+            " tokens，预算收紧为输入 " +
+            tightened.input,
+        );
+      }
+      const progressNow = alignProgress(
+        parseProgress(events.join("")),
+        steps.length,
+      );
+      events.push("[overflow-recover] 上下文超限，紧急压缩后继续执行\n");
+      log(
+        "[runAgent] 上下文超限，第 " +
+          recoveries +
+          " 次恢复（窗口 " +
+          session.budget.window +
+          " tokens）",
+      );
+      info(
+        t("log.overflowRecover", {
+          n: recoveries,
+          window: session.budget.window,
+        }),
+      );
+      await agent.prompt(
+        overflowRecoveryPrompt(progressNow, session.budget.window),
+      );
+      await agent.waitForIdle();
+      continue;
+    }
+    if (agent.state.errorMessage) break;
+    // 续跑预算用尽：不再为「进度没跑满」发起新的一轮（溢出恢复不占这个额度）。
+    if (round >= MAX_CONTINUATIONS) break;
     const transcriptSoFar = events.join("");
     // 总数以 pageqa 的编号为准：模型会照抄提示词里的示例（单步用例自报 1/7），
     // 信它就等于逼它去跑根本不存在的第 2~7 步。
@@ -951,6 +1242,7 @@ async function executeWithContinuations(
     );
     await agent.prompt(continuePrompt(progress, parsed, expectedAssertions));
     await agent.waitForIdle();
+    round += 1;
   }
 
   log("[runAgent] idle 完成，耗时=" + (Date.now() - session.startedAt) + "ms");
@@ -998,6 +1290,27 @@ function finalizeResult(
   if (opts.scriptPath) report.script = opts.scriptPath;
   if (aborted) {
     log("[runAgent] 本轮被用户中止，记为「已取消」：不进退出码、不写入回放脚本");
+  } else if (session.fatalOverflow) {
+    // 撞窗口且自救无效：**比「模型报错」更具体**，报告的处置建议也不同
+    // （换更大窗口的模型、声明 contextWindow、或把长用例拆成多个场景），
+    // 因此单独归因，不写成那句泛泛的「模型调用失败」。
+    report.status = "fail";
+    // 端点自报的窗口若与我们的估算不同，直接把「该写什么值」说出来：
+    // 自配端点本来就没有窗口元数据，报错里的那个数字是唯一线索。
+    const detected = windowFromOverflowMessage(session.fatalOverflow);
+    const stamp =
+      detected && detected !== session.budget.window
+        ? t("report.contextOverflowDetected", { detected })
+        : "";
+    report.assertions.push({
+      expectation: t("report.contextOverflowExpectation"),
+      verdict: "fail",
+      evidence:
+        t("report.contextOverflowHint", {
+          window: session.budget.window,
+          msg: session.fatalOverflow,
+        }) + stamp,
+    });
   } else if (agentError) {
     report.status = "fail";
     report.assertions.push({

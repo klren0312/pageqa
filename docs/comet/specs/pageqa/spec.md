@@ -36,7 +36,7 @@ pageqa/
 - `src/llm/llm.ts` 使用 `@earendil-works/pi-ai` 的 `createModels` / `createProvider` 构造一个自定义 `openai-completions` provider，指向 CodeBuddy 本地反代 `http://127.0.0.1:3000/v1`，模型 `hunyuan-2.0-instruct`。
 - `auth` 采用静态解析的 `ApiKeyAuth`（`resolve` 返回 `{ apiKey, baseUrl }`），避免交互式 env 探测；默认 Key `codebuddy-proxy-key`。
 - 模型定义需包含 pi-ai `Model` 必填字段：`api`、`provider`、`baseUrl`、`input`、`contextWindow`、`maxTokens`/`maxOutput`、`cost`（含 `tiers` 等价字段）、`compat`。
-- 可通过环境变量 `PAGEQA_LLM_BASE_URL` / `PAGEQA_LLM_API_KEY` / `PAGEQA_LLM_MODEL` 覆盖；也可切换到 pi-ai 其他已配置 provider。
+- 可通过环境变量 `PAGEQA_LLM_BASE_URL` / `PAGEQA_LLM_API_KEY` / `PAGEQA_LLM_MODEL` / `PAGEQA_LLM_CONTEXT_WINDOW` 覆盖；也可切换到 pi-ai 其他已配置 provider。
 - `streamFn` 使用 `models.streamSimple.bind(models)`，供 `pi-agent-core` 的 Agent 驱动 LLM。
 
 - **出口（`src/config/proxy.ts`）**：模型端点直连不通时要能改走代理，但 `127.0.0.1` 上的本地端点与 bsk daemon 必须直连——一刀切设 `HTTP_PROXY` 会把它们也塞进代理（症状是「连上了但不回话」）。因此按域名逐条决定：`direct` / `proxy` / `fallback`（先直连、遇网络层错误再走代理），规则自上而下第一条命中者胜，都不命中按全局 `mode`。装配点是替换 `globalThis.fetch`（pi-ai 每次请求才构造 SDK 客户端，取的是当时的全局 fetch），走代理时用 undici 自带的 fetch + `ProxyAgent`（外部 undici 的 dispatcher 与 Node 内置 fetch 跨大版本不兼容）。配置在 `~/.pageqa/proxy.json`（`--init-config` 生成模板），环境变量 `PAGEQA_PROXY_URL` / `_ENABLED` / `_MODE` 优先，交互模式 `/proxy` 面板可开关并查看统计与规则。详见 `docs/adr/0016`。
@@ -81,7 +81,11 @@ pageqa/
 - `src/agent/agent.ts` 构造 `Agent`（`@earendil-works/pi-agent-core`），注入 `systemPrompt`（定义测试协议）与 bsk 工具集，使用 `llm.ts` 的 `model` 与 `streamFn`。
 - Agent 订阅事件：记录工具调用与文本增量，结束（`waitForIdle`）后生成报告。
 - `runAgent(input, opts)`：`opts` 含 `session?`（复用已有 bsk session）、`systemPrompt?`（覆盖默认测试协议）、`scenarioName?`、`vars?`、`scriptPath?`（仅在报告里标注落盘位置）、`model?` / `catalog?`（交互模式注入，使 `/login` 的凭据与 `/model` 的切换对本场景立即生效）、`abortSignal?`（Esc 中止）、`debug?`、`onUsage?`（每轮 LLM 调用后回调**累计**用量，供界面实时显示）。返回 `{ report, text, json, transcript, usage, recordings }`——`recordings` 是本次录制到的可回放步骤，失败运行同样有，便于排查「模型这次到底做了什么」。
-- 上下文压力控制：`transformContext` 钩子在字符数超过 40000 时裁掉较早的工具结果（最近 12 条保持完整，更早的截到 1500 字符），避免长流程把早期的步骤说明挤出上下文、导致模型提前收尾。
+- 上下文压力控制（按 **token 预算**，见 `src/agent/context.ts` 与 `docs/adr/0014`）：`transformContext` 按估算 token（CJK 1/字符、其余 0.25；**含 system 消息里的工具声明 `toolsAdded` 与工具入参**——漏掉它估算会比真实请求小约 2.9k/6.8k token）与模型窗口判定，占用超 75% 常规裁剪（最近 12 条工具结果保持完整、更早的压到 400 token）、超 85% 或溢出恢复轮次激进裁剪。激进档**从中间整组丢弃**旧消息（截断只能缩小单条、给不出上界）：头部 leading system 与第一条 user（用例原文）保留，尾部保留最近一轮（起点向前回退到非 `toolResult` 处，保证 tool 消息永远跟着它的 assistant），中间段整体丢弃并注入一条合成状态提示（进度 k/n、断言条数与失败数、「重新 snapshot 取新编号」）。常规档**只截 `toolResult` 的文本、不删消息**，用例原文、步骤自述、断言结果（永生清单）一条都不动；两种模式都始终返回新数组。
+- 窗口来源三级回落：`contextWindow` 配置（`PAGEQA_LLM_CONTEXT_WINDOW`）> 模型元数据或**引擎自报**（未声明时探测本地引擎：LM Studio `GET /api/v0/models` 的 `loaded_context_length`、llama.cpp `GET /props` 的 `n_ctx`，探测失败不阻断、不猜）> 32k 兜底；输入预算 = `窗口 − 输出预留 − 安全边际`。输出预留取 `min(申报值, 窗口/8（窗口<20k）/ 窗口/4（其余）)`、下限 512，安全边际取 `max(512, 窗口 8%)`——本地引擎按 `prompt_tokens + max_tokens ≤ n_ctx` 硬记账，本地自定义端点的 `max_tokens` 用同一个 `outputTokenCeiling(window)` 钳制，两处必须是同一个数。
+- 估算自校准：每轮从 `turn_end` 取真实用量（`input + cacheRead + cacheWrite` = prompt_tokens），与上一轮估值的比值作为**放大系数**（只在 ≥1 的方向上更新、取历史最大、封顶 3），后续占用按它收紧。溢出恢复那一轮额外把系数抬到至少 1.25（出错轮次常常没有用量可比对，不能靠估算刚好准）。
+- 小窗口 / 小模型适配（固定前缀压缩，`shouldCompactPrefix`）：默认系统提示 ≈5665 token + 工具声明 ≈6786 token 是每轮都要付的固定开销，**三条触发条件任一成立**就换成 `COMPACT_SYSTEM_PROMPT`（≈583 token）与压缩后的工具说明（描述/参数说明按 token 截断，类型与枚举保留，`execute` 不变）：① 预算 < 16k（窗口装不下，8k 窗口第一个请求就超窗）；② **模型名像小模型**（`guessSmallModel`：≤9B 参数标注如 `4b`/`e4b`/`7b`、或 mini/nano/tiny/small 这类厂商用词）——真实会话里 LM Studio 把 `google/gemma-4-e4b` 载入成 131072 窗口，只看窗口完全不触发，4B 边缘模型每轮仍要读 12.4k token 的规则书；③ 配置 `compactPrompt: true`（`PAGEQA_COMPACT_PROMPT`，`false` 同样能推翻前两条）。优先级为**配置 > 窗口 > 模型名**。压缩只改「怎么向模型解释工具」：窗口预算与工具行为不变，快照字符预算按「扣掉前缀后的余量」缩放（大窗口下不缩放，沿用既有默认）。理由会写进日志与存档（`params.context`，`pageqa sessions` 详情页顶部显示）。
+- 溢出恢复：回合结束后若最后一条 assistant 消息被 pi-ai 的 `isContextOverflow` 判为超窗（含静默溢出），**或**命中本地引擎方言补充表（`contextOverflowError` 的 `EXTRA_OVERFLOW_PATTERNS`：LM Studio 流式请求的 `Context size has been exceeded.` 等 —— 真实故障，pi-ai 的模式表认的是它另一句措辞），则切激进档、抬高校准下限、并附「上下文刚被压缩、从第 k+1 步继续、重新 snapshot 取新编号」的提示续跑一次（`MAX_OVERFLOW_RECOVERIES = 1`，不占续跑额度）；第二次仍撞则判失败，报告以「模型上下文没有超出窗口」为期望、附端点原话与出路（换大窗口模型 / 声明 `contextWindow` / 拆用例），端点若自报了窗口（`windowFromOverflowMessage`）则直接给出该写什么值。
 - 开跑前先探活模型：不通则抛 `ModelUnreachableError`，**一条用例都不执行**（探活在 bsk 就绪检查与建 session 之前，因此连浏览器窗口都不会开）。
 - 续跑保护：`waitForIdle` 后若 agent 自报进度未满（`步骤完成：k/n` 且 `k < n`），或用例中的断言尚未全部解析出来（`countAssertions` vs `parseAssertions`），则自动以「继续执行剩余步骤」再 prompt 一次，最多 5 轮；若续跑后进度与断言数都没推进则停止，避免无谓循环（长流程最常见的失败是模型做完一两步就自行收尾）。
 
@@ -169,7 +173,7 @@ pageqa sessions [选项]        # 子命令：起运行存档查询服务（见�
   - 一次运行 = 文档族 `pageqa.archive` 的一个成员，**键就是运行 id**（按 id 取存档是一次直接查表）；
   - 列表页要的摘要 = 单例文档 `pageqa.index`（一次读就能列全，不必把每份档案的轮次与工具调用都读出来）。
   写入是**一次提交**（`session.commit(...)` 里档案与索引一起写）：一次运行的档案要么整条可读、要么一条都不存在，不会留下「看着有、实际缺」的半截记录。刻意**不用**它的 Conversation / Entry / Task 语义——档案是只写一次、之后只读的运行记录，不是可续跑的对话。
-- **采集（`src/agent/agent.ts`）**：`initializeAgent` 记录参数（系统提示词、模型、工具声明含 schema、编号后的 prompt、用例原文、步骤清单、占位符取值、bsk session、debug 开关）；`transformContext` 钩子记录**每轮实际发出**的上下文（裁剪后的版本 + 裁剪前字符数，因此「模型是不是把前面的步骤挤掉了」有据可查）；`subscribeProgress` 从 agent 事件里记录每轮耗时/用量，以及每次工具调用的入参、结果、耗时、成败。单段文本按 4000 字符截断并标注原始长度。
+- **采集（`src/agent/agent.ts`）**：`initializeAgent` 记录参数（系统提示词、模型、工具声明含 schema、编号后的 prompt、用例原文、步骤清单、占位符取值、bsk session、debug 开关，以及**上下文决策** `params.context`：窗口与来源（config/engine/metadata/fallback）、输入预算、输出预留、能否压缩固定前缀及理由——「我的小模型为什么没被当小模型对待」只有靠它才答得出来，systemPrompt/tools 只有结果没有原因）；`transformContext` 钩子记录**每轮实际发出**的上下文（裁剪后的版本 + 裁剪前字符数与 token 估算，因此「模型是不是把前面的步骤挤掉了」有据可查）；`subscribeProgress` 从 agent 事件里记录每轮耗时/用量，以及每次工具调用的入参、结果、耗时、成败。单段文本按 4000 字符截断并标注原始长度。
 - **落盘时机**：正常路径在 `finalizeResult` 之后写入（带结论与总用量）；编排中途抛错时由 `runAgent` 的 `finally` 兜底写一次——那正是最需要现场的时刻。落盘**绝不影响测试结论**：写失败只提示一句、不改退出码（与旁路产物同一条口径）。
 - **查询服务（`src/session/server.ts`）**：零依赖的 `node:http` 服务，服务端渲染列表页（`/`）与详情页（`/s/<id>`），另提供 JSON（`/api/sessions`、`/api/sessions/<id>`）。动态文本一律经 `escapeHtml`；`id` 走 `assertSafeId` 校验（`[A-Za-z0-9._-]`），URL 编码过的目录穿越撞在校验上返回 404。只监听回环地址——存档含系统提示词、用例文本与页面快照。
 - **清理**：默认只保留最近 200 次运行（按容器里的创建时间倒序），清理失败静默（它只是维护动作，不该冒泡成「这次运行出错了」）。容器文件不存在时 `list` / `read` / `prune` 一律直接返回，不会为「看一眼列表」在磁盘上建出一个空数据库。
@@ -185,6 +189,7 @@ pageqa sessions [选项]        # 子命令：起运行存档查询服务（见�
 - A6：下拉框与日期选择各由**一次**工具调用完成（`select_option` / `pick_date`），并各记成**一个**可回放步骤；日期范围控件由 `date` + `endDate` 一次完成「选开始 → 选结束 → 确定」。找不到浮层/面板/选项时报错并列出当前可选项，模型可退回通用路径；面板类型与参数不一致时明确报错，不产出「半截范围」这种假成功。这类控件依赖组件库类名契约（Element Plus 等），命不中时退回通用 ARIA 选择器——**不猜元素**；页面上同时存在多个同类控件时不得串位（必须命中该控件自己的浮层，且选完等浮层收起再交还控制权）。
 - A7：`pageqa sessions` 起服务后，列表页列出历史运行，详情页展示传给 agent 的参数（系统提示词、模型、工具 schema、编号后的 prompt）、每轮上下文与每次工具调用的入参/结果；JSON 接口同样可用。
 - A8：一次运行结束后，`~/.pageqa/sessions/sessions.sqlite` 里留下该运行的完整档案；`--no-side-outputs` 不影响它。
+- A9：声明 `contextWindow: 8192`（或 `PAGEQA_LLM_CONTEXT_WINDOW=8192`）后，8k 窗口的模型能跑通一条用例：每轮请求的估算 token 不超过预算（`窗口 − 输出预留 − 安全边际`），固定前缀被压缩（系统提示 + 工具说明 ≈3.6k token，压缩前 ≈12.4k），快照按剩余空间缩小。仍撞窗口时按「紧急压缩 → 重试一次」处理；第二次仍撞判失败，报告里的期望为「模型上下文没有超出窗口」，证据给出端点原话、窗口大小与三条出路。裁剪只影响 `toolResult`：用例原文、步骤自述与断言结果在报告里完整（`tests/context.test.mjs` 钉住）。
 
 ## 10. 约束（与不变量一致）
 

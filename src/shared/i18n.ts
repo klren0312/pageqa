@@ -80,6 +80,24 @@ const catalogs: Record<Locale, Catalog> = {
       "[pageqa] 执行完整性不足（步骤或断言未跑满），发起第 {n} 次续跑（进度 {progress}，断言 {a}/{b}）",
     "log.caseEnd":
       "[pageqa] 用例结束：{status}，断言 {n} 条，耗时 {dur}s",
+    // ── 上下文预算（src/agent/context.ts）：按模型窗口缩放，见 ADR-0014 ──
+    "log.contextBudget":
+      "[pageqa] 上下文预算：窗口 {window} tokens，输入预算 {input}（{mode}）",
+    "log.contextModeSmall": "小窗口：系统提示与工具说明已压缩",
+    "log.contextModeNormal": "常规",
+    "log.contextCompactPrefix":
+      "[pageqa] 已压缩固定前缀（窗口 {window} tokens，{reason}）：系统提示与工具说明按小模型档缩短，把上下文留给用例与页面快照",
+    "log.contextCompactByWindow": "预算装不下默认前缀",
+    "log.contextCompactByModel": "模型名像小模型（≤9B / mini / nano / tiny）",
+    "log.contextCompactByConfig": "配置要求（compactPrompt）",
+    "log.contextDetected":
+      "[pageqa] 端点自报上下文窗口 {window} tokens（本地引擎的加载设置），按它算预算",
+    "log.contextCalibrated":
+      "[pageqa] 估算校准：端点回报的真实用量比估算大 {scale} 倍，后续按该系数收紧上下文",
+    "log.overflowRecover":
+      "[pageqa] 上下文超出模型窗口（{window} tokens）：已紧急压缩历史，继续执行（第 {n} 次）",
+    "log.overflowFatal":
+      "[pageqa] 上下文仍超出模型窗口（{window} tokens）：本次运行判为失败。出路：换更大窗口的模型、在配置里声明 contextWindow、或把长用例拆成多个场景",
     // ── session 存档与查询服务（src/session/archive.ts / src/session/server.ts）──
     "log.sessionArchived":
       "[pageqa] session 存档已写入 {id}（pageqa sessions 可回看这次运行交给了模型什么）",
@@ -123,6 +141,19 @@ const catalogs: Record<Locale, Catalog> = {
     "sessions.detailBskSession": "bsk session",
     "sessions.detailScenario": "场景",
     "sessions.detailNote": "归因",
+    "sessions.detailContext": "上下文",
+    "sessions.contextLine":
+      "窗口 {window}（{source}）· 输入预算 {input} · 输出预留 {output} · 固定前缀 {prefix}",
+    "sessions.windowSource.config": "配置声明",
+    "sessions.windowSource.engine": "引擎自报",
+    "sessions.windowSource.metadata": "模型目录",
+    "sessions.windowSource.fallback": "保守兜底",
+    "sessions.compactOn": "已压缩（{reason}）",
+    "sessions.compactOff": "未压缩",
+    "sessions.compactReason.window": "窗口装不下",
+    "sessions.compactReason.model": "模型名像小模型",
+    "sessions.compactReason.config": "配置要求",
+    "sessions.compactReason.none": "—",
     "sessions.detailTruncated": "（已截断，原始 {chars} 字符）",
     "sessions.detailNotFound": "找不到这条运行记录（存档可能已被清理）",
     "sessions.turn": "第 {n} 轮",
@@ -729,6 +760,11 @@ const catalogs: Record<Locale, Catalog> = {
       "用户中止了该场景（已完成 {done}/{total} 步），剩余步骤未执行",
     "report.cancel": "用户中止了该场景，剩余步骤未执行",
     "report.agentErrorExpectation": "agent 正常执行完毕（未因错误中断）",
+    "report.contextOverflowExpectation": "模型上下文没有超出窗口（用例能完整执行）",
+    "report.contextOverflowHint":
+      "上下文超出模型窗口（{window} tokens）：{msg}。出路：换一个窗口更大的模型；自配端点在 ~/.pageqa/config.json 里声明 `contextWindow`（本地推理引擎的 n_ctx 往往只有 8192）；或把长用例拆成多个场景。",
+    "report.contextOverflowDetected":
+      " 端点自报的实际窗口是 {detected} tokens：在 ~/.pageqa/config.json 里写 `\"contextWindow\": {detected}`（或设 PAGEQA_LLM_CONTEXT_WINDOW={detected}）后，pageqa 会按小窗口模式压缩系统提示与工具说明，第一次请求就不会再撞墙。",
 
     // ── 耗时构成（src/agent/timing.ts）：一次运行的墙钟花在哪了。写进日志，不进 stdout 报告 ──
     "timing.title": "耗时构成（墙钟 {wall}）",
@@ -1002,6 +1038,15 @@ const catalogs: Record<Locale, Catalog> = {
       PAGEQA_LLM_THINKING_FORMAT=none       不发任何思考开关（端点用它自己的默认）
       （openai / ant-ling / baseten 发不出关闭开关，配了等于没配；端点若不认某个字段，
         探活会自动去掉它并降级，不会把本来能用的端点弄坏）
+  - 小窗口 / 本地模型（可选）：自配端点拿不到窗口元数据，而本地推理引擎的窗口由加载设置
+    决定（同一个模型可以是 8192 也可 131072）。**不声明时 pageqa 会问一次引擎自己**
+    （LM Studio /api/v0/models、llama.cpp /props），问不到才退回保守的 32k。
+      PAGEQA_LLM_CONTEXT_WINDOW=8192   端点真实的上下文窗口（token），也可写进 config.json 的 contextWindow
+    声明优先于探测。之后 pageqa 按窗口算预算、按需裁剪历史、按窗口钳制 max_tokens，
+    并用端点回报的真实用量自校准估算。
+      PAGEQA_COMPACT_PROMPT=true|false  是否压缩「固定前缀」（系统提示 + 工具说明）
+    不配 = 自动：预算装不下默认前缀、或**模型名像小模型**（≤9B / mini / nano / tiny）时压缩
+    （12.4k → 约 3.5k token；4B 模型即便窗口开到 128k 也照样压，否则每轮白读 9k token）。
   - Jev 语义判断（可选，用于增强断言精度；仅在字面匹配未命中时调用）：
       PAGEQA_JEV_ENABLED=true   启用 Jev 辅助断言
       PAGEQA_JEV_API_KEY=<key>  TypeSafe API 密钥
@@ -1186,6 +1231,24 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "[pageqa] incomplete execution (steps or assertions not finished), initiating retry #{n} (progress {progress}, assertions {a}/{b})",
     "log.caseEnd":
       "[pageqa] case ended: {status}, {n} assertions, elapsed {dur}s",
+    // ── context budget (src/agent/context.ts): scales with the model window, see ADR-0014 ──
+    "log.contextBudget":
+      "[pageqa] context budget: window {window} tokens, input budget {input} ({mode})",
+    "log.contextModeSmall": "small window: system prompt and tool docs compacted",
+    "log.contextModeNormal": "normal",
+    "log.contextCompactPrefix":
+      "[pageqa] fixed prefix compacted (window {window} tokens, {reason}): system prompt and tool docs shortened to leave context for the case and page snapshots",
+    "log.contextCompactByWindow": "the default prefix does not fit the budget",
+    "log.contextCompactByModel": "model name looks small (<=9B / mini / nano / tiny)",
+    "log.contextCompactByConfig": "requested by config (compactPrompt)",
+    "log.contextDetected":
+      "[pageqa] the endpoint reports a context window of {window} tokens (its load setting); budgeting against it",
+    "log.contextCalibrated":
+      "[pageqa] estimate calibration: real usage is {scale}x our estimate, tightening context from here on",
+    "log.overflowRecover":
+      "[pageqa] context exceeded the model window ({window} tokens): history compressed, continuing (attempt {n})",
+    "log.overflowFatal":
+      "[pageqa] context still exceeds the model window ({window} tokens): this run is a failure. Options: a model with a larger window, declare contextWindow in the config, or split the long case into several scenarios",
     // ── session archive & query server (src/session/archive.ts / src/session/server.ts) ──
     "log.sessionArchived":
       "[pageqa] session archive written: {id} (run `pageqa sessions` to review what was handed to the model)",
@@ -1231,6 +1294,19 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "sessions.detailBskSession": "bsk session",
     "sessions.detailScenario": "scenario",
     "sessions.detailNote": "cause",
+    "sessions.detailContext": "context",
+    "sessions.contextLine":
+      "window {window} ({source}) · input budget {input} · output reserve {output} · fixed prefix {prefix}",
+    "sessions.windowSource.config": "declared in config",
+    "sessions.windowSource.engine": "reported by the engine",
+    "sessions.windowSource.metadata": "model catalog",
+    "sessions.windowSource.fallback": "conservative fallback",
+    "sessions.compactOn": "compacted ({reason})",
+    "sessions.compactOff": "not compacted",
+    "sessions.compactReason.window": "does not fit the window",
+    "sessions.compactReason.model": "model name looks small",
+    "sessions.compactReason.config": "requested in config",
+    "sessions.compactReason.none": "—",
     "sessions.detailTruncated": "(truncated; {chars} chars originally)",
     "sessions.detailNotFound": "run not found (the archive may have been pruned)",
     "sessions.turn": "turn {n}",
@@ -1871,6 +1947,12 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "report.cancel": "user aborted this scenario, remaining steps not executed",
     "report.agentErrorExpectation":
       "agent finished executing normally (not interrupted by an error)",
+    "report.contextOverflowExpectation":
+      "the model context did not exceed its window (the case could run in full)",
+    "report.contextOverflowHint":
+      "context exceeded the model window ({window} tokens): {msg}. Options: switch to a model with a larger window; for custom endpoints declare `contextWindow` in ~/.pageqa/config.json (local engines often have n_ctx = 8192 only); or split the long case into several scenarios.",
+    "report.contextOverflowDetected":
+      " The endpoint itself reports a window of {detected} tokens: set `\"contextWindow\": {detected}` in ~/.pageqa/config.json (or PAGEQA_LLM_CONTEXT_WINDOW={detected}) and pageqa will compact the system prompt and tool docs for the small window, so the first request fits.",
 
     // ── Timing breakdown (src/agent/timing.ts) ──
     "timing.title": "time breakdown (wall clock {wall})",
@@ -2171,6 +2253,19 @@ Config:
       PAGEQA_LLM_THINKING_FORMAT=none       send no thinking switch (endpoint keeps its default)
       (openai / ant-ling / baseten cannot send an off-switch. If an endpoint rejects the field, the
         probe drops it and downgrades, so a working endpoint is never broken by the default.)
+  - Small-window / local models (optional): custom endpoints expose no window metadata, and a local
+    engine's window follows its load setting (the same model can be 8192 or 131072). **When you do
+    not declare one, pageqa asks the engine once** (LM Studio /api/v0/models, llama.cpp /props) and
+    only falls back to a conservative 32k if that fails.
+      PAGEQA_LLM_CONTEXT_WINDOW=8192   the endpoint's real context window (tokens); or set
+                                       "contextWindow" in config.json
+    A declared value wins over detection. pageqa then budgets against the window, trims history as
+    needed, clamps max_tokens to the window, and re-calibrates its estimate against the real usage
+    the endpoint reports.
+      PAGEQA_COMPACT_PROMPT=true|false  compact the "fixed prefix" (system prompt + tool docs)
+    Unset = auto: compacted when the budget cannot fit the default prefix, or when **the model name
+    looks small** (<=9B / mini / nano / tiny) — a 4B model gets compacted even with a 128k window,
+    otherwise it reads a 9k-token rule book every turn for nothing (12.4k -> ~3.5k tokens).
   - Jev semantic judgment (optional, for higher assertion precision; only called when literal match misses):
       PAGEQA_JEV_ENABLED=true    enable Jev-assisted assertion
       PAGEQA_JEV_API_KEY=<key>  TypeSafe API key

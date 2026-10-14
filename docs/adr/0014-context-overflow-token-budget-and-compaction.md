@@ -1,6 +1,6 @@
 # ADR-0014：上下文溢出按「精确 token 预算 + 分级规则裁剪 + 一次恢复」处理
 
-- 状态：采纳（2026-09）——设计定稿，尚未实施
+- 状态：采纳（2026-09）——**已实施（2026-10-14）**，实施中的三处偏离见文末「落地进度」
 - 背景：执行长用例（尤其中文）时上下文会满。现有机制只有一层：`transformContext`（`src/agent.ts`）在每轮 LLM 请求前按**字符数**估算总量，超过 `CONTEXT_CHAR_LIMIT = 40_000` 才裁剪，把最近 `KEEP_RECENT_MESSAGES = 12` 条之外的旧 toolResult 截断到 1500 字符并打标。没有摘要、没有记忆、没有 token 预算。实践中两种失败都会发生：中文用例直接撞模型硬上限（请求被拒），英文长用例表现为模型中途失忆（忘记步骤进度、重复执行、断言数对不上而误判 fail）。
 - 事实：
   1. **字符估算对中文系统性失准**：`estimateChars` 按字符数比较 40k 上限，而该上限的注释假定「默认模型窗口 32k token」。对英文 40k 字符 ≈ 10k token，绰绰有余；对中文 40k 字符 ≈ 40k+ token，**早已超出窗口**——裁剪阈值要么不触发、要么触发太晚，先撞上 provider 的 `context_length_exceeded`。
@@ -108,4 +108,86 @@ v1 不做 LLM 摘要 compaction。理由：失忆的根因是「该永生的信�
 
 ## 落地进度
 
-- 设计定稿（2026-09-30，经逐轮评审确认），**实施未开始**。实施顺序建议：估算器与单测 → 裁剪重写 → 合成消息 → 恢复分支 → 配置键 → 压力测试。
+- 设计定稿（2026-09-30，经逐轮评审确认）。
+- **已实施（2026-10-14）**，起因是一次真实故障：`google/gemma-4-e4b`（本地引擎，窗口 8192）被拒
+  `request (10185 tokens) exceeds the available context size (8192 tokens)`——旧实现按字符比较 40k 阈值，
+  对中文（1 字符 ≈ 1 token）早已越窗。落地内容：
+  - `src/agent/context.ts`（新）：token 估算器（CJK 1/字符、其余 0.25；**含 system 消息里的
+    工具声明 `toolsAdded`**——只数 `content` 会漏掉 ≈6.8k（压缩后 ≈2.9k）token，估算比真实请求
+    小一大截，「以为还早、实际已经撞墙」就是这么来的）、窗口三级回落、
+    预算 = `窗口 − 输出预留（≤窗口/4）− 安全边际（≥窗口 5%）`、两级阈值（75% 常规 / 85% 激进）、
+    常规档只截 `toolResult` 文本的裁剪、激进档整组丢弃中间消息 + 状态提示、`isContextOverflow`
+    超限判定、端点自报窗口的抽取（`windowFromOverflowMessage`）、压缩版系统提示与工具声明压缩器、快照预算。
+  - `src/agent/agent.ts`：`transformContext` 改为预算驱动（读数 → 定档 → 记账），
+    `executeWithContinuations` 增加溢出判定与一次恢复（`MAX_OVERFLOW_RECOVERIES = 1`，不占续跑额度），
+    `finalizeResult` 对「撞窗口且自救无效」单独归因并给出路。
+  - `src/config/config.ts`：新增 `contextWindow`（`PAGEQA_LLM_CONTEXT_WINDOW` 优先）；
+    `src/llm/llm.ts`：自定义端点的窗口取配置值，`maxOutput` 按窗口四分之一钳制（避免 `max_tokens` 大于窗口）；
+    `src/bsk/tools.ts` + `src/shared/snapshot.ts`：快照字符预算与触发长度可下传（小窗口把快照一起缩）。
+  - `tests/context.test.mjs`：估算器、预算、两级裁剪（配对保持 / 返回新数组 / 用例与断言不动）、
+    溢出判定（llama.cpp 原话、限流不算、静默溢出）、前缀压缩与快照预算，共 30 条。
+  - 文档：`docs/comet/specs/pageqa/spec.md`（第 4 节与 A9）、`CONTEXT.md`（上下文预算）、README 双语配置键。
+
+### 实施中的三处偏离（有意）
+
+1. **固定前缀在预算低于约 16k 时可压缩**（决策七原本把它列为「不可裁」）。原因：默认前缀
+   ≈5665（系统提示）+ ≈6786（工具声明）token，8k 窗口的模型**第一个请求就超窗**，
+   保护前缀等于一条用例都跑不了。压缩只改「怎么向模型解释工具」（描述/参数说明截断，
+   类型与枚举保留、`execute` 不变），并换成 `COMPACT_SYSTEM_PROMPT`（≈583 token）。
+   实测前缀 12336 → 3614 token。
+2. **合成状态消息只在激进档注入**（决策八的收窄）。常规档裁剪只落在 `toolResult` 的文本上，
+   重入锚点（用例原文 + 步骤自述 + 断言结果在 user/assistant 消息里）本来就都在，
+   再注入一份等于重复付 token；激进档会**丢弃**中间消息，锚点真的没了，因此注入一条
+   状态提示（进度 k/n、断言条数与失败数、「重新 snapshot 取新编号」）。
+3. **`compactThresholds` 未开成配置键**（决策六的后半句）。阈值随窗口缩放（75%/85% 是比例，
+   不是绝对值），目前没有需要用户调的场景；真出现再加，避免配置面摊大饼。
+
+### 第二轮加固（2026-10-14 晚，同一台机器上的第二个故障）
+
+用户配好 `contextWindow: 8192` 后换了一种报错：LM Studio 在**流式**请求上回
+`{"code":500,"message":"Context size has been exceeded.","type":"server_error"}`。三处原因与处置：
+
+1. **这句方言 pi-ai 认不出**（它的 LM Studio 模式是 `greater than the context length`），
+   于是不走「压缩后重试」，直接以泛泛的模型报错收场。→ `contextOverflowError` 增加
+   `EXTRA_OVERFLOW_PATTERNS`（只收「明确说窗口装不下」的措辞，宁可退回普通失败）。
+2. **输出预留与端点记账口径不一致**：本地引擎按 `prompt_tokens + max_tokens <= n_ctx` 硬记账，
+   而 8k 窗口按 1/4 预留 2048，等于把本该留给输入的额度挂在输出上。→ 小窗口（<20k）输出预留
+   降到 1/8、安全边际提到 8%（≥512），并把这条钳制**与 `max_tokens` 用同一个函数**
+   （`outputTokenCeiling`）绑定：预留与实际申请必须是同一个数。
+3. **估算有系统性偏差的风险**：CJK 1 token/字符只是近似（同一段中文在不同词表上可能差两成），
+   8k 窗口下两成就是「以为还剩 1k、实际越界」。→ 落地决策三的**用法自校准**：
+   每轮用真实 `input + cacheRead + cacheWrite` 与上轮估值的比值做放大系数（只增不减、封顶 3），
+   溢出恢复那一轮再抬到至少 1.25（出错轮次通常没有用量可比对）。
+   实测本机 Gemma 词表上压缩前缀的真实值为 3321 token（估算 3614，比值 0.92——估算偏保守，安全）。
+
+另外补了**窗口自动探测**（`src/llm/window-detect.ts`）：自配端点没声明 `contextWindow` 时，
+问一次引擎自己的加载设置（LM Studio `GET /api/v0/models` 的 `loaded_context_length`，
+llama.cpp `GET /props` 的 `n_ctx`），问不到才退回 32k。理由很直接：窗口由**加载设置**决定，
+同一个模型可以是 8192 也可以是 131072，用户的引擎自己知道答案——「本地跑个小模型」这件事
+不该要求用户先去读引擎设置。声明了 `contextWindow` 就以声明为准（声明是显式判断）。
+
+### 第三轮：前缀压缩的触发条件（2026-10-14，由一次真实会话倒逼）
+
+用户跑了 `google/gemma-4-e4b`（LM Studio，窗口**载入成 131072**）并给了 session 存档
+（`20261014-105627-9fef`）。存档显示：`systemPrompt` 7881 字符 = 完整提示、工具声明 12660 字符 =
+完整声明、`contextTokensBefore` 12.5k→22.5k 逐轮增长、9 轮共 160k 输入 token。功能上没出错
+（status pass），但**小模型识别确实失效了**：压缩前缀原本只按「预算装不下」触发，而窗口
+131072 时预算绰绰有余——于是 4B 边缘模型每轮都在读 12.4k token 的规则书，本地推理的 prefill
+成本几乎全落在这里。
+
+处置：决策七的放宽条件从「窗口装不下」扩成**三条并联**——窗口装不下 / **模型名像小模型**
+（`guessSmallModel`：≤9B 参数标注与 mini/nano/tiny 用词）/ 配置 `compactPrompt`，优先级
+**配置 > 窗口 > 模型名**。这是一次有意为之的口径修正：窗口回答「装不装得下」，模型回答
+「吃不吃得消」，两者不是一回事。猜错的代价很小（压缩只改「怎么向模型解释工具」，
+不改窗口预算、不改工具行为），而漏判的代价是每轮 9k token 白烧。
+
+同时把**依据**落进存档与详情页（`params.context`：窗口 + 来源 config/engine/metadata/fallback、
+输入预算、输出预留、是否压缩及理由）：这次诊断之所以要先猜，就是因为存档里只有
+`systemPrompt`/`tools` 这两个**结果**字段，没有「为什么用这一版」的记录。
+
+这一轮的实测数据同样值得记下来：压缩前缀的真实 token 数为 3321，我们的估算是 3614
+（比值 0.92），完整前缀估算 12336；一轮真实会话的 `input` 是 10.3k→21.7k（视上下文长度而定）。
+也就是说压缩前缀在这台机器上每轮省约 9k token。
+
+未做的部分：假 `streamFn` 压力测试（决策十的第二种验证方式）——本轮只落了纯函数单测
+（`tests/context.test.mjs`、`tests/window-detect.test.mjs`），真模型长用例仍是发布前抽检。

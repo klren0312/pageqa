@@ -70,7 +70,7 @@ import {
   type DateSpec,
   type OverlayProbe,
 } from "./picker.js";
-import { slimSnapshot } from "../shared/snapshot.js";
+import { slimOptionsFor, slimSnapshot } from "../shared/snapshot.js";
 import {
   BskIpcAbortError,
   BskIpcRpcError,
@@ -1134,7 +1134,25 @@ const SNAPSHOT_DEDUP_MS = 1_000;
  */
 const SNAPSHOT_ASSERT_MS = 5_000;
 
-export function createBskOps(session: string, jevClient?: JevClient): BskOps {
+export function createBskOps(
+  session: string,
+  jevClient?: JevClient,
+  /**
+   * 单份快照允许占用的字符预算（缺省用 shared/snapshot.ts 的默认值）。
+   *
+   * 小窗口模型的上下文装不下默认体积的快照（见 agent/context.ts 的
+   * `snapshotBudgetChars`）：这里把它透传给瘦身器，让快照在生成时就变小，
+   * 而不是等它进上下文之后再靠裁剪去救。
+   */
+  snapshotBudgetChars?: number | (() => number | undefined),
+): BskOps {
+  /** 每次取快照前求值：预算可能在工具建好之后才回填（见 `BskToolOptions`）。 */
+  const currentSlimOptions = () =>
+    slimOptionsFor(
+      typeof snapshotBudgetChars === "function"
+        ? snapshotBudgetChars()
+        : snapshotBudgetChars,
+    );
   const quiet = ["--session", session, "--quiet"];
   let snapshotText = "";
   /** 同一份快照瘦身前的完整原文（assert_text 的字面匹配必须用它，见 ensureRawSnapshot）。 */
@@ -1193,7 +1211,7 @@ export function createBskOps(session: string, jevClient?: JevClient): BskOps {
   /** 真正抓一次快照：瘦身后交给模型，并按需记录瘦身统计。 */
   const takeSnapshot = async (signal?: AbortSignal): Promise<string> => {
     const raw = await bsk(["snapshot", ...quiet], signal);
-    const slim = slimSnapshot(raw);
+    const slim = slimSnapshot(raw, currentSlimOptions());
     if (slim.applied) {
       debugLog(
         `[bsk] snapshot 瘦身：${slim.before} -> ${slim.after} 字符` +
@@ -2503,11 +2521,29 @@ export interface BskToolOptions {
   jevClient?: JevClient;
   /** 每次工具执行后的回调（录制回放脚本用）。 */
   onExec?: (event: BskToolExec) => void;
+  /**
+   * 单份快照允许占用的**字符预算**（默认见 shared/snapshot.ts 的 `SLIM_BUDGET_CHARS`）。
+   *
+   * 小窗口模型必须把快照一起缩小：一次 snapshot 动辄上万字符，而 8k 窗口的模型
+   * 光固定前缀就占了 12k token——快照不缩，历史裁得再狠，第一个 snapshot 就撞墙。
+   * 调用方按上下文预算算好传进来（见 agent/context.ts 的 `snapshotBudgetChars`）。
+   *
+   * 允许传函数：预算要等「压缩后的固定前缀实测多大」才知道，而那要先建好工具、
+   * 再按前端形态算（见 agent.ts 的回填）。每次取快照前求值，取值天然是最新的。
+   */
+  snapshotBudgetChars?: number | (() => number | undefined);
 }
 
 /** 构造一组浏览器操作工具，供 page-test agent 调用。 */
 export function createBskTools(opts: BskToolOptions): AgentTool[] {
-  const ops = createBskOps(opts.session, opts.jevClient);
+  const ops = createBskOps(opts.session, opts.jevClient, opts.snapshotBudgetChars);
+  /** 快照瘦身预算（调用方按上下文窗口给，见 `BskToolOptions.snapshotBudgetChars`）。 */
+  const currentSlimOptions = () =>
+    slimOptionsFor(
+      typeof opts.snapshotBudgetChars === "function"
+        ? opts.snapshotBudgetChars()
+        : opts.snapshotBudgetChars,
+    );
 
   /**
    * 统一包装一次工具执行：拿到结果后上报给录制器，失败时先上报再抛出
@@ -2536,7 +2572,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     try {
       // `fresh`：动作刚改过页面，缓存的快照在这里必然是过期的。
       const fresh = await ops.snapshot(signal, { fresh: true });
-      const slim = slimSnapshot(fresh, { mode: "refs" });
+      const slim = slimSnapshot(fresh, { mode: "refs", ...currentSlimOptions() });
       return `\n\n【${header}】\n${slim.text}`;
     } catch (err) {
       if (err instanceof BskAbortError) throw err;

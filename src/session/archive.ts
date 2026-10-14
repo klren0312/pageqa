@@ -156,6 +156,32 @@ export interface SessionParams {
   vars: SessionVar[];
   /** 是否处于 `--debug`。 */
   debug: boolean;
+  /**
+   * 本次运行的上下文决策（窗口多大、从哪来的、固定前缀压没压、为什么）。
+   *
+   * 单列出来是因为「模型怎么被对待的」在别的字段里看不出来：systemPrompt 与 tools 只显示
+   * 结果（压缩版还是完整版），看不出**为什么**——而「我的小模型为什么没被当小模型对待」
+   * 恰恰是最常被问到的问题。这里把依据（窗口来源、预算、压缩理由）一并留下。
+   */
+  context?: SessionContextInfo;
+}
+
+/** 上下文决策的可读快照（写进存档，见 {@link SessionParams.context}）。 */
+export interface SessionContextInfo {
+  /** 实际使用的窗口（token）。 */
+  window: number;
+  /** 窗口来自哪里：`config`（用户声明）/ `engine`（引擎自报）/ `metadata`（模型目录）/ `fallback`（保守兜底）。 */
+  windowSource: "config" | "engine" | "metadata" | "fallback";
+  /** 输入预算（`窗口 − 输出预留 − 安全边际`）。 */
+  inputBudget: number;
+  /** 输出预留（与请求里的 `max_tokens` 同源）。 */
+  outputReserve: number;
+  /** 是否压缩了固定前缀。 */
+  compact: boolean;
+  /** 压缩理由：`window` / `model` / `config` / `none`。 */
+  compactReason: string;
+  /** 小窗口下的单份快照字符预算（未缩放时为空 = 用默认值）。 */
+  snapshotBudgetChars?: number;
 }
 
 /** 一条消息在「这一轮实际发给模型的上下文」里的样子（长文本已截断）。 */
@@ -183,7 +209,13 @@ export interface SessionTurn {
   context: SessionMessage[];
   /** 该轮上下文的原始字符总数（裁剪前）。 */
   contextCharsBefore?: number;
-
+  /**
+   * 该轮上下文的原始 token 估算值（裁剪前）。
+   *
+   * 与字符数一并记：字符是旧口径（跨记录可比），token 才是与窗口对照的那个数
+   * （`pageqa sessions` 里看到「裁剪前 9.8k token / 窗口 8k」就知道为什么会被裁）。
+   */
+  contextTokensBefore?: number;
 }
 
 /** 一次工具调用：模型给的入参、工具返回的结果或失败原因、耗时。 */
@@ -351,6 +383,7 @@ export class SessionCollector {
     startedAt: number;
     context?: SessionMessage[];
     charsBefore?: number;
+    tokensBefore?: number;
   } | null = null;
   private readonly openTools = new Map<string, { index: number; startedAt: number }>();
 
@@ -396,10 +429,15 @@ export class SessionCollector {
    * 由 agent 的 `transformContext` 钩子在每次 LLM 请求前调用——那里拿到的就是裁剪后
    * 真正要发出去的 messages，因此能如实回答「模型这一轮看到了什么、被裁掉了多少」。
    */
-  noteTurnContext(messages: readonly unknown[], charsBefore?: number): void {
+  noteTurnContext(
+    messages: readonly unknown[],
+    charsBefore?: number,
+    tokensBefore?: number,
+  ): void {
     if (!this.pendingTurn) this.pendingTurn = { startedAt: this.now() };
     this.pendingTurn.context = summarizeMessages(messages);
     if (charsBefore !== undefined) this.pendingTurn.charsBefore = charsBefore;
+    if (tokensBefore !== undefined) this.pendingTurn.tokensBefore = tokensBefore;
   }
 
   /** `turn_end`：收一轮，落一条轮次记录。 */
@@ -408,6 +446,7 @@ export class SessionCollector {
     const ended = this.now();
     this.turnIndex += 1;
     const charsBefore = this.pendingTurn?.charsBefore;
+    const tokensBefore = this.pendingTurn?.tokensBefore;
     const turn: SessionTurn = {
       index: this.turnIndex,
       startedAt,
@@ -415,6 +454,7 @@ export class SessionCollector {
       context: this.pendingTurn?.context ?? [],
       ...(usage ? { usage } : {}),
       ...(charsBefore !== undefined ? { contextCharsBefore: charsBefore } : {}),
+      ...(tokensBefore !== undefined ? { contextTokensBefore: tokensBefore } : {}),
     };
     this.archive.turns.push(turn);
     this.pendingTurn = null;

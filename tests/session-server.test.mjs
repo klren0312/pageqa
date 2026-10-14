@@ -97,6 +97,29 @@ describe("列表页与详情页渲染", () => {
     assert.doesNotMatch(html, /onerror=1>/);
   });
 
+  // 「我的小模型为什么没被当小模型对待」这类问题，只有把**依据**摆在页面上才答得出来：
+  // systemPrompt/tools 只显示结果（压缩版还是完整版），看不出窗口从哪来、为什么没压。
+  test("详情页给出上下文决策：窗口、来源、预算与固定前缀是否压缩", () => {
+    const html = renderDetailPage(
+      sampleArchive("20261014-105627-9fef"),
+    );
+    assert.doesNotMatch(html, /窗口 131072/, "旧记录没有这段，不该凭空出现");
+
+    const withContext = sampleArchive("20261014-110000-aaaa");
+    withContext.params.context = {
+      window: 131072,
+      windowSource: "engine",
+      inputBudget: 112395,
+      outputReserve: 8192,
+      compact: true,
+      compactReason: "model",
+    };
+    const out = renderDetailPage(withContext);
+    assert.match(out, /窗口 131072（引擎自报）/);
+    assert.match(out, /输入预算 112395/);
+    assert.match(out, /固定前缀 已压缩（模型名像小模型）/);
+  });
+
   test("被截断的文本标注原始长度", () => {
     const archive = sampleArchive();
     archive.toolCalls[0].result = "0123456789";

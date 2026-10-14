@@ -37,7 +37,20 @@ import {
 } from "./locator.js";
 
 /** 原文不超过该长度时原样返回（小页面不折腾）。 */
-const SLIM_TRIGGER_CHARS = 8_000;
+export const SLIM_TRIGGER_CHARS = 8_000;
+
+/**
+ * 由「快照字符预算」算出瘦身选项。
+ *
+ * `triggerChars` 必须跟着预算走：预算小于默认触发长度时，「小页面不折腾」这条豁免
+ * 会让一份 5k 字符的快照原样进上下文——而 5k 字符正是小窗口模型受不了的体积。
+ * 取 min(默认触发长度, 预算)，两者相等时行为与旧版完全一致。
+ */
+export function slimOptionsFor(budgetChars?: number): SlimSnapshotOptions {
+  return budgetChars && budgetChars > 0
+    ? { budgetChars, triggerChars: Math.min(SLIM_TRIGGER_CHARS, budgetChars) }
+    : {};
+}
 /** 非关键文本行保留的长度，超出即截断。 */
 const TEXT_LINE_MAX = 160;
 /** 超预算时非关键行进一步收紧到的长度。 */
@@ -273,6 +286,14 @@ export interface SlimSnapshotOptions {
   mode?: SlimMode;
   /** 字符预算（默认 `SLIM_BUDGET_CHARS`）。 */
   budgetChars?: number;
+  /**
+   * 「不超过它就原样返回」的触发长度（默认 `SLIM_TRIGGER_CHARS`）。
+   *
+   * 之所以做成可传：`full` 档位原本「小页面不折腾」是相对 20k 预算定的，而小窗口
+   * 模型的快照预算可能只有 2k——那时 8k 的页面已经算「大」，再原样返回就会把
+   * 整个上下文撑爆（见 agent/context.ts 的 `snapshotBudgetChars`）。
+   */
+  triggerChars?: number;
 }
 
 /**
@@ -287,6 +308,7 @@ export function slimSnapshot(
 ): SlimSnapshotResult {
   const mode = options.mode ?? "full";
   const budgetChars = options.budgetChars ?? SLIM_BUDGET_CHARS;
+  const triggerChars = options.triggerChars ?? SLIM_TRIGGER_CHARS;
   const before = text.length;
   const untouched: SlimSnapshotResult = {
     text,
@@ -299,7 +321,7 @@ export function slimSnapshot(
     foldedRefs: 0,
   };
   // 小页面不折腾（`full` 档位）：原文不长时任何改写都只是让行为变得难以解释。
-  if (mode === "full" && before <= SLIM_TRIGGER_CHARS) return untouched;
+  if (mode === "full" && before <= triggerChars) return untouched;
 
   const all = text.split(/\r?\n/).map(classify);
 

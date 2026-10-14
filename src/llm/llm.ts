@@ -11,6 +11,7 @@ import {
 } from "../config/config.js";
 import { info } from "../shared/log.js";
 import { t } from "../shared/i18n.js";
+import { outputTokenCeiling } from "../agent/context.js";
 
 /**
  * 自定义 LLM provider：基于 @earendil-works/pi-ai 构造一个指向可配置 OpenAI 兼容端点的 provider。
@@ -42,25 +43,56 @@ const MODELS: LlmModelConfig[] = [
   { id: "deepseek-v4.1-flash", name: "Deepseek-V4.1-Flash", contextWindow: 1_000_000, maxOutput: 128_000 },
 ];
 
-/** 预设之外的模型使用的保守上下文窗口/输出上限（未知模型按最小预设处理，避免超出端点实际限制）。 */
+/** 预设之外的模型使用的保守上下文窗口（未知模型按最小预设处理，避免超出端点实际限制）。 */
 const FALLBACK_CONTEXT_WINDOW = 32_000;
-const FALLBACK_MAX_OUTPUT = 64_000;
+
+/** 兜底模型的输出上限：真正生效的值由 `outputTokenCeiling` 按窗口夹出来。 */
+const FALLBACK_MAX_OUTPUT = 8_192;
+
+/**
+ * 把输出上限夹到「窗口允许的范围」内。
+ *
+ * 这条钳制是给**小窗口模型**准备的：本地端点（llama.cpp / LM Studio）按
+ * `prompt_tokens + max_tokens <= n_ctx` 记账，声明的输出上限（预设 64k / 兜底 64k）
+ * 对 8192 窗口的模型纯属荒谬——提示词过关了，也会在输出分配上被端点拒掉，
+ * 报出来的还是「上下文超了」。**上限与 agent 侧算的「输出预留」用同一个函数**
+ * （`outputTokenCeiling`）：两处不一致的话，预留要么白占额度，要么是个假的安全垫。
+ */
+function clampMaxOutput(maxOutput: number, window: number): number {
+  return Math.min(Math.max(maxOutput, MIN_MAX_OUTPUT), outputTokenCeiling(window));
+}
+
+/** 输出上限的下限：再小的模型也要能写下一次工具调用与结论。 */
+const MIN_MAX_OUTPUT = 512;
 
 /**
  * 解析实际要注册的模型清单：预设模型沿用精确的 contextWindow/maxOutput；
  * 用户配置了预设之外的模型时，动态补一条保守条目，使「改配置即用」成立
  * （README 承诺 baseUrl/apiKey/model 均可配置、无需改代码）。
+ *
+ * `configuredWindow`（配置里的 `contextWindow`）对整个清单生效：它描述的是**端点的
+ * 实际窗口**，与模型 id 无关——把 gemma 挂在 8k 的本地引擎上，或者把一个预设模型
+ * 挂到只有 8k 的反代后面，都是同一件事。声明了就以它为准（ADR-0014 决策四）。
  */
-function resolveModels(modelId: string): LlmModelConfig[] {
-  if (MODELS.some((m) => m.id === modelId)) return MODELS;
+function resolveModels(modelId: string, configuredWindow?: number): LlmModelConfig[] {
+  const withWindow = (m: LlmModelConfig): LlmModelConfig => {
+    const contextWindow = configuredWindow ?? m.contextWindow;
+    return {
+      ...m,
+      contextWindow,
+      maxOutput: clampMaxOutput(m.maxOutput, contextWindow),
+    };
+  };
+  const base = MODELS.map(withWindow);
+  if (MODELS.some((m) => m.id === modelId)) return base;
   return [
-    ...MODELS,
-    {
+    ...base,
+    withWindow({
       id: modelId,
       name: modelId,
       contextWindow: FALLBACK_CONTEXT_WINDOW,
       maxOutput: FALLBACK_MAX_OUTPUT,
-    },
+    }),
   ];
 }
 
@@ -82,7 +114,7 @@ export function createPageqaProvider(
   cfg: PageQaConfig = loadConfig(),
 ): Provider {
   const baseUrl = cfg.baseUrl;
-  const registered = resolveModels(cfg.model);
+  const registered = resolveModels(cfg.model, cfg.contextWindow);
   /**
    * 「显式关闭端点的思考模式」——**默认就关**。
    *

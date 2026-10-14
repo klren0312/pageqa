@@ -24,6 +24,7 @@ import {
   readArchive,
   SESSIONS_DIR,
   type SessionArchive,
+  type SessionContextInfo,
   type SessionSummary,
 } from "./archive.js";
 
@@ -278,6 +279,28 @@ function toolsSection(a: SessionArchive): string {
   return `<section><h2>${escapeHtml(t("sessions.detailToolCalls"))}</h2>${rows}</section>`;
 }
 
+/**
+ * 上下文决策的一行摘要：窗口多大、从哪来的、前缀压没压、为什么压。
+ *
+ * 放在详情页顶部是有原因的：「我的小模型为什么没被当小模型对待」这个问题，
+ * 光看下面的系统提示词与工具声明（只有结果、没有依据）答不出来。
+ */
+function contextLine(c: SessionContextInfo): string {
+  const source = t(`sessions.windowSource.${c.windowSource}`);
+  const prefix = c.compact
+    ? t("sessions.compactOn", {
+        reason: t(`sessions.compactReason.${c.compactReason}`),
+      })
+    : t("sessions.compactOff");
+  return t("sessions.contextLine", {
+    window: c.window,
+    source,
+    input: c.inputBudget,
+    output: c.outputReserve,
+    prefix,
+  });
+}
+
 /** 详情页。 */
 export function renderDetailPage(a: SessionArchive): string {
   const usage = a.usage
@@ -291,6 +314,9 @@ export function renderDetailPage(a: SessionArchive): string {
     `<span><b>${escapeHtml(t("sessions.detailBskSession"))}</b> <span class="mono">${escapeHtml(a.params.bskSession ?? "—")}</span></span>` +
     `<span><b>${escapeHtml(t("sessions.detailScenario"))}</b> ${escapeHtml(a.params.scenarioName ?? "—")}</span>` +
     `<span><b>${escapeHtml(t("sessions.detailUsage"))}</b> <span class="mono">${escapeHtml(usage)}</span></span>` +
+    (a.params.context
+      ? `<span><b>${escapeHtml(t("sessions.detailContext"))}</b> <span class="mono">${escapeHtml(contextLine(a.params.context))}</span></span>`
+      : "") +
     (a.note ? `<span><b>${escapeHtml(t("sessions.detailNote"))}</b> ${escapeHtml(a.note)}</span>` : "") +
     `<span><a href="/api/sessions/${encodeURIComponent(a.id)}">${escapeHtml(t("sessions.raw"))}</a></span>` +
     `</div>`;

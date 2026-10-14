@@ -59,6 +59,18 @@ export interface PageQaConfig {
    * `deepseek` 约定），而**严格端点直接拒绝**时探活会自动去掉字段重试一次（见 models.ts）。
    */
   thinkingFormat?: string;
+  /**
+   * 端点真实的**上下文窗口**（token）。缺失时按模型元数据、再按 32k 兜底。
+   *
+   * 为什么必须能声明：自配端点（`PAGEQA_LLM_*`）拿不到窗口元数据，本地推理引擎
+   * （llama.cpp / LM Studio / Ollama）的 `n_ctx` 常常只有 8192——不声明的话 pageqa
+   * 按 32k 保守兜底估算，第一个请求就会撞上 `exceed_context_size_error`
+   * （实测：gemma-4-e4b + 8192 窗口，请求 10185 tokens 被拒）。
+   *
+   * 优先于内置 provider 的模型元数据（ADR-0014 决策四）：用户显式声明的窗口
+   * 比目录里的假设更可信。环境变量 `PAGEQA_LLM_CONTEXT_WINDOW` 优先于本配置。
+   */
+  contextWindow?: number;
   jev: JevConfig;
   /** 界面/日志/报告语种（"zh" | "en"）；交互模式 /setting 会写回这里。 */
   locale?: string;
@@ -101,6 +113,15 @@ export interface PageQaConfig {
    * 见 ADR-0013 决策三。
    */
   concurrency?: number;
+  /**
+   * 是否压缩「固定前缀」（系统提示 + 工具说明）。**缺失 = 自动**：
+   * 预算装不下默认前缀（小窗口）**或**模型名像小模型（≤9B / mini / nano / tiny）时压缩。
+   *
+   * 显式 `true` 强制压缩、`false` 强制不压——两条自动规则都能被它推翻，
+   * 因为「这个模型吃不吃得消 12.4k token 的规则书」只有跑的人知道。
+   * 压缩只改「怎么向模型解释工具」，不改窗口预算、不改工具行为（见 `docs/adr/0014`）。
+   */
+  compactPrompt?: boolean;
 }
 
 const DEFAULTS: PageQaConfig = {
@@ -129,6 +150,21 @@ export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
  */
 export const DEFAULT_DOWNLOAD_DIR = join(CONFIG_DIR, "downloads");
 
+/**
+ * 只读地取「端点上下文窗口」（**不会**创建文件）：`PAGEQA_LLM_CONTEXT_WINDOW`
+ * 优先于配置文件。
+ *
+ * 只认 ≥ 512 的数字（手写成字符串 `"8192"` 也接受——配置文件是手写的）。
+ * 坏值一律当没配：猜一个窗口的代价是「估算基准错了」，比不配更糟；
+ * 宁可回落到保守兜底，也不要拿一个离谱数字去算预算。
+ */
+export function readContextWindow(): number | undefined {
+  const raw = readRawConfig();
+  const value = process.env.PAGEQA_LLM_CONTEXT_WINDOW ?? raw.contextWindow;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n >= 512 ? Math.round(n) : undefined;
+}
+
 /** 读取配置：合并 默认值 < 用户文件 < 环境变量。返回最终生效配置。 */
 export function loadConfig(): PageQaConfig {
   const fromFile = readConfigFile();
@@ -146,6 +182,7 @@ export function loadConfig(): PageQaConfig {
     // 原样透传，取值校验统一放在 llm.ts 的 normalizeThinkingFormat（只有那里会发这个字段）
     thinkingFormat:
       process.env.PAGEQA_LLM_THINKING_FORMAT ?? fromFile.thinkingFormat,
+    contextWindow: readContextWindow(),
     jev: {
       enabled: (() => {
         if (process.env.PAGEQA_JEV_ENABLED !== undefined) {
@@ -284,6 +321,24 @@ export function readDownloadCleanup(): boolean {
 export function readAutoScreenshot(): boolean {
   const raw = readRawConfig();
   return typeof raw.autoScreenshot === "boolean" ? raw.autoScreenshot : true;
+}
+
+/**
+ * 只读地取「是否压缩固定前缀」：`PAGEQA_COMPACT_PROMPT` > 配置文件 > 自动。
+ *
+ * 只认布尔值或 `true`/`false` 这类字符串（环境变量天然是字符串，配置文件是手写的）：
+ * 类型不对或值不认识一律返回 undefined = 自动——「说了但没听懂」时按自动走，
+ * 好过按一个误读的布尔值把前缀压小/放开。
+ */
+export function readCompactPrompt(): boolean | undefined {
+  const raw = process.env.PAGEQA_COMPACT_PROMPT ?? readRawConfig().compactPrompt;
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") {
+    const v = raw.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(v)) return true;
+    if (["false", "0", "no", "off"].includes(v)) return false;
+  }
+  return undefined;
 }
 
 /**
