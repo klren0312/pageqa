@@ -1,0 +1,18 @@
+# 1.5B QLoRA 训练依赖（Windows + RTX 5060 Laptop 8GB 验证过版本区间）
+# 安装：pip install -r train/requirements.txt
+# 注意：
+#   - torch 必须是 CUDA 版，不能是 +cpu 版！先用下面命令装对：
+#       pip uninstall -y torch
+#       pip install torch --index-url https://download.pytorch.org/whl/cu128   # Blackwell(sm_120) 用 cu128+
+#     验证：python -c "import torch;print(torch.__version__, torch.cuda.is_available(), torch.cuda.is_bf16_supported())"
+#     应看到 cu 标识、True、True；若 bf16 仍 False，可把 config 里 bf16 改 fp16。
+#   - bitsandbytes 需支持 Blackwell(sm_120)，用最新版。
+#   - transformers 必须锁 4.x：v5（如 5.19）重构了 TrainingArguments，移除了 warmup_ratio
+#     等本项目依赖的参数。本项目用普通 Trainer（数据已预分词），不再依赖 trl/SFTTrainer。
+torch>=2.4
+transformers>=4.44,<5
+peft>=0.13
+bitsandbytes>=0.45
+datasets>=2.21
+accelerate>=0.33
+pyyaml>=6.0

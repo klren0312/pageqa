@@ -5,14 +5,42 @@ dist/
 *.zip
 *.7z
 pageqa-report/
+# 回放脚本产物：每次跑 pageqa 用例都会重写，属于运行结果而非用例定义
+*.replay.json
 .superpowers
 .codebuddy
 
 # Comet 生成的能力探测缓存：每次探测都会重写，属于运行产物而非项目配置
 .comet/runtime/
 
-# 本地工具残留（本项目是 TypeScript，ruff 是 Python 工具）
-.ruff_cache/
-
 # 分析/临时脚本目录
 .audit/
+
+# ---------- 训练产物（train/）----------
+# 全部为运行产物：LoRA 适配器、合并后的 HF 模型、GGUF 权重、
+# llama.cpp 的 git clone、评测 metrics。体积上 GB 级且可由 run_pipeline.ps1 重新生成。
+train/outputs/
+
+# 派生数据集：由 pageqa 运行轨迹经 export/filter/augment/prepare 生成，
+# 可重新生成，不入库（augment_data.py 输出确定，重复执行结果一致）。
+train/data/*.jsonl
+
+# 训练日志（重定向 stdout/stderr 产生）
+train/*.log
+train/*.err
+
+# ---------- Python 缓存 ----------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ---------- 模型权重通用兜底 ----------
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt

@@ -1,0 +1,91 @@
+# ============================================================
+# 1.5B QLoRA 训练配置 —— 用于加速 pageqa / bsk 元素识别
+# ============================================================
+# 运行顺序：
+#   1) pnpm build                       # 先编译，让 scripts/export-sessions.mjs 能 import dist
+#   2) node scripts/export-sessions.mjs # 从 ~/.pageqa/sessions/sessions.sqlite 抽轨迹 -> train/data/sessions.jsonl
+#   3) python train/prepare_data.py     # 截断快照 + 95/5 切分 -> train/data/{train,eval}.jsonl
+#   4) python train/train_qlora.py      # 4-bit + LoRA 训练
+#
+# 想训 4B：把 model.base_model 换成 4B 基座，并把机器换成 >=12GB 显存（本机 8GB 不够）。
+
+model:
+  # 1.5B 基座，8GB 本机可跑；换 Qwen2.5-4B / Llama-3.2-3B 即升到 4B 量级
+  base_model: "Qwen/Qwen2.5-1.5B-Instruct"
+  trust_remote_code: false
+
+# ---------- 加载精度 ----------
+# 本机在训练第 0 步会触发 bitsandbytes 初始化失败
+# （Error initialization error at line 559 in pythonInterface.cpp）。
+# 已验证：独立脚本里 bnb Linear4bit / PagedAdamW8bit 均可正常运行，
+# 说明 bnb 安装本身没坏，是「4-bit 加载 + 分页优化器」在训练时的显存压力下初始化失败。
+# 因此改为纯 fp16/bf16 路径，完全不依赖 bitsandbytes（train_qlora.py 的 else 分支
+# 已刻意避开 device_map="auto"，正是为了不让 accelerate 触发 bnb 探测）。
+# 8GB 显存的可行性：bf16 权重约 3GB + LoRA(36.9M 可训练参数) + 梯度检查点(batch=1, seq=2048)，够用。
+quantization:
+  load_in_4bit: false           # 走 fp16/bf16，绕开 bitsandbytes 初始化失败
+  bnb_4bit_quant_type: "nf4"          # 以下三项仅在 load_in_4bit=true 时生效，保留备用
+  bnb_4bit_compute_dtype: "bfloat16"  # 计算用 bf16，与训练 bf16 一致
+  bnb_4bit_use_double_quant: true     # 对量化常数再做一次量化，再省 ~0.4GB
+
+# ---------- LoRA ----------
+lora:
+  r: 32                                 # rank：1.5B 用小模型，32 已足够；想更省显存降到 16
+  lora_alpha: 64                        # alpha = 2*r 是常见起点
+  lora_dropout: 0.05
+  bias: "none"
+  task_type: "CAUSAL_LM"
+  # Qwen2 全线性层都挂 LoRA（1.5B 层数少，全挂也吃得消）
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+# ---------- 数据 / 快照截断（关键）----------
+# pageqa 的快照（aria 树）动辄几万字符，不截断直接撑爆 8GB。
+data:
+  max_snapshot_chars: 2000   # 单条含快照的消息最多保留多少字符（首尾保留，中间丢弃）
+  max_seq_length: 2048        # tokenizer 截断上限；本机 8GB 安全值，显存够可提到 4096
+  in_file: "train/data/sessions.jsonl"      # export-sessions.mjs 产物
+  train_file: "train/data/train.jsonl"
+  eval_file: "train/data/eval.jsonl"
+  eval_split: 0.05            # 取 5% 作验证
+  seed: 42
+
+# ---------- 训练超参 ----------
+training:
+  output_dir: "train/outputs/qwen2.5-1.5b-qlora"
+  num_train_epochs: 6
+  per_device_train_batch_size: 1     # 8GB 只能 1
+  gradient_accumulation_steps: 8     # 等效 batch 8，弥补 batch=1
+  learning_rate: 2.0e-4              # QLoRA 常用 2e-4
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.03
+  optim: "adamw_torch"           # 原 paged_adamw_8bit 依赖 bitsandbytes，会在第 0 步初始化失败；
+                                # 纯 torch 优化器不依赖 bnb，且可训练参数仅 36.9M，显存开销可忽略
+  bf16: true
+  gradient_checkpointing: true       # 用时间换显存，激活值大幅减少
+  logging_steps: 10
+  save_strategy: "epoch"
+  save_total_limit: 2
+  report_to: "none"
+  seed: 42
+
+# ---------- 合并 LoRA 到基座 ----------
+merge:
+  adapter_dir: "train/outputs/qwen2.5-1.5b-qlora"   # = training.output_dir
+  merged_dir: "train/outputs/qwen2.5-1.5b-merged"   # 合并后可直接被 LM Studio/llama.cpp 加载
+  dtype: "bfloat16"
+
+# ---------- 用 pageqa 当评测闭环 ----------
+evaluate:
+  case: "examples/smoke.md"
+  base_url: ""                            # 留空则用环境变量 PAGEQA_LLM_BASE_URL（指向你起的服务）
+  model: ""                               # 留空用 PAGEQA_LLM_MODEL
+  api_key: "codebuddy-proxy-key"
+  pageqa_cmd: "pageqa"                    # 仓库内自测可改 "node dist/index.js"
+  metrics_dir: "train/outputs/metrics"
