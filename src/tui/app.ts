@@ -84,10 +84,15 @@ import {
   renderText,
   statusTag,
   summarizeSuite,
-  type SuiteMember,
   type TestReport,
   type TokenUsage,
 } from "../report/report.js";
+import {
+  loadReplayScript,
+  runReplayScript,
+  type ReplayOptions,
+  type ReplayScript,
+} from "../agent/replay.js";
 import type { ScenarioRecording } from "../agent/replay.js";
 // 仅类型导入（编译期擦除），不会让「非交互路径」为 UI 依赖付出加载开销。
 import type {
@@ -128,6 +133,7 @@ import {
   displayPath,
   parsePick,
   resolveCaseFile,
+  resolveReplayFile,
 } from "./case-source.js";
 import { getLocale, setLocale, t } from "../shared/i18n.js";
 import {
@@ -159,7 +165,6 @@ import {
   PAGEQA_PROVIDER_ID,
   type LogoutOption,
   type LoginOption,
-  type ModelCatalog,
   type ModelChoice,
   type ModelOption,
 } from "../config/models.js";
@@ -258,6 +263,25 @@ const FREE_CATALOG_TIMEOUT_MS = 8_000;
 /** 用户主动取消交互（Esc / Ctrl+C）时用的哨兵错误，与真正的失败区分开。 */
 const CANCELLED = "__cancelled__";
 
+/**
+ * 日志视口**渲染**多少行（`logLines` 本身仍留全量）。
+ *
+ * 为什么必须封顶：pi-tui 的 `Text.setText` 会让整段文本的渲染缓存失效，下一帧
+ * `render()` 要对**全部**行重新换行 + 裁宽 + 补空格（`ScrollView` 虽然只显示视口那么多行，
+ * 但 `layout.js` 取的是全部行）。而这里每来一行日志就 `setText` 一次——于是单帧成本
+ * 随会话长度线性增长，一次 6 场景 × 60 步的会话（≈1440 行）实测累计约 27s 纯主线程阻塞，
+ * 越到后面的场景越卡（末段单帧 37ms，已远超 16ms 帧预算）。
+ *
+ * 实测（80 字符宽的中文日志，逐条追加）：
+ * - 300 行封顶 → 1440 条日志累计 3.3s
+ * - 500 行封顶 → 15.2s
+ * - 不封顶 → 27.2s，且第 6 个场景单帧 8.9s
+ *
+ * 300 是「滚动视口高度（几十行）的若干倍」与「回滚几屏仍能看到历史」的折中：
+ * 真正需要全量历史的地方是 `/status` 与运行存档，它们读的是 `logLines` 而不是这个视口。
+ */
+const LOG_VIEWPORT_LINES = 300;
+
 function cancelledError(): Error {
   return new Error(CANCELLED);
 }
@@ -327,13 +351,35 @@ function failedResult(
   };
 }
 
+/**
+ * 被用户中止（Esc）的场景：记「已取消」，不计入退出码。
+ *
+ * 与 {@link failedResult} 分开是因为两者的退出码语义相反：中止是「我不想等了」，
+ * 失败是「页面/环境坏了」。把中止记成 FAIL 会让 CI 追一个不存在的回归。
+ */
+function cancelledResult(item: QueuedScenario): AgentRunResult {
+  const report: TestReport = {
+    status: "cancelled",
+    cancelReason: t("report.cancel"),
+    assertions: [],
+    transcript: "",
+    steps: numberSteps(item.body).steps,
+    usage: emptyUsage(),
+  };
+  return {
+    report,
+    text: renderText(report),
+    json: JSON.stringify(report, null, 2),
+    transcript: report.transcript,
+    usage: emptyUsage(),
+    recordings: [],
+  };
+}
+
 export async function runInteractive(
   input: string,
   opts: InteractiveOptions,
 ): Promise<InteractiveRunResult> {
-  // 交互会话整体墙钟起点：取函数入口（含 TUI 装配与首次 resolveInitialChoice），
-  // 代表「整个交互过程」的跨度，退出汇总时用它覆盖 summarizeSuite 的成员求和。
-  const interactiveStartedAt = Date.now();
   const {
     TuiAltScreen,
     ProcessTerminal,
@@ -403,6 +449,8 @@ export async function runInteractive(
   class LabelFilterSelectList extends SelectList {
     setFilter(filter: string): void {
       const q = filter.trim().toLowerCase();
+      // SAFETY: 这三个字段在 pi-tui 的运行时实现里确实是公开可写属性（`setFilter` 与
+      // `render` 直接读写它们），`private` 只是 `.d.ts` 的声明期修饰；断言不改运行时行为。
       const self = this as unknown as MutableSelectList;
       self.filteredItems = q.length === 0
         ? self.items
@@ -585,14 +633,23 @@ export async function runInteractive(
   /** 正在进行的登录流程（Esc / 收工时用它中止）。 */
   let loginController: AbortController | null = null;
 
-  /** 往视口追加一行（界面已拆则退回 stderr，避免日志被吞掉）。 */
+  /**
+   * 往视口追加一行（界面已拆则退回 stderr，避免日志被吞掉）。
+   *
+   * `logLines` 留全量（`/status`、`/new` 归档要用），但只把尾部 `LOG_VIEWPORT_LINES` 行
+   * 交给渲染组件——否则每追加一行都要重排整段历史（原因与实测见该常量）。
+   */
   const append = (line: string): void => {
     logLines.push(line);
     if (teardown) {
       process.stderr.write(line + "\n");
       return;
     }
-    document.setText(logLines.join("\n"));
+    document.setText(
+      logLines.length > LOG_VIEWPORT_LINES
+        ? logLines.slice(-LOG_VIEWPORT_LINES).join("\n")
+        : logLines.join("\n"),
+    );
     tui.requestRender();
   };
 
@@ -1370,8 +1427,11 @@ export async function runInteractive(
 
   /** 场景来源的短标签：用例文件用相对路径（便于阅读），追加场景标「追加」。 */
   function originLabel(origin: ScenarioOrigin): string {
-    return origin.kind === "added"
-      ? t("tui.originAdded")
+    if (origin.kind === "added") return t("tui.originAdded");
+    // 回放场景的来源是一个脚本文件：`/status` 里必须能看出「这条不是用例，是录下来的步骤」，
+    // 否则同一批里两种来源混着，失败了都不知道该去改用例还是改脚本。
+    return origin.kind === "replay"
+      ? displayPath(origin.path) + t("tui.replayTag")
       : displayPath(origin.path);
   }
 
@@ -1569,13 +1629,147 @@ export async function runInteractive(
   }
 
   /**
-   * 单个场景的执行流程。
+   * `/replay` 入队那一刻读到的脚本快照（按队列项本身）。
    *
+   * 入队时读一次并留在这里：队列项只带「脚本路径 + 场景下标」，跑的时候再按需取。
+   * 用队列项对象做键，而不是路径或编号：
+   * - 按路径会在「同一份脚本改了再 `/replay` 一次」时让先入队的场景读到后一次的内容；
+   * - 按编号会在 `/new` 之后串场——新队列的编号从头开始。
+   */
+  const replaySnapshots = new Map<QueuedScenario, ReplayScript>();
+
+  /**
+   * 从队列项的 body 里取回放场景下标。
+   *
+   * 入队时 body 里放的是 `#<index>`（见 loadReplayFromHint）：回放场景没有自然语言正文，
+   * 而这个字段是唯一能一路带到执行器里的载体。取不出来按 0 处理——
+   * 至少还能跑到脚本的第一个场景，比整条跳过更接近用户意图。
+   */
+  function replayIndexOf(body: string): number {
+    const m = /^#(\d+)$/.exec(body.trim());
+    return m ? Number(m[1]) : 0;
+  }
+
+  /**
+   * 跑一个回放场景（`/replay` 进来的，零模型）。
+   *
+   * 脚本在入队时已读出并快照在 `replaySnapshots`（按队列项），这里只按索引取那一个
+   * scenario，并用它临时构一份「只含该场景」的脚本对象——`runReplayScript` 的入参
+   * 就是整个脚本，给它整份会让它把同文件里的其它 scenario 又跑一遍。
+   *
+   * 失败语义与带模型那条路对齐：元素未找到算跳过（由回放层自己判定），
+   * 其它失败记 fail；被用户中止记 cancelled。**绝不抛异常**——队列执行器
+   * 的约定是「抛出会被队列记成未知失败」，而这里要的是明确的终态。
+   */
+  async function runReplayScenario(
+    item: QueuedScenario,
+    startedAt: number,
+  ): Promise<ScenarioState> {
+    // 调用方只在 origin 为 replay 时才派发到这里（见 runScenario 的分支）；
+    // 真出现别的来源就按失败收，绝不静默通过。
+    if (item.origin.kind !== "replay") {
+      results.set(item.id, failedResult(item, new Error("not a replay scenario")));
+      return "fail";
+    }
+    const path = item.origin.path;
+    const script = replaySnapshots.get(item);
+    const scenario = script?.scenarios[replayIndexOf(item.body)];
+    if (!script || !scenario) {
+      // 入队后脚本被改动/删除：如实记失败而不是假装通过。
+      append(
+        err(
+          t("tui.replay.readFailed", {
+            path: displayPath(path),
+            msg: "scenario not found",
+          }),
+        ),
+      );
+      results.set(item.id, failedResult(item, new Error("scenario not found")));
+      return "fail";
+    }
+    append(
+      title(
+        t("tui.sceneStart", {
+          i: item.id,
+          name: item.name,
+          appended: t("tui.replayTag"),
+        }),
+      ),
+    );
+    try {
+      const replayOpts: ReplayOptions = {
+        scriptPath: path,
+        debug: opts.debug,
+        // Esc 时队列会 abort 这个 signal：每一步开始前检查，不再派发下一步。
+        abortSignal: item.abort.signal,
+      };
+      const result = await runReplayScript(
+        // 只含这一个场景的脚本：`runReplayScript` 会把收到的 scenarios 全跑一遍，
+        // 给整份脚本会让同文件里的其它场景被重复执行。
+        { ...script, scenarios: [scenario] },
+        replayOpts,
+      );
+      const status = result.report.status;
+      results.set(item.id, { ...result, recordings: [] });
+      append(
+        status === "pass"
+          ? ok(sceneEndLine(item, "pass", result.report.assertions.length, startedAt))
+          : status === "cancelled"
+            ? warn(sceneEndLine(item, "cancelled", result.report.assertions.length, startedAt))
+            : err(sceneEndLine(item, "fail", result.report.assertions.length, startedAt)),
+      );
+      // 回放零模型，没有 token 消耗可报。已取消既不通过也不失败（不计退出码）。
+      return status;
+    } catch (cause) {
+      // 失败原因（不是这个 if 里的判定本身）要落到视口：只说「失败」的话，
+      // 用户分不清是「元素没找到」还是「浏览器断了」——两者处置完全不同。
+      const reason = msgOf(cause);
+      // 被中止：记 cancelled（不计入退出码，与带模型那条路同一条规则）。
+      if (item.abort.signal.aborted) {
+        results.set(item.id, cancelledResult(item));
+        append(warn(sceneEndLine(item, "cancelled", 0, startedAt)));
+        return "cancelled";
+      }
+      results.set(item.id, failedResult(item, cause));
+      append(
+        err(sceneEndLine(item, "fail", 0, startedAt) + "（" + reason + "）"),
+      );
+      return "fail";
+    }
+  }
+
+  /** 场景结束那一行（带模型与回放两条路共用，措辞才能一致）。 */
+  function sceneEndLine(
+    item: QueuedScenario,
+    tag: "pass" | "fail" | "cancelled",
+    assertions: number,
+    startedAt: number,
+  ): string {
+    return t("tui.sceneEnd", {
+      i: item.id,
+      name: item.name,
+      tag: tag === "cancelled" ? t("common.cancelled") : tag.toUpperCase(),
+      n: assertions,
+      duration: fmtDuration(Date.now() - startedAt),
+    });
+  }
+  /**
+   * 单个场景的执行流程。
    * 抽成具名函数（而不是内联在 `new ScenarioQueue(...)` 里）是因为 `/new` 会开一条**新的队列**：
    * 新旧队列共用同一个执行器，而执行器里对 `queue` 的引用每次都取当前那条队列。
    */
   const runScenario: ScenarioExecutor = async (item) => {
     const startedAt = item.startedAt ?? Date.now();
+    // ── 回放场景：零模型的另一条执行路径 ──
+    // `/replay <脚本>` 进来的场景不带自然语言用例，而是「录下来的步骤序列」：
+    // 本进程按步骤驱动浏览器，一次 LLM 调用都没有。因此它不走 runScenarioInChild
+    // （那条路要为子进程建模型目录、探活、fork），也不需要 model 参数。
+    //
+    // 复用同一条队列是刻意的：这样看板、日志视口、Esc 中止、退出汇总全部照旧生效，
+    // 用户可以把「用模型跑的用例」与「零模型的回放」混在同一批里跑。
+    if (item.origin.kind === "replay") {
+      return await runReplayScenario(item, startedAt);
+    }
     append(
       title(
         t("tui.sceneStart", {
@@ -1693,6 +1887,11 @@ export async function runInteractive(
         name: "run",
         argumentHint: "<文件或关键字>",
         description: t("tui.cmd.run"),
+      },
+      {
+        name: "replay",
+        argumentHint: "<脚本或关键字>",
+        description: t("tui.cmd.replay"),
       },
       { name: "new", description: t("tui.cmd.new") },
       {
@@ -1820,6 +2019,99 @@ export async function runInteractive(
   }
 
   /**
+   * 命中多个候选时选一个：先让模型挑（语义匹配），挑不出来再弹选择器让用户挑。
+   *
+   * 这是 `/run` 与 `/replay` 共用的「挑文件」那一步，标题由调用方给——两个命令的
+   * 候选是两类文件（用例 / 回放脚本），弹窗上写错名字会让人以为选错了东西。
+   */
+  async function pickCaseFile(
+    hint: string,
+    candidates: string[],
+    promptTitle: string,
+  ): Promise<string | undefined> {
+    const picked = await pickCaseByModel(hint, candidates);
+    if (picked) return picked;
+    const pick = await openSelector(
+      promptTitle,
+      candidates.map((p) => ({ value: p, label: displayPath(p) })),
+    );
+    return pick?.value;
+  }
+
+  /**
+   * `/replay <路径或关键字>`：把一个回放脚本的场景加载进队列（零模型）。
+   *
+   * 与 `/run` 的三处差别：
+   * 1. **解析的对象是 `.json`**：用例是 `.md`/`.txt`，回放脚本是 `.json`。两者都是
+   *    「给一个路径或关键字，返回确切文件」，因此复用同一套查找（关键片子串 +
+   *    目录兜底），只换扩展名——不另做一套路径猜测。
+   * 2. **一个脚本里有几个场景就入队几个**：它们是独立的执行单元，各自计时、
+   *    各自在看板与报告里占一行（与 `## 分隔多场景` 的用例语义一致）。
+   * 3. **不切落点**：回放脚本不是用例文件，没有「往里写回场景」这回事，
+   *    落点（写回目标）必须保持用户当前打开的那个用例文件。
+   *
+   * 脚本内容在**入队这一刻读一次**并快照进 `replaySnapshots`（按队列项）：执行时按快照取，
+   * 不重新读文件。这样「会话中途改了脚本」只会影响之后新入队的场景，
+   * 已经入队的（含正在跑的）仍按当时读到的内容执行。
+   */
+  async function loadReplayFromHint(hint: string): Promise<void> {
+    if (!hint) {
+      append(err(t("tui.replay.usage")));
+      return;
+    }
+    append(dim(t("tui.replay.searching", { hint })));
+    const found = resolveReplayFile(hint);
+    if (found.kind === "none") {
+      append(err(t("tui.replay.notFound", { hint })));
+      return;
+    }
+    const path =
+      found.kind === "one"
+        ? found.path
+        : (await pickCaseFile(hint, found.candidates, t("tui.replay.pickTitle", { hint })));
+    if (!path) return;
+    let script: ReplayScript;
+    try {
+      script = loadReplayScript(path);
+    } catch (loadErr) {
+      append(
+        err(t("tui.replay.readFailed", { path: displayPath(path), msg: msgOf(loadErr) })),
+      );
+      return;
+    }
+    if (script.scenarios.length === 0) {
+      append(warn(t("tui.replay.empty", { path: displayPath(path) })));
+      return;
+    }
+    script.scenarios.forEach((sc, i) => {
+      // body 里放 `#<下标>`：回放场景没有自然语言正文，而这个字段是唯一能
+      // 一路带到执行器里的载体（见 replayIndexOf）。
+      const item = queue.add(sc.name, `#${i}`, { kind: "replay", path });
+      // 快照按队列项存：同一份脚本之后再被 `/replay` 一次，也不会改到这一条。
+      replaySnapshots.set(item, script);
+      append(
+        dim(
+          t("tui.replay.queued", {
+            id: item.id,
+            name: item.name,
+            path: displayPath(path),
+          }),
+        ),
+      );
+    });
+    append(
+      accent(
+        t("tui.replay.loaded", {
+          n: script.scenarios.length,
+          path: displayPath(path),
+        }),
+      ),
+    );
+    queue.pump();
+    updateStatus();
+  }
+
+  /**
    * `/run <路径或关键字>`：把一个已有用例文件的场景加载进队列。
    *
    * 确定性优先（见 ADR-0005 决策三）：命中唯一就直接加载；命中多个先让模型从文件名
@@ -1852,14 +2144,12 @@ export async function runInteractive(
               : ""),
         ),
       );
-      path = await pickCaseByModel(hint, found.candidates);
-      if (!path) {
-        const pick = await openSelector(
-          t("tui.run.pickTitle", { hint }),
-          found.candidates.map((p) => ({ value: p, label: displayPath(p) })),
-        );
-        path = pick?.value;
-      }
+      // 与 `/replay` 共用同一步：模型先挑，挑不出来再让用户从列表里选。
+      path = await pickCaseFile(
+        hint,
+        found.candidates,
+        t("tui.run.pickTitle", { hint }),
+      );
     }
     if (!path) return;
     const casePath = path;
@@ -1997,6 +2287,9 @@ export async function runInteractive(
         break;
       case "run":
         void loadCaseFromHint(arg);
+        break;
+      case "replay":
+        void loadReplayFromHint(arg);
         break;
       case "new":
         newSession();
@@ -2216,7 +2509,13 @@ export async function runInteractive(
   ]);
   const members = total.members;
   const summary = summarizeSuite(members);
-  summary.durationMs = Date.now() - interactiveStartedAt;
+  // 总耗时取**场景实际执行的墙钟并集**（executionSpanMs），不是 `Date.now() - interactiveStartedAt`。
+  // 后者覆盖整个交互会话，把用户打字、思考、等 `/run` 的空闲全算成了测试耗时——
+  // 一次会话动辄挂着几十分钟，那个数字对自己解释不了，也让「总耗时」与各场景耗时脱节。
+  //
+  // 一条都没跑过（全在排队中被取消）时并集为 0：此时**不写** durationMs，
+  // 让报告末行说「不可用」而不是一个 `0ms`（那会被读成「快得不可能」）。
+  if (total.executionMs > 0) summary.durationMs = total.executionMs;
   if (opts.scriptPath) summary.script = opts.scriptPath;
   const text = renderSuiteText(summary, members, total.names);
   const recordings = total.recordings;

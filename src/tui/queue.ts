@@ -25,13 +25,17 @@ export type ScenarioState =
  * 场景来源（Scenario Origin，见 CONTEXT.md）：场景进入运行队列的出处。
  *
  * - `file`：来自某个用例文件——启动时指定的那个，或运行时 `/run` 加载的；
- * - `added`：用户在交互模式里追加的；`path` 是提交那一刻的落点（没有落点则缺省）。
+ * - `added`：用户在交互模式里追加的；`path` 是提交那一刻的落点（没有落点则缺省）；
+ * - `replay`：交互模式里 `/replay <脚本>` 加载的**回放场景**。
+ *   它不是自然语言用例，因此不参与写回；也不是子进程 LLM 任务，
+ *   由本进程按回放脚本逐步骤驱动（零模型）。
  *
  * 写回只发生在 `added` 上，回放脚本则按 `path` 分组（见 ADR-0005 决策四/七）。
  */
 export type ScenarioOrigin =
   | { kind: "file"; path: string }
-  | { kind: "added"; path?: string };
+  | { kind: "added"; path?: string }
+  | { kind: "replay"; path: string };
 
 /** 队列里的一个场景。 */
 export interface QueuedScenario {

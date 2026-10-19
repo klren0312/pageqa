@@ -507,9 +507,10 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.hint":
       "Enter 提交 · Shift+Enter 换行 · Esc 中止当前场景 · ↑↓/PgUp/PgDn 滚日志 · Ctrl+P 历史 · Ctrl+C 收工 · /help",
     "tui.help":
-      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择模型（Enter 即切换并设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /proxy         查看/开关模型请求的代理路由（配置 ~/.pageqa/proxy.json）\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
+      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /replay <脚本> 加载一个回放脚本（.json）的场景，零模型重跑\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择模型（Enter 即切换并设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /proxy         查看/开关模型请求的代理路由（配置 ~/.pageqa/proxy.json）\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
     "tui.scroll.paused": "↓ 已暂停跟随 · End 回到底部",
     "tui.appended": "（追加）",
+    "tui.replayTag": "（回放）",
     "tui.originAdded": "追加",
     "tui.queueEmpty": "运行队列为空",
     "tui.shuttingDown": "正在收尾…",
@@ -558,12 +559,22 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.run.loaded": "已加载 {n} 个场景：{path}",
     "tui.run.empty": "该文件里没有可用场景：{path}",
     "tui.run.readFailed": "读取用例文件失败：{path}（{msg}）",
+    // ── /replay：加载回放脚本（零模型）──
+    "tui.replay.usage": "用法：/replay <回放脚本.json>——按录下的步骤重跑，不调用大模型",
+    "tui.replay.notFound": "找不到回放脚本：{hint}",
+    "tui.replay.searching": "正在查找回放脚本：{hint}",
+    "tui.replay.readFailed": "读取回放脚本失败：{path}（{msg}）",
+    "tui.replay.empty": "这个脚本里没有场景：{path}",
+    "tui.replay.pickTitle": "选择要加载的回放脚本（{hint}）",
+    "tui.replay.queued": "已加入回放队列 #{id}：{name}（来自 {path}）",
+    "tui.replay.loaded": "已加载 {n} 个回放场景：{path}（零模型）",
     "tui.run.targetSwitched": "写回落点已切换为 {path}",
     "tui.noSource": "未指定用例文件（用 /run <路径或关键字> 加载一个）",
     "tui.target": "落点 {path}",
     "tui.noTarget": "落点：无（追加场景不会写回任何文件）",
     "tui.cmd.status": "查看运行队列",
     "tui.cmd.run": "加载一个已有用例文件并加入运行队列",
+    "tui.cmd.replay": "加载一个回放脚本文件并加入运行队列（零模型）",
     "tui.cmd.cancel": "取消一个尚未开始的待办",
     "tui.cmd.new":
       "开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告）",
@@ -743,6 +754,18 @@ const catalogs: Record<Locale, Catalog> = {
       "--- 场景 {i}/{n}：{name} [{status}] ---",
     "report.traceTitle": "  执行轨迹（末尾 {shown}/{total} 条）:",
     "report.summaryLine": "汇总: {text}",
+    // 报告末行：执行时间。
+    // 换掉原来那行 Token 汇总的原因：token 数是「花了多少钱」，而人盯着 stdout 看的是
+    // 「这次等了多久」——同一批用例在不同机器上的耗时差异远大于 token 差异，
+    // 而 token 数对判断用例质量、决定是否要改定位方式毫无帮助。
+    // 口径见 formatDuration 的说明：这里是**会话累计墙钟**。
+    "report.duration": "用时: {dur}",
+    "report.durationUnavailable": "用时: 不可用（未记录执行时间）",
+    // 金额估算。价目从内置快照来、被 config.json 的 modelPricing 覆盖（见 price-snapshot.ts）。
+    // 两者都没有时如实说「未配置价格」——绝不写 $0.00，那会被读成「这个模型免费」，
+    // 而真相只是没查到价。
+    "report.cost.line": "费用: 约 ${usd} ≈ ¥{cny}",
+    "report.cost.unpriced": "费用: 未配置价格（内置快照与 config.json 的 modelPricing 都没有该模型的单价）",
     "report.usage.replay": "Token: 未调用大模型（回放模式）",
     "report.usage.unavailable": "Token: 不可用（未采集到用量）",
     // 用量行压到最短：`⬇` = 输入（喂进模型的）、`⬆` = 输出，`读`/`写` = 缓存读/缓存写。
@@ -801,6 +824,7 @@ const catalogs: Record<Locale, Catalog> = {
     "reportHtml.generatedAt": "生成时间: {time}",
     "reportHtml.duration": "耗时: {dur}",
     "reportHtml.durationLabel": "耗时",
+    "reportHtml.costLabel": "费用",
     "reportHtml.total": "总场景",
     "reportHtml.countPass": "通过",
     "reportHtml.countFail": "失败",
@@ -1689,9 +1713,10 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.hint":
       "Enter submit · Shift+Enter newline · Esc abort current scenario · ↑↓/PgUp/PgDn scroll log · Ctrl+P history · Ctrl+C finish · /help",
     "tui.help":
-      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model (Enter switches and sets it as the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /proxy         inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
+      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /replay <f>    load the scenarios of a replay script (.json) and rerun them with no model\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model (Enter switches and sets it as the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /proxy         inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
     "tui.scroll.paused": "↓ follow paused · End to jump to bottom",
     "tui.appended": " (appended)",
+    "tui.replayTag": " (replay)",
     "tui.originAdded": "appended",
     "tui.queueEmpty": "run queue is empty",
     "tui.shuttingDown": "winding down…",
@@ -1742,6 +1767,14 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.run.loaded": "loaded {n} scenario(s): {path}",
     "tui.run.empty": "that file has no usable scenario: {path}",
     "tui.run.readFailed": "failed to read the case file: {path} ({msg})",
+    "tui.replay.usage": "usage: /replay <script.json> — rerun the recorded steps, no LLM calls",
+    "tui.replay.notFound": "replay script not found: {hint}",
+    "tui.replay.searching": "looking for a replay script: {hint}",
+    "tui.replay.readFailed": "failed to read the replay script: {path} ({msg})",
+    "tui.replay.empty": "this script has no scenarios: {path}",
+    "tui.replay.pickTitle": "Choose a replay script to load ({hint})",
+    "tui.replay.queued": "queued for replay #{id}: {name} (from {path})",
+    "tui.replay.loaded": "loaded {n} replay scenario(s): {path} (no LLM calls)",
     "tui.run.targetSwitched": "write-back target switched to {path}",
     "tui.noSource":
       "no case file specified (load one with /run <path or keyword>)",
@@ -1750,6 +1783,8 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.cmd.status": "view the run queue",
     "tui.cmd.run":
       "load an existing case file and add it to the run queue",
+    "tui.cmd.replay":
+      "load a replay script and add its scenarios to the run queue (no model)",
     "tui.cmd.cancel": "cancel a not-yet-started pending item",
     "tui.cmd.new":
       "start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report)",
@@ -1941,6 +1976,10 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "--- scenario {i}/{n}: {name} [{status}] ---",
     "report.traceTitle": "  execution trace (last {shown}/{total}):",
     "report.summaryLine": "summary: {text}",
+    "report.duration": "Duration: {dur}",
+    "report.durationUnavailable": "Duration: unavailable (not recorded)",
+    "report.cost.line": "Cost: ~${usd} ≈ ¥{cny}",
+    "report.cost.unpriced": "Cost: no price configured (neither the built-in snapshot nor modelPricing in config.json has rates for this model)",
     "report.usage.replay": "Token: no LLM called (replay mode)",
     "report.usage.unavailable": "Token: unavailable (not collected)",
     // Compact usage line: `⬇` = input (fed into the model), `⬆` = output, `read`/`write` =
@@ -2005,6 +2044,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "reportHtml.generatedAt": "generated at: {time}",
     "reportHtml.duration": "duration: {dur}",
     "reportHtml.durationLabel": "duration",
+    "reportHtml.costLabel": "cost",
     "reportHtml.total": "total",
     "reportHtml.countPass": "pass",
     "reportHtml.countFail": "fail",

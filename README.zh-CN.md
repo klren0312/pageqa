@@ -85,6 +85,7 @@ pageqa --tui examples/smoke.md   # 显式强制进入（非 TTY 下会直接报�
 | 命令 | 作用 |
 | --- | --- |
 | `/run <路径或关键字>` | 运行时加载用例文件进队列：精确路径、目录（该目录下全部用例）、文件名关键字都行；多个命中先让模型从文件名里挑，挑不出再弹选择器。落点切到它 |
+| `/replay <脚本或关键字>` | 加载一个回放脚本（`.json`）的场景进队列，**零模型**按录下的步骤重跑：脚本里有几个场景就入队几个，各自计时、各自出报告；不切换落点（回放脚本不是用例文件）。可与带模型的场景混在同一批跑 |
 | `/status` | 查看运行队列（每场景一行带状态与来源） |
 | `/cancel <n>` | 取消队列里还没开始的第 n 个场景 |
 | `/new` | 开新会话：清空视口与队列、token 重新计，但**上一批归档**（仍进退出报告与回放脚本）。队列还有在跑/待办时拒绝 |
@@ -204,11 +205,12 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 
 ## 配置与可选增强
 
-- **配置文件**：`~/.pageqa/config.json`，字段 `baseUrl`/`apiKey`/`model`/`modelProvider`/`contextWindow`/`compactPrompt`/`locale`/`htmlReport`/`replayScript`/`downloadDir`/`downloadCleanup`/`autoScreenshot`/`scenarioTimeoutMs`/`concurrency`。优先级：环境变量 `PAGEQA_*` > 配置文件 > 内置默认——但只有端点 / 模型 / 上下文窗口 / 前缀压缩 / 语言 / 超时 / 并发这几组有环境变量覆盖；旁路产物开关（`htmlReport`、`replayScript`、`downloadDir`、`downloadCleanup`、`autoScreenshot`）只读配置文件。
+- **配置文件**：`~/.pageqa/config.json`，字段 `baseUrl`/`apiKey`/`model`/`modelProvider`/`contextWindow`/`compactPrompt`/`locale`/`htmlReport`/`replayScript`/`downloadDir`/`downloadCleanup`/`autoScreenshot`/`scenarioTimeoutMs`/`concurrency`/`modelPricing`/`usdToCny`。优先级：环境变量 `PAGEQA_*` > 配置文件 > 内置默认——但只有端点 / 模型 / 上下文窗口 / 前缀压缩 / 语言 / 超时 / 并发 / 汇率这几组有环境变量覆盖；旁路产物开关（`htmlReport`、`replayScript`、`downloadDir`、`downloadCleanup`、`autoScreenshot`）只读配置文件。
 - **并行度（可选）**：`concurrency` 或 `PAGEQA_CONCURRENCY`（**默认 1** = 逐个跑，上限 8）。并行等于声明「这些场景互不依赖」，所以默认不开；同时开着的浏览器窗口数就等于这个值。
 - **场景级执行上限（可选）**：`scenarioTimeoutMs` 或 `PAGEQA_SCENARIO_TIMEOUT`（毫秒，**默认不限**）。套件模式下单个场景超过上限即终止它的子进程、该场景记失败（报告里带 `reason: "timeout"`）、**继续跑后面的场景**。默认关着：长流程十几分钟是常态，凭空定一个上限就是给自己造新的失败来源；CI 要门禁时显式设。
 - **小窗口模型 / 上下文窗口（可选）**：`contextWindow` 或 `PAGEQA_LLM_CONTEXT_WINDOW`（token 数）。自配端点拿不到模型的窗口元数据，而本地推理引擎（LM Studio / llama.cpp）的窗口由**加载设置**决定（同一个模型可以是 8192，也可以是 131072）——**不声明时 pageqa 会问一次引擎自己**（LM Studio 的 `/api/v0/models`、llama.cpp 的 `/props`），问不到才退回保守的 32k；声明了就以声明为准。预算按 `窗口 − 输出预留 − 安全边际` 算，占用超 75% / 85% 时分级裁剪历史快照（激进档还会整组丢弃中间消息并注入状态提示）；**固定前缀（系统提示 + 工具说明，默认约 12.4k token）在这三种情况下会被压缩成小模型档（约 3.5k）**：① 预算低于约 16k（窗口装不下）；② **模型名看起来是小模型**（≤9B 参数标注如 `4b`/`e4b`/`7b`，或 mini/nano/tiny 这类用词）——窗口开到 131072 的 4B 模型也照样压，否则每轮白读 9k token 的规则书；③ 配置 `compactPrompt`（`PAGEQA_COMPACT_PROMPT`，填 `false` 可强制不压）。快照按剩余空间缩小，`max_tokens` 按窗口钳制（小窗口 1/8），每轮还用端点回报的真实用量自校准估算。仍撞窗口时先紧急压缩重试一次，再撞就判失败、并在报告里给出路（换更大窗口的模型 / 声明 `contextWindow` / 把长用例拆成多个场景）。详见 `docs/adr/0014`。
 - **Jev 语义断言（可选）**：在 config 加 `jev` 字段（或 `PAGEQA_JEV_*` 环境变量），用于字面未命中时的语义复检，纠正同义/近义/格式差异造成的假 FAIL；调用失败自动降级回字符串匹配。
+- **费用估算（可选）**：报告末行会按本次用到的四类 token 估一个金额，单价来自内置快照（`src/report/price-snapshot.ts`，覆盖 Anthropic / OpenAI / Google / DeepSeek / 通义 / GLM / Kimi），**`modelPricing` 覆盖快照**——`provider → 模型 id（或 "*"）→ {input,output,cacheRead,cacheWrite}`，单位美元 / 每百万 token；自建端点与免费网关靠它才有估算。四类 token 各按自己的价（缓存读通常只有 input 的一折），漏配的项按 0 计而不是折算。查不到价时报告写「未配置价格」，**不写 `$0.00`**——后者会被读成「这个模型免费」。`usdToCny`（或 `PAGEQA_USD_TO_CNY`，默认 7.1）只决定并列显示的人民币数，价目本身始终是美元。
 - **关闭端点的思考模式（可选）**：混元 / DeepSeek / Qwen / GLM 这类**混合推理**模型在 OpenAI 兼容端点上默认开着思考，模型会先吐一大段思考内容——慢、烧 token，还把 agent 的步骤编号与结论搅乱。配 `thinkingFormat`（或环境变量 `PAGEQA_LLM_THINKING_FORMAT`）后，pageqa 会在**每次请求**里显式带上该端点认的关闭字段：
 
   | `thinkingFormat` | 关思考时请求体里发的字段 |

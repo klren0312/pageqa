@@ -7,6 +7,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { getLocale, t } from "../shared/i18n.js";
+import { formatUsd } from "./cost.js";
 import {
   formatUsage,
   statusTag,
@@ -271,6 +272,13 @@ export function renderHtml(report: TestReport): string {
     typeof report.durationMs === "number"
       ? `<div class="stat"><b>${escapeHtml(formatDurationMs(report.durationMs))}</b>${escapeHtml(t("reportHtml.durationLabel"))}</div>`
       : "",
+    // 金额估算：单价解析不到就不渲染这张卡（而不是摆一个 $0.00 让人读成免费）。
+    // 回放模式同理——它压根没调用模型，没有费用可言。
+    report.mode === "replay"
+      ? ""
+      : report.cost
+        ? `<div class="stat"><b>${escapeHtml(formatUsd(report.cost.total))}</b>${escapeHtml(t("reportHtml.costLabel"))}</div>`
+        : "",
   ].join("");
 
   const body = isSuite

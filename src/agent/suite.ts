@@ -127,16 +127,20 @@ export async function mapWithConcurrency<T, R>(
     undefined,
   );
   let next = 0;
+  // 每个 runner 是一个「把它自己这条线上的任务全部做完」的循环；返回值没有意义
+  // （结果按 `results[i]` 下标回填），因此写成 async 函数体而不是 `.map` 的回调——
+  // 后者的形状会让人以为要 return 一个值，而那正是这里最容易看错的地方。
   const runners = Array.from(
     { length: Math.max(1, Math.min(limit, items.length)) },
-    async () => {
-      for (;;) {
-        if (shouldStop?.()) return;
-        const i = next++;
-        if (i >= items.length) return;
-        results[i] = await worker(items[i], i);
-      }
-    },
+    () =>
+      (async () => {
+        for (;;) {
+          if (shouldStop?.()) return;
+          const i = next++;
+          if (i >= items.length) return;
+          results[i] = await worker(items[i], i);
+        }
+      })(),
   );
   await Promise.all(runners);
   return results;
@@ -730,6 +734,9 @@ function toMemberReport(suiteReport: TestReport, name: string): TestReport {
     ...(typeof suiteReport.durationMs === "number"
       ? { durationMs: suiteReport.durationMs }
       : {}),
+    // 金额估算同理：子进程那份报告里已经算好（provider/model 是子进程自己选的），
+    // 父进程只需透传，让汇总层把各场景的费用加起来。
+    ...(suiteReport.cost ? { cost: suiteReport.cost } : {}),
   };
 }
 

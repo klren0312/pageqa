@@ -51,6 +51,7 @@ import {
   renderText,
   statusTag,
   summarizeSuite,
+  attachCost,
   type AssertionResult,
   type RawUsage,
   type TestReport,
@@ -452,6 +453,16 @@ interface AgentSession {
    * 「是不是撞了窗口」，报告要用它写出「窗口多大、该怎么出路」。
    */
   budget: ContextBudget;
+  /**
+   * 本次运行用的模型（provider + id）。
+   *
+   * 放在 session 上是因为**金额估算**要用它：报告末行的费用按
+   * `provider + model` 查单价（内置快照 + config 覆盖，见 report/cost.ts），
+   * 而 `finalizeResult` 在 session 之外拿不到这两个字段。
+   */
+  model: { provider: string; id: string };
+  /** 用户配置的价目表（config.json 的 `modelPricing`；只在需要估算时读一次）。 */
+  costPricing?: Record<string, Record<string, unknown>>;
   /**
    * 裁剪档位与估算校准的共享状态（见 context.ts 的 {@link TrimState}）：
    * 溢出恢复时置激进档、每轮用真实 usage 校准估算，`transformContext` 下一轮就读到它们。
@@ -948,6 +959,8 @@ async function initializeAgent(
     assertions,
     startedAt,
     budget,
+    model: { provider: model.provider, id: model.id },
+    costPricing: cfg.modelPricing,
     trimState,
     abortSignal: opts.abortSignal,
   };
@@ -1281,6 +1294,9 @@ function finalizeResult(
     cancelled: aborted,
   });
   report.durationMs = Date.now() - startedAt;
+  // 金额估算（美元）：单价来自内置快照、被 config.json 的 modelPricing 覆盖。
+  // 解析不到时 report.cost 不写，渲染层会说「未配置价格」而不是报 $0.00。
+  attachCost(report, session.model, session.costPricing);
   // 截图路径随报告传出去：套件模式下父进程据此生成的那份 HTML 报告才能嵌出图
   // （父进程拿不到子进程的模块级清单，见 report.ts 的 screenshots 字段）。
   report.screenshots = [...screenshotsTaken()];

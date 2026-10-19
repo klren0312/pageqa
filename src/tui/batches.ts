@@ -22,6 +22,60 @@ export interface SessionBatch {
   names: { name: string; origin: string }[];
   /** 本批录制到的可回放步骤（已带来源）。 */
   recordings: ScenarioRecording[];
+  /**
+   * 本批场景**实际执行**的墙钟（毫秒，{@link executionSpanMs}）。
+   *
+   * 交互模式的总耗时要的是它，而不是「从进会话到退出」那一段：后者把用户打字、
+   * 思考、等 `/run` 的空闲全算成了测试耗时（一次会话动辄挂着几十分钟）。
+   */
+  executionMs: number;
+}
+
+/**
+ * 一批场景**实际执行**的墙钟（毫秒）：各场景 `[startedAt, finishedAt]` 区间的**并集**长度。
+ *
+ * 为什么不能把各场景的 `durationMs` 相加：并发时它们的墙钟互相重叠，相加会把重叠部分
+ * 算两遍。而用户体感是「同时跑的」——并在 2 个场景时最多等于两者之和、最少等于最长那个，
+ * 真实值落在中间。并集正是那个真实值：从「第一个场景开跑」到「最后一个跑完」中间
+ * 真正有场景在跑的时长。
+ *
+ * 空闲时段（用户打字、思考、等 `/run`）天然不在任何区间里，因此自动被排除——
+ * 交互会话动辄挂着几十分钟，把发呆算成测试耗时对自己解释不了。
+ *
+ * 队列里一条都没跑（全在排队中被取消）时返回 0：没有执行就没有耗时，
+ * 调用方据此显示「未记录」而不是一个看起来测过的 `0ms`。
+ */
+export function executionSpanMs(
+  items: readonly Pick<QueuedScenario, "startedAt" | "finishedAt">[],
+  now: number = Date.now(),
+): number {
+  // 只要**起止都齐**的区间：还在跑的用 now 补一个右端，跑过的才是完整事实。
+  // 没有起点的（还在排队）整条跳过——它没占过任何时间。
+  const spans: [number, number][] = [];
+  for (const item of items) {
+    const start = item.startedAt;
+    if (typeof start !== "number") continue;
+    const end = typeof item.finishedAt === "number" ? item.finishedAt : now;
+    if (end > start) spans.push([start, end]);
+  }
+  if (spans.length === 0) return 0;
+  spans.sort((a, b) => a[0] - b[0]);
+  let covered = 0;
+  let [curStart, curEnd] = spans[0];
+  for (let i = 1; i < spans.length; i++) {
+    const [start, end] = spans[i];
+    if (start > curEnd) {
+      // 与当前区间不重叠：结算前一段，从这段重新起算。
+      covered += curEnd - curStart;
+      curStart = start;
+      curEnd = end;
+      continue;
+    }
+    // 重叠（或首尾相接）：并集只向右延伸，重叠部分不重复计数。
+    if (end > curEnd) curEnd = end;
+  }
+  covered += curEnd - curStart;
+  return covered;
 }
 
 /** 场景来源的短标签由调用方注入（它要读界面语种与路径显示规则）。 */
@@ -76,14 +130,17 @@ export function snapshotBatch(
         sourcePath: i.origin.path,
       })),
     );
-  return { members, names, recordings };
+  return { members, names, recordings, executionMs: executionSpanMs(items) };
 }
 
 /** 把多批（归档的 + 当前的）合成一批：退出报告覆盖整个进程跑过的全部场景。 */
 export function combineBatches(batches: readonly SessionBatch[]): SessionBatch {
+  // 执行墙钟按批相加，**不做跨批去重**：`/new` 只在队列空闲时允许归档（见 app.ts 的
+  // newSession），因此各批的执行区间互不重叠，相加就是并集。
   return {
     members: batches.flatMap((b) => b.members),
     names: batches.flatMap((b) => b.names),
     recordings: batches.flatMap((b) => b.recordings),
+    executionMs: batches.reduce((n, b) => n + b.executionMs, 0),
   };
 }

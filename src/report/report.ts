@@ -1,4 +1,14 @@
 import { t } from "../shared/i18n.js";
+import {
+  DEFAULT_USD_TO_CNY,
+  estimateCost,
+  formatUsd,
+  mergeCost,
+  resolveTokenPrice,
+  type CostEstimate,
+  type TokenPrice,
+} from "./cost.js";
+import { PRICE_SNAPSHOT } from "./price-snapshot.js";
 
 export interface AssertionResult {
   expectation: string;
@@ -67,6 +77,11 @@ export interface TestReport {
   steps?: string[];
   /** 本次运行耗时（毫秒）：单场景为墙钟时间；套件为整体跨度或各场景之和。未采集时不写。 */
   durationMs?: number;
+  /**
+   * token 金额估算（美元）。**单价解析不到时没有这个字段**——渲染层据此说
+   * 「未配置价格」而不是 `$0.00`（那会被读成「这个模型免费」，而真相只是没查到价）。
+   */
+  cost?: CostEstimate;
   /** 套件模式下的逐场景明细（含各自的 steps/trace），便于 CI 侧做失败归因。 */
   scenarios?: ScenarioDetail[];
 }
@@ -113,6 +128,83 @@ export function emptyUsage(): TokenUsage {
     total: 0,
     calls: 0,
   };
+}
+
+/**
+ * 按 provider + model 解析这次运行的单价；解析不到返回 null（调用方据此说「未配置价格」）。
+ *
+ * `config` 覆盖优先于内置快照（价目会过期，见 `report/price-snapshot.ts`）。
+ */
+export function tokenPriceFor(
+  provider: string,
+  model: string,
+  config: Record<string, Record<string, unknown>> | undefined,
+): TokenPrice | null {
+  return resolveTokenPrice(provider, model, config, PRICE_SNAPSHOT);
+}
+
+/**
+ * 把用量折成金额，并挂到报告上（原地改 `report.cost`）。
+ *
+ * 单价解析不到时**什么都不做**：报告里就没有 `cost` 字段，渲染层据此显示
+ * 「未配置价格」而不是 `$0.00`——后者会被读成「这个模型免费」，而真相只是没查到价。
+ *
+ * 分成「算」与「挂」两步是有意的：算的部分是纯函数（`estimateCost`），
+ * 挂的部分要知道 provider/model/用户配置，只有调用方知道。
+ */
+export function attachCost(
+  report: TestReport,
+  model: { provider: string; id: string } | undefined,
+  modelPricing: Record<string, Record<string, unknown>> | undefined,
+): void {
+  if (!model) return;
+  const price = tokenPriceFor(model.provider, model.id, modelPricing);
+  if (!price) return;
+  const usage = report.usage;
+  if (!usage) return;
+  report.cost = estimateCost(
+    {
+      input: usage.input,
+      output: usage.output,
+      cacheRead: usage.cacheRead,
+      cacheWrite: usage.cacheWrite,
+    },
+    price,
+  );
+}
+
+/**
+ * 报告里人民币换算用的汇率（进程级显示偏好，与 `locale` 同类：启动时按配置定一次）。
+ *
+ * 刻意不放在 `cost.ts`：那边只算美元金额、不碰配置文件，才使得「四项各按自己的价」
+ * 这类口径能直接单测。汇率只影响并列出来的那个 `¥` 数，属于渲染层的事。
+ */
+let usdToCny = DEFAULT_USD_TO_CNY;
+
+/**
+ * 设置显示汇率（`config.json` 的 `usdToCny` / `PAGEQA_USD_TO_CNY`）。
+ *
+ * 坏值回落默认：汇率错了会让报告里的每一个金额一起错，宁可当没配。
+ */
+export function setUsdToCny(rate: number): void {
+  usdToCny = Number.isFinite(rate) && rate > 0 ? rate : DEFAULT_USD_TO_CNY;
+}
+
+/** 当前生效的显示汇率。 */
+export function getUsdToCny(): number {
+  return usdToCny;
+}
+
+/** 费用明细 → 一行可读文本（报告末行用）。 */
+export function formatCostLine(cost?: CostEstimate, mode?: TestReport["mode"]): string {
+  // 回放模式一次模型调用都没有，谈「未配置价格」会把人引去配一个用不上的价目表。
+  // 与 formatUsage 的 replay 分支同一条口径：直说没调用。
+  if (mode === "replay") return t("report.usage.replay");
+  if (!cost) return t("report.cost.unpriced");
+  return t("report.cost.line", {
+    usd: formatUsd(cost.total),
+    cny: formatUsd(cost.total * getUsdToCny()),
+  });
 }
 
 /** 累加一次 LLM 调用的用量。 */
@@ -164,6 +256,22 @@ export function formatTokens(n: number): string {
     return `${k >= 100 ? Math.round(k) : Math.round(k * 10) / 10}k`;
   }
   return `${Math.round((n / 1_000_000) * 10) / 10}m`;
+}
+
+/**
+ * 毫秒 → 人类可读时长（纯函数，不看语言环境）。
+ *
+ * 1 秒以下保留毫秒：命令级耗时（几百毫秒）与一次 LLM 往返（几秒）之间差着量级，
+ * 写成 `0.1s` 会把两者说成同一件事——而这行存在的意义正是把「到底等了多久」看清楚。
+ * 1 秒以上用 `1.2s` / `3m12s` 写法，与 HTML 报告同款，便于横向对照。
+ */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms)) return String(ms);
+  if (ms < 1_000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1_000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.round((ms % 60_000) / 1_000);
+  return `${m}m${String(s).padStart(2, "0")}s`;
 }
 
 /**
@@ -234,8 +342,6 @@ export function buildReport(
     toolAssertions && toolAssertions.length > 0
       ? toolAssertions.map((a) => ({ ...a }))
       : parseAssertions(transcript);
-  /** 断言结果里有没有「工具落过的结构化结果」——决定条数能不能当作执行过的证据。 */
-  const toolBacked = (toolAssertions?.length ?? 0) > 0;
   const { steps } = numberSteps(input);
   const trace = extractTrace(transcript);
   const lastNote = lastStepNote(trace);
@@ -551,6 +657,26 @@ export function assertionLine(a: AssertionResult): string {
   return "  - [" + verdictTag(a.verdict) + "] " + a.expectation + ev;
 }
 
+/**
+ * 报告末行：执行时间。
+ *
+ * 口径是**会话累计墙钟**（`report.durationMs`）：从进程启动算到现在这一次布点之间的全部时间，
+ * 含等待、思考、建 session、浏览器启动。这正是「人盯着 stdout 等的那段时间」。
+ *
+ * 刻意不做「各场景 durationMs 相加」：并发时场景的墙钟互相重叠，相加会大于真实等待
+ * （用户体感是「同时跑的」），而这一行要说的是体感。套件报告的 `durationMs`
+ * 由 `summarizeSuite` 给出，交互模式由 `runInteractive` 覆盖为整个会话的跨度。
+ *
+ * 缺省时如实说「未记录」而不是写个 0：`0ms` 会被读成「快得不可能」，
+ * 那是比没有数字更坏的误解（老报告不带这个字段）。
+ */
+export function formatDurationLine(durationMs?: number): string {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs)) {
+    return t("report.durationUnavailable");
+  }
+  return t("report.duration", { dur: formatDuration(durationMs) });
+}
+
 /** 渲染单场景文本报告。 */
 export function renderText(r: TestReport): string {
   const lines: string[] = [];
@@ -570,7 +696,8 @@ export function renderText(r: TestReport): string {
   lines.push("---");
   lines.push(r.transcript.trim());
   lines.push("---");
-  lines.push(formatUsage(r.usage, r.mode));
+  lines.push(formatDurationLine(r.durationMs));
+  lines.push(formatCostLine(r.cost, r.mode));
   return lines.join("\n");
 }
 
@@ -594,6 +721,21 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
     (acc, m) => mergeUsage(acc, m.usage),
     emptyUsage(),
   );
+  // 费用按成员累加（与 usage 同一条口径）。判断口径看「这个成员到底有没有花钱」：
+  // 回放场景、排队中被取消的场景一次模型都没调，费用本来就是 0，不该拖累总数——
+  // 它们没有 `cost` 是「没调用」，不是「没配价」。真调过模型却没估算出来时，
+  // 才不能给总数：给一个只含一半场景的数会让人以为这就是全部。
+  const billed = members.filter((m) => m.report.cost || m.usage.calls > 0);
+  const costs = billed.map((m) => m.report.cost).filter((c): c is CostEstimate => Boolean(c));
+  const cost = billed.length > 0 && costs.length === billed.length
+    ? costs.reduce((acc, c) => mergeCost(acc, c))
+    : undefined;
+  // 全部成员都是回放时，整套也是「回放模式」：报告抬头的标注与末行的费用口径都依赖它。
+  // 混跑时刻意不标——那会让人以为带模型的那几条也是零模型跑出来的。
+  const mode: TestReport["mode"] =
+    members.length > 0 && members.every((m) => m.report.mode === "replay")
+      ? "replay"
+      : undefined;
   const durations = members
     .map((m) => m.report.durationMs)
     .filter((d): d is number => typeof d === "number");
@@ -603,6 +745,7 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
   const screenshots = members.flatMap((m) => m.report.screenshots ?? []);
   return {
     status: overall,
+    ...(mode ? { mode } : {}),
     ...(durationMs === undefined ? {} : { durationMs }),
     assertions: members.flatMap((m) =>
       m.report.assertions.map((a) => ({
@@ -640,6 +783,8 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
     // 免得每个消费方各自去遍历 scenarios。
     ...(screenshots.length > 0 ? { screenshots } : {}),
     usage,
+    // 费用同理：只有全部成员都估算得出才写（见上面合并处的说明）。
+    ...(cost ? { cost } : {}),
   };
 }
 
@@ -703,6 +848,7 @@ export function renderSuiteText(
   lines.push(t("report.summaryLine", { text: summary.summary ?? "" }));
   if (summary.script) lines.push(t("report.script", { path: summary.script }));
   lines.push("---");
-  lines.push(formatUsage(summary.usage, summary.mode));
+  lines.push(formatDurationLine(summary.durationMs));
+  lines.push(formatCostLine(summary.cost, summary.mode));
   return lines.join("\n");
 }

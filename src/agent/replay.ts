@@ -739,6 +739,17 @@ export interface ReplayOptions {
   /** 任一失败（含元素未找到）即停止该场景，不跑完剩余步骤。 */
   failFast?: boolean;
   /**
+   * 交互模式按 Esc 时用的中止信号。
+   *
+   * 为什么回放也必须有：`/replay` 的场景跑在交互模式的队列里，与带模型的场景共用
+   * 同一个 Esc 处理路径（`queue.abortRunning()`）。没有它的话，一条 `wait 30000`
+   * 的长回放会把 Esc 当成没按——用户在界面上看到的仍是「运行中」。
+   *
+   * 传进去之后由 executeReplaySteps 在**每一步之前**检查：正在跑的那条 bsk 命令
+   * 照样会跑完（它没有中断位），但不会再派发下一步。
+   */
+  abortSignal?: AbortSignal;
+  /**
    * `--settle-waits`：把脚本里的 `wait` 步骤执行成「**等页面稳定，上限为记下的毫秒数**」。
    *
    * 为什么值得做：录制时模型给出的 `wait(2000)` 是它对「给页面一点时间」的**猜测**，回放却把
@@ -1322,7 +1333,15 @@ export function replayScenarioStatus(outcome: {
   failed: number;
   aborted: string | null;
   assertions: AssertionResult[];
-}): "pass" | "fail" {
+  /**
+   * 用户主动中止（交互模式按 Esc）。
+   *
+   * 优先于其它判定：半截轨迹既不是通过也不是失败——把它记成 FAIL 会污染退出码，
+   * 也会让「这条到底哪里坏了」变成一句假话（与带模型的场景同一条规则）。
+   */
+  cancelled?: boolean;
+}): "pass" | "fail" | "cancelled" {
+  if (outcome.cancelled) return "cancelled";
   const assertionFailed = outcome.assertions.some((a) => a.verdict === "fail");
   return outcome.failed > 0 || outcome.aborted !== null || assertionFailed
     ? "fail"
@@ -1342,6 +1361,13 @@ export interface ReplayStepOutcome {
   failed: number;
   /** 中止时的步骤标签；未中止为 null。 */
   aborted: string | null;
+  /**
+   * 用户在交互模式里按 Esc 中止。
+   *
+   * 与 `aborted` 分开：后者是「这一步重试/失败后不再往下走」，结论仍是 FAIL；
+   * 这个是人主动喊停，结论是「已取消」，不计入退出码。
+   */
+  cancelled: boolean;
   /**
    * 每步（含重试与等待在内）的耗时明细，按步骤类型聚合。
    *
@@ -1369,6 +1395,8 @@ export interface ReplayStepOptions {
   locateTimeoutMs?: number;
   /** 轮询间隔（毫秒，默认 250）。单测把它调小，免得测试真的等下去。 */
   locatePollMs?: number;
+  /** 交互模式按 Esc 的中止信号：每步开始前检查，已中止则不再派发下一步。 */
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -1394,6 +1422,7 @@ export async function executeReplaySteps(
     executed: 0,
     failed: 0,
     aborted: null,
+    cancelled: false,
     timing: new TimingCollector(),
   };
   const attempts = opts.attempts ?? 3;
@@ -1401,6 +1430,14 @@ export async function executeReplaySteps(
   for (const [i, step] of scenario.steps.entries()) {
     const index = i + 1;
     const label = `#${index} ${step.kind}`;
+    // 交互模式按了 Esc：不再派发下一步。正在跑的那条 bsk 命令没有中断位，照常跑完，
+    // 但这里必须**停在步骤边界**——否则一条 `wait 30000` 的长回放会让 Esc 像没按。
+    if (opts.abortSignal?.aborted) {
+      outcome.cancelled = true;
+      outcome.aborted = label;
+      outcome.trace.push(`[replay-abort] ${label}`);
+      return outcome;
+    }
     // navigate 不重试：目标不可达时 500ms 后再试一次也不会变得可达（理由见 runStepWithRetry）。
     const stepAttempts = step.kind === "navigate" ? 1 : attempts;
     // 定位等待参数带步骤标签（轨迹与报错里要能指回具体哪一步），因此逐步骤构造
@@ -1522,6 +1559,7 @@ async function replayScenario(
     executed: 0,
     failed: 0,
     aborted: null,
+    cancelled: false,
     timing: new TimingCollector(),
   };
 
@@ -1542,6 +1580,7 @@ async function replayScenario(
       failFast: opts.failFast ?? false,
       settleWaits: opts.settleWaits ?? false,
       locateTimeoutMs: opts.locateTimeoutMs,
+      abortSignal: opts.abortSignal,
     });
   } finally {
     // 回放同样在场景收尾统一清理下载产物（与带模型跑同一条规则，见 downloads.ts）。
@@ -1595,7 +1634,13 @@ async function replayScenario(
   };
   info(
     t("replay.log.scenarioEnd", {
-      status: status === "pass" ? "PASS" : "FAIL",
+      // 已取消不是 FAIL：Esc 是用户喊停，不是页面退化（与 `statusTag` 的口径一致）。
+      status:
+        status === "pass"
+          ? "PASS"
+          : status === "cancelled"
+            ? t("common.cancelled")
+            : "FAIL",
       executed: outcome.executed,
       total: scenario.steps.length,
       extra:

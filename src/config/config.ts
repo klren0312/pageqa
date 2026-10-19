@@ -7,6 +7,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
+import { DEFAULT_USD_TO_CNY } from "../report/cost.js";
 
 /**
  * 用户级配置：在用户主目录下创建配置目录与文件，持久化 LLM 后端设置。
@@ -122,6 +123,17 @@ export interface PageQaConfig {
    * 压缩只改「怎么向模型解释工具」，不改窗口预算、不改工具行为（见 `docs/adr/0014`）。
    */
   compactPrompt?: boolean;
+  /**
+   * token 价目：`provider → 模型 id（或 "*"） → {input,output,cacheRead,cacheWrite}`。
+   * 单位是**美元 / 每百万 token**。
+   *
+   * 覆盖内置快照（价目取自 `report/price-snapshot.ts`，会过期）。内置目录不填价——
+   * pi-ai 的 42 个 provider 模型目录里 `cost` 为空，免费网关硬编码 0，所以
+   * 「按目录价估算」走不通，价只能来自快照或这里。缺省 `{}` = 只用快照。
+   */
+  modelPricing?: ModelPricing;
+  /** USD → CNY 的显示汇率。只影响报告里并列的人民币数，价目本身仍是美元。 */
+  usdToCny?: number;
 }
 
 const DEFAULTS: PageQaConfig = {
@@ -183,6 +195,8 @@ export function loadConfig(): PageQaConfig {
     thinkingFormat:
       process.env.PAGEQA_LLM_THINKING_FORMAT ?? fromFile.thinkingFormat,
     contextWindow: readContextWindow(),
+    modelPricing: readModelPricing(),
+    usdToCny: readUsdToCny(),
     jev: {
       enabled: (() => {
         if (process.env.PAGEQA_JEV_ENABLED !== undefined) {
@@ -205,6 +219,39 @@ export function loadConfig(): PageQaConfig {
     },
     locale: process.env.PAGEQA_LOCALE ?? fromFile.locale ?? DEFAULTS.locale,
   };
+}
+
+/** `provider → 模型 id（或 "*"） → 未解析的价目对象`（解析在 report/cost.ts）。 */
+export type ModelPricing = Record<string, Record<string, unknown>>;
+
+/**
+ * 只读地取 token 价目表（**不会**创建文件）。
+ *
+ * 只认「provider → 对象」这一层形状：更深的内容（哪些 token、单价值多少）由
+ * `report/cost.ts` 的 `parseTokenPrice` 逐条判定，坏条目按没配处理——
+ * 猜一个价的后果是估算偏高或偏低，而那正是这个功能最不能出的错。
+ */
+export function readModelPricing(): ModelPricing {
+  const raw = readRawConfig().modelPricing;
+  if (!raw || typeof raw !== "object") return {};
+  const out: ModelPricing = {};
+  for (const [provider, byModel] of Object.entries(raw as Record<string, unknown>)) {
+    if (!byModel || typeof byModel !== "object") continue;
+    out[provider] = byModel as Record<string, unknown>;
+  }
+  return out;
+}
+
+/**
+ * USD → CNY 的显示汇率（**不会**创建文件）：`PAGEQA_USD_TO_CNY` > 配置文件 > 默认值。
+ *
+ * 只影响报告里并列的那个人民币数：价目本身仍是美元（各厂商公开价目都是美元）。
+ * 坏值一律回落默认值——汇率错了会让报告的每一个金额一起错。
+ */
+export function readUsdToCny(): number {
+  const raw = process.env.PAGEQA_USD_TO_CNY ?? readRawConfig().usdToCny;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_USD_TO_CNY;
 }
 
 /**
@@ -357,6 +404,18 @@ export function readScenarioTimeoutMs(): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
 }
+
+/**
+ * 并发上限的硬顶：`--concurrency` 超过它直接报错（**不静默截断**）。
+ *
+ * 并发的代价是同时开着 N 个浏览器窗口（一个 session 一个 Agent Window），
+ * 数字失控时先把人机两边都拖垮；而静默截断会让人以为「我说 16 怎么只跑了 8」。
+ *
+ * 定义在这里（而不是 suite.ts）是因为它是个**纯数字**：CLI 在决定「要不要进交互模式」
+ * 时就要用它，而 `suite.ts` 会连带拉进 `config/models.js`（→ pi-ai，实测 180ms）。
+ * 让一个常量拖着一棵模型依赖树进 `--version` 路径不值得。
+ */
+export const MAX_CONCURRENCY = 8;
 
 /**
  * 只读地取「同时跑几个场景」的上限：`PAGEQA_CONCURRENCY` > 配置文件 > 1。
@@ -532,17 +591,21 @@ function updateUserConfig(patch: Record<string, unknown>): void {
       current = {};
     }
   }
-  const merged = { ...DEFAULTS, ...current, ...patch };
+  const merged: Record<string, unknown> = { ...DEFAULTS, ...current, ...patch };
   writeConfigFile(merged);
 }
 
 /**
  * 写 config.json（含 apiKey），权限与 auth.json 对齐为 0o600。
  *
+ * 入参是「要落盘的整份配置对象」：`updateUserConfig` 传合并后的结果、
+ * `createDefaultConfigFile` 传 `DEFAULTS`。两者都是普通键值对，因此用
+ * `Record<string, unknown>` 而不是 `object`——后者不保证有任何属性，消费方只能再强转。
+ *
  * 旧版本写出的文件权限较宽，这里对已存在的文件也尽力收紧一次；
  * Windows 上 chmod 可能无效，失败忽略（权限问题不该拖垮写配置）。
  */
-function writeConfigFile(data: object): void {
+function writeConfigFile(data: Record<string, unknown>): void {
   writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2), {
     encoding: "utf8",
     mode: 0o600,
@@ -603,7 +666,9 @@ function readConfigFile(): Partial<PageQaConfig> {
  */
 function createDefaultConfigFile(): Partial<PageQaConfig> {
   ensureConfigDir();
-  writeConfigFile(DEFAULTS);
+  // 展开一次再传：`PageQaConfig` 是具名接口（没有索引签名），不能直接赋给
+  // `Record<string, unknown>`；展开后的字面量是新对象，形状不变，仍是同一份默认值。
+  writeConfigFile({ ...DEFAULTS });
   return { ...DEFAULTS };
 }
 

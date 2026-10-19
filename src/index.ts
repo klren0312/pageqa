@@ -2,47 +2,42 @@
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import {
-  ModelUnreachableError,
-  renderScenarios,
-  runAgent,
-  runSuite,
-  selectScenario,
-  splitScenarios,
-  type AgentRunResult,
-  type ScenarioSelection,
-} from "./agent/agent.js";
+// ── 启动快路径的依赖：只放「每条命令都要用」的东西 ──
+// 实测（本机 cold）：`node -e 0` ≈ 60ms，而下面这些加起来 ≈ 70ms。
+// 反例：`agent/agent.js` 会连带拉进 pi-agent-core（190ms）与 session/archive.js
+// （→ pi-durable 200ms），`agent/suite.js` 会连带拉进 config/models.js（→ pi-ai 180ms）。
+// 这些只在「真的跑用例」时才需要，因此一律改成函数内 `await import()`
+// （见各自的调用点）。`--version` / `--help` / `lint` 三个最常用的路径因此不必为
+// 一次模型调用付 400ms 的模块加载。类型导入是编译期擦除的，不产生运行时开销。
 import {
   ensureConfigDir,
   CONFIG_PATH,
   loadConfig,
+  MAX_CONCURRENCY,
   readConcurrency,
   readSavedLocale,
   readScenarioTimeoutMs,
   readSideOutputPrefs,
+  readUsdToCny,
   SIDE_OUTPUTS_DISABLED,
   type SideOutputPrefs,
 } from "./config/config.js";
-import { downloadedFiles } from "./report/downloads.js";
 import { formatLintReport, lintCase, type LintResult } from "./agent/lint.js";
-import { collectScreenshots, type TestReport, type TokenUsage } from "./report/report.js";
 import {
-  ConcurrencySessionConflictError,
-  formatUsageLine,
-  MAX_CONCURRENCY,
-  runSuiteInChildren,
-} from "./agent/suite.js";
+  collectScreenshots,
+  setUsdToCny,
+  type TestReport,
+  type TokenUsage,
+} from "./report/report.js";
+import { downloadedFiles } from "./report/downloads.js";
 import {
   emitSideOutputs,
   reportDisabledByFlag,
   writeReportSideOutput,
   type ScriptOutcome,
 } from "./report/side-outputs.js";
-import { runSessionServer } from "./session/server.js";
-import { runInteractive } from "./tui/app.js";
 import {
   buildReplayScript,
-  groupRecordingsBySource,
   loadReplayScript,
   runReplayScript,
   sourceDriftNotice,
@@ -50,12 +45,9 @@ import {
   type ReplayScript,
   type ScenarioRecording,
 } from "./agent/replay.js";
-import {
-  captureRunVars,
-  expandVars,
-  VAR_HELP,
-  type RunVarValue,
-} from "./agent/vars.js";
+// `agent/vars.js` 只做时间格式化与占位符展开（实测 ~2ms），且 `buildHelp` 是同步的、
+// `--help` 就要用——没有理由为它改成异步。
+import { captureRunVars, expandVars, VAR_HELP } from "./agent/vars.js";
 import { info, setDebug, debugLog } from "./shared/log.js";
 import { parseLocale, setLocale, t } from "./shared/i18n.js";
 import {
@@ -67,6 +59,10 @@ import {
   reloadProxyConfig,
 } from "./config/proxy.js";
 import { packageVersion } from "./shared/version.js";
+import type {
+  AgentRunResult,
+  ScenarioSelection,
+} from "./agent/agent.js";
 
 interface CliArgs {
   input?: string;
@@ -657,12 +653,24 @@ function scriptPathForSource(sourcePath: string | null): string {
  * 没有落点的场景不再兜底写到 cwd（决策四）：脚本贴的是「当前打开的用例文件」，没有打开的
  * 用例文件时，往工作目录扔一个隐式的 pageqa.replay.json 最容易被忽略。
  */
+/**
+ * `agent/replay.js` 里「写脚本」那一组能力（按需加载后的形状）。
+ *
+ * 单独抽一个类型是为了让 {@link buildInteractiveScripts} 保持**纯函数**：它不自己
+ * `await import()`，只收一份已经加载好的模块——这样它在同步上下文里也能用，也便于单测。
+ */
+type ReplayWriters = Pick<
+  typeof import("./agent/replay.js"),
+  "buildReplayScript" | "groupRecordingsBySource" | "writeReplayScript"
+>;
+
 function buildInteractiveScripts(
   recordings: ScenarioRecording[],
   explicitPath: string | undefined,
+  replay: ReplayWriters,
 ): ScriptOutcome {
   if (recordings.length === 0) return { kind: "none" };
-  const groups = groupRecordingsBySource(recordings);
+  const groups = replay.groupRecordingsBySource(recordings);
   if (explicitPath && groups.size > 1) {
     throw new Error(
       t("err.emitMultiSource", {
@@ -692,8 +700,8 @@ function buildInteractiveScripts(
         sourceText = null;
       }
     }
-    const script = buildReplayScript(group, { sourcePath, sourceText });
-    writeReplayScript(target, script);
+    const script = replay.buildReplayScript(group, { sourcePath, sourceText });
+    replay.writeReplayScript(target, script);
     paths.push(target);
   }
   if (paths.length === 0) return { kind: "no-target", count: noTarget };
@@ -723,7 +731,9 @@ function detectInteractive(
   args: CliArgs,
   isFile: boolean,
   hasInput: boolean,
-  concurrency: number,
+  // 并发度与「要不要进交互模式」无关（TUI 的队列自己认这个值，见 ADR-0013 决策三），
+  // 保留形参只为让调用点继续把完整上下文传进来；下划线前缀表明「刻意不用」。
+  _concurrency: number,
 ): { run: boolean; error?: string } {
   const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   if (args.tui) {
@@ -774,7 +784,9 @@ async function interactiveMode(
   concurrency: number,
 ): Promise<number> {
   info(t("log.startupInteractive"));
-  const result = await runInteractive(source.text ?? "", {
+  // 按需加载：交互模式才会用到 TUI 与它背后的 pi-tui / pi-agent-core（理由见文件头 import 处）。
+  const { runInteractive: runTui } = await import("./tui/app.js");
+  const result = await runTui(source.text ?? "", {
     sourcePath: source.path,
     debug: args.debug,
     scriptPath: args.emitScriptPath,
@@ -808,9 +820,12 @@ async function interactiveMode(
   let scriptOutcome: ScriptOutcome;
   if (args.emitScript || prefs.replayScript) {
     try {
+      // 按需加载：`agent/replay.js` 很轻（~19ms），但它只在「要写脚本」时才需要。
+      const replay = await import("./agent/replay.js");
       scriptOutcome = buildInteractiveScripts(
         result.recordings,
         args.emitScriptPath,
+        replay,
       );
     } catch (err) {
       // 报告仍要打出来（用户可能等了十几分钟），脚本这头的错如实上 stderr 并反映到退出码。
@@ -965,6 +980,9 @@ async function main(): Promise<number> {
   setLocale(
     parseLocale(args.locale || process.env.PAGEQA_LOCALE || readSavedLocale()),
   );
+  // 报告的金额展示口径与语种同类：进程级、启动时定一次。只影响费用行里并列的 ¥ 数，
+  // 价目与估算始终是美元（见 report.ts 的 setUsdToCny）。
+  setUsdToCny(readUsdToCny());
   // 代理路由必须在任何一次模型请求之前装好：内置 provider（anthropic / openai / …）
   // 与自定义端点的 SDK 客户端都由 pi-ai 在每次请求时构造，取的是当时的
   // `globalThis.fetch`，因此这里替换一次就够（理由见 proxy.ts 与 llm.ts）。
@@ -993,7 +1011,9 @@ async function main(): Promise<number> {
       process.stdout.write(t("help.sessions") + "\n");
       return 0;
     }
-    return await runSessionServer({
+    // 按需加载：只有 `sessions` 子命令会用到它（连同 pi-durable，理由见文件头 import 处）。
+    const { runSessionServer: serveSessions } = await import("./session/server.js");
+    return await serveSessions({
       port: args.sessions.port,
       dir: args.sessions.dir,
       open: !args.sessions.noOpen,
@@ -1137,6 +1157,10 @@ async function main(): Promise<number> {
     }
     // 选不出来是**参数错误**，不是执行失败：在开跑前就判掉，走「参数错误 + 候选列表」
     // 这条口径，而不是让它从 try 里抛出去变成一坨栈。
+    //
+    // 按需加载：`agent/agent.js` 会连带拉进 pi-agent-core（~190ms）与 session/archive.js
+    // （→ pi-durable ~200ms）。只有真的要切场景时才付这笔账。
+    const { splitScenarios, selectScenario } = await import("./agent/agent.js");
     const all = splitScenarios(input);
     onlyTotal = all.length;
     try {
@@ -1208,9 +1232,21 @@ async function main(): Promise<number> {
 
   // 用量流水线：把「已经烧了多少」按行打到 stderr。自己跑（单场景 / `--only`）时
   // 直接回调；子进程跑时由子进程回调、父进程原样转出来（ADR-0013 第二步）。
-  const usageSink: ((usage: TokenUsage) => void) | undefined = args.usageStream
+  // `formatUsageLine` 在 `agent/suite.js`（→ pi-ai），只在开了 `--usage-stream` 时才需要，
+  // 因此在这里按需加载——注意它是同步回调，所以先 await 拿到函数再包一层。
+  const formatUsageLine = args.usageStream
+    ? (await import("./agent/suite.js")).formatUsageLine
+    : undefined;
+  const usageSink: ((usage: TokenUsage) => void) | undefined = formatUsageLine
     ? (usage) => process.stderr.write(formatUsageLine(usage) + "\n")
     : undefined;
+
+  // 进到这里就一定会真的跑用例，两个重模块一次性加载（提到 try 之外，因为 catch 里的
+  // `instanceof` 判定要用同一份模块实例）：
+  // - `agent.js`：runAgent / runSuite / renderScenarios / ModelUnreachableError；
+  // - `suite.js`：runSuiteInChildren / ConcurrencySessionConflictError。
+  const agentMod = await import("./agent/agent.js");
+  const suiteMod = await import("./agent/suite.js");
 
   try {
     // 报告里的 `script` 字段保持现状：只有显式 `--emit-script` 才写进去；默认生成的那些
@@ -1225,6 +1261,7 @@ async function main(): Promise<number> {
       // ── 只跑其中一个场景 ──
       // 就走「在本进程里跑一个套件」这条路：输出仍是套件形态（只有一个场景），
       // 与父进程 fork 子进程时调用的那条路径完全同一份代码（ADR-0013 决策二）。
+      const { runSuite, renderScenarios } = agentMod;
       result = await runSuite(renderScenarios([onlyPick.scenario]), {
         session: args.session,
         debug: args.debug,
@@ -1234,6 +1271,7 @@ async function main(): Promise<number> {
       });
     } else if (suiteMode) {
       // ── 套件：每个场景一个子进程，父进程串行 fork 并汇总（ADR-0013）──
+      const { runSuiteInChildren } = suiteMod;
       const outcome = await runSuiteInChildren({
         script: input,
         // 子进程拿的是**未展开**的输入（文件路径或原文）：占位符由它自己展开，
@@ -1261,6 +1299,7 @@ async function main(): Promise<number> {
       mergedScript = outcome.script;
       modelGone = outcome.modelUnreachable;
     } else {
+      const { runAgent } = agentMod;
       result = await runAgent(input, {
         session: args.session,
         debug: args.debug,
@@ -1324,14 +1363,14 @@ async function main(): Promise<number> {
   } catch (err) {
     // 并发 + 共享 session 是参数语义冲突：原样给出可执行的改法（去掉 --session / 把并发设为 1），
     // 一条用例都没跑，同样不该往 stdout 塞报告。
-    if (err instanceof ConcurrencySessionConflictError) {
+    if (err instanceof suiteMod.ConcurrencySessionConflictError) {
       process.stderr.write(err.message + "\n\n");
       return 1;
     }
     // 模型不可达是「环境不对」，不是「跑挂了」：给干净的报错 + 出路，不打印一坨栈。
     // 这时一条用例都没执行，stdout 上不该出现一份伪装成结果的报告。
     process.stderr.write(
-      (err instanceof ModelUnreachableError
+      (err instanceof agentMod.ModelUnreachableError
         ? `${err.message}\n${t("err.modelUnreachableHint")}`
         : t("err.execFailed", {
             msg: err instanceof Error ? (err.stack ?? String(err)) : String(err),

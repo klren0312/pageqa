@@ -27,6 +27,14 @@ const MAX_DEPTH = 6;
 /** 用例文件的扩展名（与 CLI 的 `looksLikeScriptFile` 保持一致）。 */
 const CASE_EXT = /\.(md|txt)$/i;
 
+/**
+ * 回放脚本的扩展名。
+ *
+ * 与用例文件刻意分开：`/replay` 只可能加载 JSON，把 `.md` 混进候选
+ * 等于让用户从一堆必然解析失败的文件里挑。
+ */
+const REPLAY_EXT = /\.json$/i;
+
 /** 从资源管理器/聊天工具粘来的路径常夹带不可见的 Bidi 控制符或零宽字符。 */
 const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 
@@ -68,13 +76,14 @@ function statOrNull(p: string): { isFile: boolean; isDir: boolean } | null {
   }
 }
 
-/** 递归收集用例文件；`pattern` 为空表示全收，否则要求相对路径（小写）含该子串。 */
+/** 递归收集文件；`pattern` 为空表示全收，否则要求相对路径（小写）含该子串。 */
 function collect(
   root: string,
   cwd: string,
   pattern: string,
   out: string[],
   depth: number,
+  ext: RegExp,
 ): void {
   if (depth > MAX_DEPTH) return;
   let entries;
@@ -89,10 +98,10 @@ function collect(
     const full = join(root, e.name);
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue;
-      collect(full, cwd, pattern, out, depth + 1);
+      collect(full, cwd, pattern, out, depth + 1, ext);
       continue;
     }
-    if (!e.isFile() || !CASE_EXT.test(e.name)) continue;
+    if (!e.isFile() || !ext.test(e.name)) continue;
     const rel = relative(cwd, full).replace(/\\/g, "/");
     if (pattern === "" || rel.toLowerCase().includes(pattern)) out.push(full);
   }
@@ -116,10 +125,17 @@ function pack(found: string[]): CaseFileResolution {
   };
 }
 
-/** 解析一次 `/run` 的输入。 */
-export function resolveCaseFile(
+/**
+ * 解析一次「路径或关键字」到确切文件（`/run` 与 `/replay` 共用同一条路）。
+ *
+ * `ext` 只决定**目录枚举与关键字匹配**认哪些文件。用户指名一个存在的文件时一律
+ * 直接用它（哪怕扩展名不对）：那时该说的是「这个文件读不了」，而不是「找不到」——
+ * 后者会让人以为路径敲错了，转头去翻目录。
+ */
+function resolveByHint(
   hint: string,
-  cwd = process.cwd(),
+  cwd: string,
+  ext: RegExp,
 ): CaseFileResolution {
   const cleaned = cleanHint(hint);
   if (!cleaned) return { kind: "none" };
@@ -127,23 +143,44 @@ export function resolveCaseFile(
   const st = statOrNull(direct);
   // 1) 点到具体文件：用户既然指名，就直接用它。
   if (st?.isFile) return { kind: "one", path: direct };
-  // 2) 点到目录：取该目录下的全部用例文件。
+  // 2) 点到目录：取该目录下的全部候选文件。
   if (st?.isDir) {
     const all: string[] = [];
-    collect(direct, cwd, "", all, 0);
+    collect(direct, cwd, "", all, 0, ext);
     return pack(all);
   }
   // 3) 关键字：按「相对 cwd 的路径片段」匹配（`examples/smoke` 也能命中）。
   const pattern = cleaned.replace(/^\.\//, "").toLowerCase();
   const all: string[] = [];
-  collect(cwd, cwd, pattern, all, 0);
+  collect(cwd, cwd, pattern, all, 0, ext);
   if (all.length > 0) return pack(all);
   // 退一步：只用文件名匹配（应对 `examples//smoke`、带盘符的怪输入等）。
-  const name = basename(cleaned).toLowerCase().replace(CASE_EXT, "");
+  const name = basename(cleaned).toLowerCase().replace(ext, "");
   if (!name || name === pattern) return pack(all);
   const byName: string[] = [];
-  collect(cwd, cwd, name, byName, 0);
+  collect(cwd, cwd, name, byName, 0, ext);
   return pack(byName);
+}
+
+/** 解析一次 `/run` 的输入（用例文件：`.md` / `.txt`）。 */
+export function resolveCaseFile(
+  hint: string,
+  cwd = process.cwd(),
+): CaseFileResolution {
+  return resolveByHint(hint, cwd, CASE_EXT);
+}
+
+/**
+ * 解析一次 `/replay` 的输入（回放脚本：`.json`）。
+ *
+ * 与 `/run` 走同一套三层查找，只换扩展名——回放脚本和用例文件是两种东西，
+ * 扩展名本身就是最可靠的区分，不必再猜「这个 json 是不是脚本」。
+ */
+export function resolveReplayFile(
+  hint: string,
+  cwd = process.cwd(),
+): CaseFileResolution {
+  return resolveByHint(hint, cwd, REPLAY_EXT);
 }
 
 /**
