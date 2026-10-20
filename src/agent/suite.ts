@@ -429,6 +429,10 @@ export function buildChildArgs(inv: ChildInvocation): string[] {
     "--json",
     "--no-tui",
     "--no-side-outputs",
+    // 收尾的「本次产物」清单由父进程独占打（ADR-0013 决策六 + 决策九）：子进程打出来的
+    // 回放脚本是这里传下去的**临时运输文件**，父进程收尾就删，而它的 stderr 又被逐行
+    // 转发进用户日志——那等于告诉用户一个当场失效的路径。
+    "--quiet-side-outputs",
     "--locale",
     inv.locale ?? getLocale(),
     ...(inv.debug ? ["--debug"] : []),
@@ -532,13 +536,15 @@ export function scenarioLogTag(index: number, name: string): string {
  * 与「父进程内部隔离」是同一条代码路径：
  *
  * ```
- * pageqa --only <k> --json --no-tui --no-side-outputs --session <id> -- <用例>
+ * pageqa --only <k> --json --no-tui --no-side-outputs --quiet-side-outputs --session <id> -- <用例>
  * ```
  *
  * - `--json`：stdout 只放最终报告，父进程只认这一份 JSON；
  * - `--no-side-outputs`：HTML 报告与**默认**回放脚本都别写（父进程统一写一份），
  *   但显式给出的 `--emit-script <临时路径>` 仍然生效——录制数据就是这样回传的
  *   （ADR-0013 决策六）；
+ * - `--quiet-side-outputs`：落盘照旧，但**连收尾的产物清单也不打**——清单里那个回放
+ *   脚本是临时运输文件，父进程收尾就删；「收尾不打，关闭工具时才打」，播报归父进程；
  * - `--no-tui`：兜底，确保子进程不会去抢终端（stdout 是管道时本来也不会）；
  * - `--usage-stream`：交互模式要实时用量时才加（见 `USAGE_LINE_PREFIX`）。
  *

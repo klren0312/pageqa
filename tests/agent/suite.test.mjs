@@ -139,6 +139,18 @@ describe("子进程命令行契约（ADR-0013 决策二）", () => {
     assert.equal(args[args.length - 2], "--");
   });
 
+  test("--quiet-side-outputs 恒带：子进程不打「本次产物」清单（打出来的是临时脚本路径，父进程收尾就删）", () => {
+    for (const args of [
+      buildChildArgs({ scenarioIndex: 0, input: "case.md" }),
+      buildChildArgs({ scenarioIndex: 1, input: "case.md", scriptPath: "C:\\tmp\\s.replay.json" }),
+      buildChildArgs({ scenarioIndex: 0, input: "case.md", usageStream: true, session: "abc" }),
+    ]) {
+      assert.equal(args.includes("--quiet-side-outputs"), true);
+      // 必须排在 `--` 之前：`--` 之后一律是位置参数（用例原文）
+      assert.ok(args.indexOf("--quiet-side-outputs") < args.indexOf("--"));
+    }
+  });
+
   test("--usage-stream 按需带上：交互模式要实时用量，批处理不要", () => {
     const withStream = buildChildArgs({
       scenarioIndex: 0,

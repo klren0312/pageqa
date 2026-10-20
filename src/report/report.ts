@@ -793,11 +793,15 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
  *
  * 旁路产物清单用它而不是各进程的模块级清单：套件模式下每个场景一个子进程，父进程
  * 拿不到子进程的内存（见 TestReport.screenshots 的说明）。
+ *
+ * **去重**：`summarizeSuite` 已经把各场景的截图展平进了顶层 `screenshots`，再叠一次
+ * `scenarios[].screenshots` 就会把同一张图列两遍（2026-10-20 现场：同一条 `-final.png`
+ * 在产物清单里连着两行）。老报告只有其中一份时照样要取到，所以两份都读、按序去重。
  */
 export function collectScreenshots(report: TestReport): string[] {
   const own = report.screenshots ?? [];
   const nested = (report.scenarios ?? []).flatMap((s) => s.screenshots ?? []);
-  return [...own, ...nested];
+  return [...new Set([...own, ...nested])];
 }
 
 /** 渲染套件文本报告：逐场景断言 + 执行轨迹（末尾若干条）+ 最终汇总。 */

@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runAgent } from "../../dist/agent/agent.js";
@@ -148,6 +148,27 @@ describe("A5 套件：每个场景一个子进程", () => {
     assert.equal(script.scenarios.length, 2, "两份子进程录制应合并成一份脚本");
     assert.equal(script.scenarios[0].name, "S1 标题断言（应通过）");
     assert.equal(script.scenarios[1].name, "S2 断言不存在的文本（应失败）");
+
+    // 日志里给的路径必须**真的还在**：子进程那份回放脚本是临时运输文件（pageqa-suite-*/
+    // scenario-N.replay.json），父进程收尾就 rmSync 掉——打出来就是一个当场失效的路径
+    // （2026-10-20 现场：pageqa-scene-* 在日志里出现，磁盘上却找不到）。而「收尾不打，
+    // 关闭工具时才打」：子进程一行都不打，父进程退出时打一次自己真正写出的那一份。
+    const scriptPaths = [...stderr.matchAll(/回放脚本: (\S+)/g)].map((m) => m[1]);
+    assert.deepEqual(
+      scriptPaths,
+      [scriptPath],
+      `只该有父进程合并后的那一条脚本路径：\n${stderr}`,
+    );
+    for (const p of scriptPaths) {
+      assert.ok(existsSync(p), `日志里的回放脚本路径不存在：${p}`);
+    }
+
+    // 截图每张只列一次（顶层展平 + 各场景明细是同一批，重复相加会列两遍），且文件在
+    const shots = [...stderr.matchAll(/截图: (\S+)/g)].map((m) => m[1]);
+    assert.deepEqual(shots, [...new Set(shots)], `截图路径被重复列出：\n${stderr}`);
+    for (const p of shots) {
+      assert.ok(existsSync(p), `日志里的截图路径不存在：${p}`);
+    }
   });
 });
 

@@ -147,13 +147,23 @@ export function renderSideOutputLines(
   return lines;
 }
 
-/** 打出清单（永不抛错：清单本身出问题也不该改退出码）。 */
+/**
+ * 打出清单（永不抛错：清单本身出问题也不该改退出码）。
+ *
+ * `quiet` 是子进程那一侧的口径（`--quiet-side-outputs`，见 ADR-0013 决策六）：场景跑在
+ * 独立子进程里，它打的这份清单里的回放脚本是**临时运输文件**（`pageqa-scene-*`），
+ * 父进程收尾就删掉了；而它的 stderr 会被逐行转发进用户的日志（决策九），于是就成了
+ * 「日志里打印了一个当场失效的路径」。规则因此是：**收尾不打，关闭工具时才打**——
+ * 清单由用户直接运行的那个进程在退出时独占打一次，子进程一行都不打。
+ */
 export function emitSideOutputs(
   report: ReportOutcome,
   script: ScriptOutcome,
   downloads: readonly DownloadArtifact[] = [],
   screenshots: readonly string[] = [],
+  opts: { quiet?: boolean } = {},
 ): void {
+  if (opts.quiet) return;
   try {
     for (const line of renderSideOutputLines(report, script, downloads, screenshots)) {
       info(line);

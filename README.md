@@ -309,6 +309,7 @@ Rules are matched top-down, first match wins; anything unmatched falls back to `
 | `--tui` / `--no-tui` | Force interactive on/off (`PAGEQA_NO_TUI=1` also works) |
 | `--emit-script [path]` | Freeze a replay script (on by default, next to the source case) |
 | `--no-side-outputs` | Write no side outputs (HTML report, default replay script); an explicit `--emit-script <path>` still wins |
+| `--quiet-side-outputs` | Still write side outputs, but print **no closing "outputs" list** — the list is printed once by the process you actually close. The parent sets it for child processes: the replay script in a child's list is a temp transport file that the parent deletes right after |
 | `--usage-stream` | Print one structured LLM-usage record per call to stderr (prefix `[pageqa:usage]`); how the parent gets live usage from a child process |
 | `--no-lint` | Skip the case-format pre-check before a run (on by default; it only advises on stderr and never blocks). To gate on it use `pageqa lint` |
 | `lint` (subcommand) | `pageqa lint <case file...>`: static case-format check, no browser and no model (`--json` / `--strict`); exit code `1` means there is an `error` |

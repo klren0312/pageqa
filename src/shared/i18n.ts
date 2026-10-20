@@ -975,6 +975,10 @@ const catalogs: Record<Locale, Catalog> = {
                    不写旁路产物：既不生成 HTML 测试报告，也不默认生成回放脚本
                    stdout 上的报告与退出码不受影响（CI 只取 stdout 时用）
                    显式给出的 --emit-script <path> 仍然生效（显式请求优先）
+  --quiet-side-outputs
+                   落盘照旧，但收尾不打「本次产物」清单——清单由关闭工具的那个进程打一次
+                   场景在独立子进程里执行时父进程会带上它：子进程那份清单里的回放脚本是
+                   临时运输文件，父进程收尾就删，打出来就是一个当场失效的路径
   --usage-stream   把 LLM 用量的结构化记录逐次打到 stderr（一行一次，前缀 [pageqa:usage]）
                    场景在独立子进程里执行时，父进程靠它把「已经烧了多少」实时带回来
   --no-lint        跳过「跑用例前的格式预检」（默认开；预检只在 stderr 提示、不拦执行）
@@ -2208,6 +2212,11 @@ Options:
                   write no side outputs: no HTML report, and no default replay script
                   the stdout report and the exit code are unaffected (for CI that only wants stdout)
                   an explicit --emit-script <path> still wins (explicit request first)
+  --quiet-side-outputs
+                  still write side outputs, but print no closing "outputs" list — the list is
+                  printed once by the process you actually close. The parent sets it for child
+                  processes: the replay script in a child's list is a temp transport file that
+                  the parent deletes right after, i.e. a path that is already gone.
   --usage-stream   print one structured LLM-usage record per call to stderr (prefix [pageqa:usage] )
                   when a scenario runs in its own child process, this is how the parent gets
                   "how much has been burned so far" in real time

@@ -143,6 +143,9 @@ pageqa sessions [选项]        # 子命令：起运行存档查询服务（见�
                    <用例名>.replay.json（内联文本写 ./pageqa.replay.json）
   --no-side-outputs
                    不写旁路产物（HTML 报告、默认回放脚本）
+  --quiet-side-outputs
+                   落盘照旧，但收尾不打「本次产物」清单——清单由关闭工具的那个进程打一次
+                   （场景在子进程里跑时父进程带上它：子进程那份清单里的回放脚本是临时文件）
   --usage-stream   把 LLM 用量逐次打到 stderr
   --replay <file>  零模型回放已有脚本（与用例输入互斥，且与 --emit-script 互斥）
   --semantic       回放时断言改用 Jev 语义判断（默认字符串包含）

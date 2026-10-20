@@ -324,6 +324,28 @@ describe("emitSideOutputs", () => {
     assert.ok(captured.some((l) => l.includes("report-1.html")));
     assert.ok(captured.some((l) => l.includes("pageqa --replay")));
   });
+
+  test("--quiet-side-outputs 一行都不打：收尾播报由父进程退出时独占一次", () => {
+    // 场景跑在子进程里（ADR-0013）：子进程那份「本次产物」清单里的回放脚本是
+    // **临时运输文件**（pageqa-scene-*），父进程收尾就删——打出来就是一个当场失效的路径。
+    const captured = [];
+    setSink((line) => captured.push(line));
+    try {
+      emitSideOutputs(
+        { kind: "written", path: "pageqa-report/report-1.html" },
+        {
+          kind: "written",
+          paths: ["C:\\Users\\me\\AppData\\Local\\Temp\\pageqa-scene-x\\scenario.replay.json"],
+        },
+        [],
+        ["C:\\Users\\me\\.pageqa\\screenshots\\run-1\\20261020-090022-final.png"],
+        { quiet: true },
+      );
+    } finally {
+      setSink(null);
+    }
+    assert.deepEqual(captured, []);
+  });
 });
 
 after(() => {

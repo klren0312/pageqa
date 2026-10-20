@@ -307,6 +307,7 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 | `--tui` / `--no-tui` | 强制开/关交互模式（`PAGEQA_NO_TUI=1` 同效） |
 | `--emit-script [path]` | 固化回放脚本（默认已开，路径贴源用例） |
 | `--no-side-outputs` | 不写旁路产物（HTML 报告、默认回放脚本）；显式 `--emit-script <path>` 仍然生效 |
+| `--quiet-side-outputs` | 落盘照旧，但**收尾不打「本次产物」清单**——清单由你关闭的那个进程在退出时打一次。场景在子进程里跑时父进程自动带上：子进程那份清单里的回放脚本是临时运输文件，父进程收尾就删 |
 | `--usage-stream` | 把 LLM 用量逐次打到 stderr（一行一次，前缀 `[pageqa:usage]`）；场景在子进程里跑时父进程靠它取实时用量 |
 | `--no-lint` | 跳过「跑用例前的格式预检」（默认开；预检只在 stderr 提示、不拦执行）。要设门槛就用 `pageqa lint` |
 | `lint`（子命令） | `pageqa lint <用例文件…>`：静态校验用例格式，不开浏览器、不调模型（`--json` / `--strict`）；退出码 `1` 表示有 `error` |

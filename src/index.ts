@@ -109,6 +109,15 @@ interface CliArgs {
    */
   noSideOutputs: boolean;
   /**
+   * `--quiet-side-outputs`：落盘照旧，但**收尾不打「本次产物」清单**。
+   *
+   * 场景跑在子进程里时（ADR-0013）由父进程传下去：子进程那份清单里的回放脚本是临时
+   * 运输文件（`pageqa-scene-*`），父进程收尾就删，而子进程 stderr 又被逐行转发进用户
+   * 日志——打出来就是一个当场失效的路径。规则是「收尾不打，关闭工具时才打」：清单由
+   * 用户直接运行的那个进程在退出时独占打一次。谁都能自己带这个开关复现，不是内部暗规则。
+   */
+  quietSideOutputs: boolean;
+  /**
    * `--usage-stream`：把 LLM 用量的结构化记录逐次打到 stderr（一行一次）。
    *
    * 场景在子进程里执行时，父进程靠它把「已经烧了多少」实时带回来（见 ADR-0013 第二步）。
@@ -183,6 +192,7 @@ function emptyCliArgs(): CliArgs {
     tui: false,
     noTui: false,
     noSideOutputs: false,
+    quietSideOutputs: false,
     usageStream: false,
     noLint: false,
     locale: "",
@@ -248,6 +258,9 @@ export function parseArgs(argv: string[]): CliArgs {
       }
       case "--no-side-outputs":
         args.noSideOutputs = true;
+        break;
+      case "--quiet-side-outputs":
+        args.quietSideOutputs = true;
         break;
       case "--no-lint":
         args.noLint = true;
@@ -844,6 +857,7 @@ async function interactiveMode(
     scriptOutcome,
     downloadedFiles(),
     collectScreenshots(result.report),
+    { quiet: args.quietSideOutputs },
   );
   if (scriptError) {
     process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");
@@ -918,6 +932,7 @@ async function replayMode(args: CliArgs): Promise<number> {
       { kind: "na" },
       downloadedFiles(),
       collectScreenshots(result.report),
+      { quiet: args.quietSideOutputs },
     );
     return result.report.status === "pass" ? 0 : 1;
   } catch (err) {
@@ -1224,10 +1239,12 @@ async function main(): Promise<number> {
       }),
     );
   }
-  if (scriptPath) {
+  // 开头这两行是「本次会产出什么」的预告：子进程（--quiet-side-outputs）同样不打——
+  // 它预告的回放脚本正是那个临时运输文件，父进程收尾就删（与收尾清单同一条理由）。
+  if (scriptPath && !args.quietSideOutputs) {
     info(t("log.scriptWillEmit", { path: scriptPath }));
   }
-  if (args.noSideOutputs) info(t("log.sideOutputsOff"));
+  if (args.noSideOutputs && !args.quietSideOutputs) info(t("log.sideOutputsOff"));
   lintPreflight();
 
   // 用量流水线：把「已经烧了多少」按行打到 stderr。自己跑（单场景 / `--only`）时
@@ -1344,6 +1361,7 @@ async function main(): Promise<number> {
       scriptOutcome,
       downloadedFiles(),
       collectScreenshots(result.report),
+      { quiet: args.quietSideOutputs },
     );
     if (scriptError) {
       process.stderr.write(t("err.execFailed", { msg: scriptError }) + "\n");

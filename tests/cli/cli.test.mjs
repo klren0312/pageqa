@@ -134,6 +134,14 @@ describe("CLI 参数解析", () => {
     assert.equal(args.json, true);
   });
 
+  test("--quiet-side-outputs 默认关，显式给出才开（子进程专用：收尾不打产物清单）", () => {
+    assert.equal(parseArgs(["case.md"]).quietSideOutputs, false);
+    const on = parseArgs(["--quiet-side-outputs", "--json", "case.md"]);
+    assert.equal(on.error, undefined);
+    assert.equal(on.quietSideOutputs, true);
+    assert.equal(on.json, true);
+  });
+
   test("--settle-waits 默认关，显式给出才开", () => {
     assert.equal(parseArgs(["--replay", "a.json"]).settleWaits, false);
     const on = parseArgs(["--replay", "a.json", "--settle-waits"]);
