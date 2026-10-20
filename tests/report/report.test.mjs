@@ -10,6 +10,7 @@ import {
   extractTrace,
   formatTokens,
   formatUsage,
+  collectScreenshots,
   mergeUsage,
   numberSteps,
   summarizeSuite,
@@ -553,5 +554,41 @@ describe("summarizeSuite 明细 summary/skipped", () => {
     const parsed = JSON.parse(JSON.stringify(summary.scenarios[0]));
     assert.ok(!("summary" in parsed));
     assert.ok(!("skipped" in parsed));
+  });
+});
+
+// 旁路产物清单要逐张列截图，路径重复打两遍会让人以为截了两张图（2026-10-20 现场：
+// 同一条 `...-final.png` 在日志里连着出现两行）。
+describe("collectScreenshots（每张图只算一次）", () => {
+  const member = (name, shots) => ({
+    name,
+    report: {
+      status: "pass",
+      assertions: [],
+      transcript: "",
+      screenshots: shots,
+    },
+    usage: emptyUsage(),
+  });
+
+  test("套件报告的顶层 screenshots 与各场景 screenshots 是同一批，不重复", () => {
+    const summary = summarizeSuite([
+      member("S1", ["a-final.png"]),
+      member("S2", ["b-final.png"]),
+    ]);
+    assert.deepEqual(collectScreenshots(summary), ["a-final.png", "b-final.png"]);
+  });
+
+  test("老报告只有场景明细（没有顶层展平）时照样取得到", () => {
+    const summary = summarizeSuite([member("S1", ["a-final.png"])]);
+    const { screenshots: _top, ...withoutTopLevel } = summary;
+    assert.deepEqual(collectScreenshots(withoutTopLevel), ["a-final.png"]);
+  });
+
+  test("单场景报告（没有 scenarios）看自身", () => {
+    assert.deepEqual(
+      collectScreenshots({ status: "pass", screenshots: ["solo.png"] }),
+      ["solo.png"],
+    );
   });
 });
