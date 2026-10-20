@@ -83,6 +83,41 @@ export function parseRoleName(text: string): { role: string; name: string } {
 }
 
 /**
+ * 可访问名尾部的**状态标记**：`[expanded]`、`[has-submenu]` 这类 bsk 拼进名字里的
+ * aria 状态（同族的还有 checked / pressed / selected / disabled…）。
+ *
+ * 为什么必须剥掉它们再比：标记描述的是「这一刻控件处于什么状态」，不是「它是谁」。同一个下拉
+ * 收起时叫 `combobox "* 物料分类： [has-submenu]"`，点开后就叫 `combobox "* 物料分类： [expanded]"`。
+ * 录制时模型先把下拉点开、再调 `select_option`，快照里那一行于是带着 `[expanded]` 被固定进脚本；
+ * 回放时控件还收着，名字是 `[has-submenu]`，全等比较必然落空，连「包含」兜底也救不了
+ * （`[expanded]` 不在 `[has-submenu]` 里）。实测代价：一条 23 步的回放里 4 个下拉全部被判
+ * 「元素未找到」而跳过，表单填不全 → 提交被必填校验拦下 → 抽屉不关 → 后面「搜索」按钮也点不到。
+ *
+ * 锚点写成 `(?=\\s*"?$)`：既匹配裸名字（`物料分类： [expanded]`），也匹配祖先路径那种
+ * `combobox "* 物料分类： [expanded]"` 的带引号写法（那里标记后面还跟着一个引号）。
+ */
+const STATE_MARK =
+  /[\s\u3000]*\[(?:expanded|collapsed|has-submenu|pressed|checked|unchecked|selected|empty|disabled|readonly|required|invalid|busy|modal|multiselectable)\](?=["\s]*$)/i;
+
+/**
+ * 去掉尾部的状态标记，返回用于**比较**的稳定名字。
+ *
+ * 只剥尾部：中间的 `[...]` 可能是名字本身的一部分（如 `button "[x2: @e9]"`），
+ * 剥掉会改变元素身份。连续多个标记（`X [expanded] [has-submenu]`）一并剥干净。
+ * 剥到空串时退回原文——名字整个就是状态标记的元素，总得留下点什么才能寻址。
+ */
+export function stripStateMarks(text: string): string {
+  let out = text;
+  for (;;) {
+    const next = out.replace(STATE_MARK, "");
+    if (next === out) break;
+    out = next;
+  }
+  const trimmed = out.trim();
+  return trimmed.length > 0 ? trimmed : text.trim();
+}
+
+/**
  * 是否为快照里的元信息行（`@vom` / `@view` / `@layers` / `L1 page`），这类行不参与层级树。
  *
  * 导出给快照瘦身（snapshot.ts）共用：两侧必须用同一条判定，否则瘦身会把它当成
@@ -108,12 +143,18 @@ export function isSnapshotMetaLine(body: string): boolean {
 const PATH_NAME_MAX = 60;
 const PATH_DEPTH_MAX = 3;
 
-/** 路径节点（有名字的祖先）的可读写法。 */
+/**
+ * 路径节点（有名字的祖先）的可读写法。
+ *
+ * 名字先剥状态标记再截断：祖先也可能是下拉/菜单（`combobox "* 物料分类： [expanded]"`），
+ * 把状态写进脚本等于让「区域在不在」的判定跟着录制那一刻的展开状态走。
+ */
 function pathLabel(role: string, name: string): string {
+  const stable = stripStateMarks(name);
   const shown =
-    name.length > PATH_NAME_MAX
-      ? name.slice(0, PATH_NAME_MAX - 3) + "..."
-      : name;
+    stable.length > PATH_NAME_MAX
+      ? stable.slice(0, PATH_NAME_MAX - 3) + "..."
+      : stable;
   return `${role || "?"} ${JSON.stringify(shown)}`;
 }
 
@@ -195,11 +236,17 @@ export function buildLocator(target: string, snapshotText: string): Locator {
   // 快照里查不到（例如模型用了一次更早快照的引用）：没有语义信息可用，只能留 target 兜底
   if (!self) return bare;
   if (!self.role && !self.name) return bare;
-  const same = refs.filter((r) => r.role === self.role && r.name === self.name);
+  // 名字按「剥掉状态标记后的稳定形式」存：`[expanded]` 是录制那一刻的展开状态，
+  // 回放时那个下拉是收着的（见 stripStateMarks）。同名序号也按稳定形式统计，
+  // 否则录制与回放两侧的「第几个同名」会算出两个不同的序号空间。
+  const name = stripStateMarks(self.name);
+  const same = refs.filter(
+    (r) => r.role === self.role && stripStateMarks(r.name) === name,
+  );
   const nth = same.findIndex((r) => r.ref === ref);
   return {
     role: self.role,
-    name: self.name,
+    name,
     nth,
     target: original,
     path: self.path,
@@ -214,7 +261,14 @@ function pathScore(want: string[], got: string[]): number {
   let score = 0;
   const depth = Math.min(want.length, got.length);
   for (let i = 1; i <= depth; i++) {
-    if (want[want.length - i] !== got[got.length - i]) break;
+    // 逐层按稳定形式比：旧脚本里的路径还带着录制当时的状态标记（见 stripStateMarks），
+    // 不归一化的话「同一个区域」会被判成没变过，路径消歧整体失效。
+    if (
+      stripStateMarks(want[want.length - i]) !==
+      stripStateMarks(got[got.length - i])
+    ) {
+      break;
+    }
     score += 1;
   }
   return score;
@@ -228,6 +282,9 @@ function pathScore(want: string[], got: string[]): number {
  *   2. role 相同且 name 包含（文案被加了前后缀，如「操作」→「操作 更多」）
  *   3. 只看 name（角色被前端改过，如 button 变 a）
  *
+ * 三级比较都在**剥掉状态标记后**的可访问名上做（见 stripStateMarks）：录制那一刻控件可能
+ * 正开着（`[expanded]`），回放时它必然收着（`[has-submenu]`），这不是元素变了。
+ *
  * 命中多个候选时，先按**祖先路径**消歧（「结构」tab 下的「操作」与产品级的「操作」
  * 名字完全一样，只有所属区域能区分），路径也无法区分时才退回录制的同名序号 `nth`。
  */
@@ -235,19 +292,24 @@ export function resolveLocator(
   locator: Locator,
   snapshotText: string,
 ): string | null {
-  const name = locator.name;
+  const name = stripStateMarks(locator.name);
   const role = locator.role;
   if (!name && !role) return null;
   const refs = parseSnapshotRefs(snapshotText);
-  const exact = refs.filter((r) => r.role === role && r.name === name);
+  const exact = refs.filter(
+    (r) => r.role === role && stripStateMarks(r.name) === name,
+  );
   const fuzzy = exact.length
     ? exact
     : refs.filter(
-        (r) => r.role === role && name.length > 0 && r.name.includes(name),
+        (r) =>
+          r.role === role &&
+          name.length > 0 &&
+          stripStateMarks(r.name).includes(name),
       );
   const pool = fuzzy.length
     ? fuzzy
-    : refs.filter((r) => name.length > 0 && r.name === name);
+    : refs.filter((r) => name.length > 0 && stripStateMarks(r.name) === name);
   if (!pool.length) return null;
   if (pool.length === 1) return pool[0].ref;
 
@@ -336,9 +398,10 @@ export function locatorHint(
 ): LocatorHint {
   const refs = parseSnapshotRefs(snapshotText);
   const sameRole = refs.filter((r) => r.role === locator.role);
-  const head = locator.name.slice(0, 2);
+  // 前缀同样按稳定形式取：名字从 `X [expanded]` 剥成 `X` 以后，前两个字才和页面对得上。
+  const head = stripStateMarks(locator.name).slice(0, 2);
   const similar = head
-    ? sameRole.filter((r) => r.name.includes(head))
+    ? sameRole.filter((r) => stripStateMarks(r.name).includes(head))
     : [];
   if (similar.length > 0) {
     return {
@@ -439,8 +502,10 @@ export function inspectRegion(
   const { role, name } = parseRoleName(deepest);
   // 只记到页面本身（RootWebArea）：没有更细的区域信息可用，不猜
   if (!name || role === "RootWebArea") return { kind: "unknown" };
+  // 两侧都按稳定形式取前缀：旧脚本里的区域名还带着录制当时的状态标记（见 stripStateMarks）。
+  const want = shortName(stripStateMarks(name));
   const hit = snapshotNodeLabels(snapshotText).some(
-    (n) => n.role === role && shortName(n.name) === shortName(name),
+    (n) => n.role === role && shortName(stripStateMarks(n.name)) === want,
   );
   if (hit) return { kind: "present", label: deepest };
   return OVERLAY_ROLES.has(role)

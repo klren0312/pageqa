@@ -5,6 +5,7 @@ import {
   inspectRegion,
   parseSnapshotRefs,
   snapshotNodeLabels,
+  stripStateMarks,
 } from "../../dist/shared/locator.js";
 
 // 纯单元测试：只依赖 dist/locator.js，不需要 bsk / LLM。
@@ -107,6 +108,55 @@ describe("定位符所在区域是否还在（inspectRegion）", () => {
     // `L1 page` / `@vom` 这类元信息行不参与
     assert.ok(!labels.some((l) => /^L\d+$/.test(l.role)));
     assert.ok(!labels.some((l) => l.role === "vom" || l.role === "view"));
+  });
+});
+
+describe("可访问名里的状态标记（stripStateMarks）", () => {
+  // 这一组守的是真实事故（2026-10-20 PLM「新建物料」回放）：录制时下拉是展开的，名字里带着
+  // `[expanded]`；回放时它收着，名字是 `[has-submenu]`。状态不是身份，比较前必须剥掉。
+  test("常见的尾部状态标记被剥掉（含祖先路径那种带引号的写法）", () => {
+    assert.equal(stripStateMarks("* 物料分类： [expanded]"), "* 物料分类：");
+    assert.equal(stripStateMarks("* 物料分类： [has-submenu]"), "* 物料分类：");
+    // 带引号的路径标签：只删标记，引号原样留着（两侧都这么比才对得上）
+    assert.equal(
+      stripStateMarks('combobox "* 物料分类： [expanded]"'),
+      'combobox "* 物料分类："',
+    );
+    // 连续多个标记一并剥干净
+    assert.equal(stripStateMarks("X [expanded] [has-submenu]"), "X");
+  });
+
+  test("中间的 [...] 是名字的一部分，不能动", () => {
+    assert.equal(stripStateMarks("button \"[x2: @e9]\""), 'button "[x2: @e9]"');
+    assert.equal(stripStateMarks("Add [new] item"), "Add [new] item");
+  });
+
+  test("名字整个就是标记时不剥成空串（那样就没法寻址了）", () => {
+    assert.equal(stripStateMarks("[expanded]"), "[expanded]");
+    assert.equal(stripStateMarks(""), "");
+  });
+
+  test("区域判定同样按稳定名比较：旧脚本路径带 [expanded] 也算「区域在」", () => {
+    const TITLE = 'RootWebArea "经路云-LTC管理平台 - 产品库"';
+    const FORM = 'form "基础信息 位置： /自动化测试目录202609211338 * 物料分类： 请选择"';
+    const page = [
+      `  ${TITLE}`,
+      `  ${FORM}`,
+      '    @e1 combobox "* 物料分类： [has-submenu]"',
+    ].join("\n");
+    assert.deepEqual(
+      inspectRegion(
+        {
+          role: "combobox",
+          name: "* 物料分类： [expanded]",
+          nth: 0,
+          target: "@e1",
+          path: [TITLE, FORM],
+        },
+        page,
+      ).kind,
+      "present",
+    );
   });
 });
 

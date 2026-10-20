@@ -119,6 +119,49 @@ describe("locator 构造与重定位", () => {
     assert.equal(resolveLocator(loc, snapshot2), "@e4");
   });
 
+  // 真实事故（2026-10-20 PLM「新建物料」用例）：录制时模型先把下拉点开再调 select_option，
+  // 快照里那一行于是是 `combobox "* 物料分类： [expanded]"`，这个展开态被原样录进脚本；
+  // 回放时控件还收着，名字是 `[has-submenu]`。全等与「包含」两档都落空，一条 23 步的回放里
+  // 4 个下拉全部被判「元素未找到」而跳过，表单填不全 → 提交被必填校验拦下 → 抽屉不关 →
+  // 后面「搜索」按钮也点不到。状态标记描述的是「这一刻开没开」，不是元素身份。
+  test("录制那一刻的展开态不写进定位符：剥掉 [expanded]，回放按 [has-submenu] 命中", () => {
+    const recorded = [
+      '  @e1 combobox "* 物料分类： [expanded]"',
+      '  @e2 combobox "* 物料分类： [expanded]"',
+    ].join("\n");
+    const loc = buildLocator("@e2", recorded);
+    assert.equal(loc.name, "* 物料分类：");
+    assert.equal(loc.nth, 1);
+    // 回放：同名两个、控件都收着；序号指的是整页同名池里第二个，不能跟着状态一起变
+    const replay = [
+      '  @e7 combobox "* 物料分类： [has-submenu]"',
+      '  @e8 combobox "* 物料分类： [has-submenu]"',
+    ].join("\n");
+    assert.equal(resolveLocator(loc, replay), "@e8");
+    // 旧脚本里存着 `[expanded]` 也一样能跑：比较在剥掉标记之后进行
+    assert.equal(
+      resolveLocator({ ...loc, name: "* 物料分类： [expanded]" }, replay),
+      "@e8",
+    );
+  });
+
+  // 剥标记不能顺手把别的元素也认下来：分类与子分类只差两个字，改坏了就是静默点错控件。
+  test("剥掉状态标记后仍按名字区分同名区域里的不同控件", () => {
+    const snapshot = [
+      '  @e1 combobox "* 物料分类： [has-submenu]"',
+      '  @e2 combobox "* 子分类： [has-submenu]"',
+    ].join("\n");
+    const loc = {
+      // 录制时子分类还没出现，模型点的是物料分类；回放时它必须还是物料分类
+      role: "combobox",
+      name: "* 物料分类： [expanded]",
+      nth: 0,
+      target: "@e1",
+      path: [],
+    };
+    assert.equal(resolveLocator(loc, snapshot), "@e1");
+  });
+
   test("页面完全对不上时返回 null（由调用方决定兜底或报错）", () => {
     const loc = buildLocator("@e1", SNAPSHOT_1);
     assert.equal(resolveLocator(loc, '  @e1 button "登录"'), null);
@@ -570,6 +613,11 @@ describe("回放失败语义（executeReplaySteps）", () => {
         calls.push(["upload", target, file]);
         return "已上传";
       },
+      selectOption: (target, option) => {
+        calls.push(["select_option", target, option]);
+        if (handlers.selectOption) return handlers.selectOption(target, option);
+        return `已选择「${option}」`;
+      },
       hover: (target) => {
         calls.push(["hover", target]);
         return "已悬停";
@@ -727,6 +775,42 @@ describe("回放失败语义（executeReplaySteps）", () => {
     // 元素真的不存在时，盲等那 1 秒换不来任何东西。
     assert.equal(ops.calls.filter((c) => c[0] === "settle").length, 2);
     assert.equal(ops.calls.filter((c) => c[0] === "wait").length, 0);
+  });
+
+  // 事故现场（2026-10-20 PLM「新建物料」回放）：4 个 select_option 全被判「元素未找到」跳过。
+  // 根因是录制那一刻下拉是展开的，名字里带着 `[expanded]`，而回放时它是 `[has-submenu]`。
+  // 这里守住端到端的结果：下拉要真的被选中，而不是静默跳过、让后面的必填校验去背锅。
+  test("下拉在回放时是收起状态也能定位到控件并选中（不记跳过）", async () => {
+    const snapshot = [
+      '  RootWebArea "经路云-LTC管理平台 - 产品库"',
+      '    form "基础信息 位置： /自动化测试目录202609211338 * 物料分类： 请选择 * 子分类： 请选择"',
+      '      @e1 combobox "* 物料分类： [has-submenu]"',
+    ].join("\n");
+    const ops = makeOps({ snapshot });
+    const out = await run(ops, [
+      {
+        kind: "select_option",
+        step: 1,
+        target: "@e1",
+        option: "测试分类0703",
+        locator: {
+          role: "combobox",
+          name: "* 物料分类： [expanded]",
+          nth: 0,
+          target: "@e1",
+          path: [
+            'RootWebArea "经路云-LTC管理平台 - 产品库"',
+            'form "基础信息 位置： /自动化测试目录202609211338 * 物料分类： 请选择 * 子分类： 请选择"',
+          ],
+        },
+      },
+    ]);
+    assert.equal(out.skipped.length, 0);
+    assert.equal(out.failed, 0);
+    assert.deepEqual(
+      ops.calls.filter((c) => c[0] === "select_option"),
+      [["select_option", "@e1", "测试分类0703"]],
+    );
   });
 
   test("元素找到了但操作失败 → 记为失败并继续", async () => {
