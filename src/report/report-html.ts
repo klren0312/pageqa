@@ -249,6 +249,18 @@ function setPageDetails(open) {
 `.trim();
 
 /**
+ * 报告的完整名字：`<用例名>-测试报告`（如「钉钉推送日志用例-测试报告」）。
+ *
+ * 名字要一眼看出「这是哪条用例的报告」，所以用例名在前、报告种类在后，中间一个连字符——
+ * 与文件名同源，用户从产物清单里看到的路径与打开后的抬头是同一个字符串。
+ * 取不到用例名时返回空串，由渲染层退回通用标题。
+ */
+export function reportTitle(report: TestReport): string {
+  const name = (report.caseName ?? "").trim();
+  return name ? `${name}-${t("reportHtml.reportSuffix")}` : "";
+}
+
+/**
  * 渲染完整 HTML 文档。
  * 套件（有 scenarios）显示汇总计数 + 逐场景节；单场景显示徽章/耗时/断言/轨迹。
  */
@@ -259,8 +271,10 @@ export function renderHtml(report: TestReport): string {
   const counts = isSuite
     ? countUp(scenarios)
     : countUp([report]);
-  // HTML 文档标题用专用键（无 === 装饰）；文本报告的 report.title 保留给 stdout。
-  const title = isSuite ? t("reportHtml.pageTitleSuite") : t("reportHtml.pageTitle");
+  // 文档标题 = 用例名 + 报告种类（与文件名同一个字符串，页签里一眼认出是哪条用例的报告）。
+  // 取不到用例名时退回通用标题（HTML 标题用专用键、无 === 装饰；文本报告的 report.title 留给 stdout）。
+  const kind = isSuite ? t("reportHtml.pageTitleSuite") : t("reportHtml.pageTitle");
+  const title = reportTitle(report) || kind;
   const generatedAt = new Date().toLocaleString();
   const usageLine = formatUsage(report.usage, report.mode);
 
@@ -326,16 +340,81 @@ ${JS}
 `;
 }
 
-function pad2(n: number): string {
-  return String(n).padStart(2, "0");
+/**
+ * 从用例文件正文取「用例名」：第一个一级标题（`# 钉钉推送日志用例` → `钉钉推送日志用例`）。
+ *
+ * 为什么要读 H1 而不是文件名：用例文件常是 `dingtalk-log.md` 这类拼音/英文短名，
+ * 而人认的是 `# 钉钉推送日志用例` 那行标题。报告产物要给人看，名字就该用人写的那一个。
+ * 没有 H1（或 H1 是空的）时返回 undefined，由调用方退回文件名。
+ */
+export function caseNameFromText(text?: string | null): string | undefined {
+  for (const line of (text ?? "").split(/\r?\n/)) {
+    const m = line.match(/^#\s+(.+?)\s*#*\s*$/);
+    if (!m) continue;
+    const title = m[1].trim();
+    // `#` 后面必须真有字：`#`、`# ` 这类空标题不算（否则报告名会变成一个孤零零的连字符）。
+    if (title.length > 0) return title;
+  }
+  return undefined;
 }
 
-/** 报告文件路径：`<baseDir>/report-YYYYMMDD-HHmmss.html`（时间戳防覆盖）。 */
-export function htmlReportFilePath(baseDir?: string, now?: Date): string {
-  const d = now ?? new Date();
-  const name =
-    `report-${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}` +
-    `-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}.html`;
+/**
+ * 从用例/脚本路径取「用例名」：`…/plm-material-drawing-no.md` → `plm-material-drawing-no`。
+ *
+ * 回放脚本以 `.replay.json` 结尾，整段后缀一起去掉，否则会得到 `x.replay`。
+ * 取不到（空串、只有扩展名）时返回 undefined，让文件名退回通用形式。
+ */
+export function caseNameFromPath(path?: string | null): string | undefined {
+  const raw = (path ?? "").trim();
+  if (!raw) return undefined;
+  const base = basename(raw);
+  const stem = base.replace(/\.replay\.json$/i, "").replace(/\.[^.]+$/, "");
+  const trimmed = stem.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * 从用例文件读「用例名」：先读文件里的 H1，读不到再用文件名。
+ *
+ * 给回放用：脚本只记了 `source.path`，报告要在零模型回放时也叫得出用例名。
+ * 读不了（文件已删、无权限）不算错——退回文件名即可，报告本身照样写。
+ */
+export function caseNameFromFile(path?: string | null): string | undefined {
+  const fallback = caseNameFromPath(path);
+  if (!path) return fallback;
+  try {
+    return caseNameFromText(readFileSync(path, "utf8")) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** 文件名里不能出现的字符（Windows 最严，按它来就跨平台安全）。 */
+const UNSAFE_FILE_CHARS = /[\\/:*?"<>|\u0000-\u001f]/g;
+
+/** 用例名 → 文件名主干：去掉非法字符、压掉空白、限长（路径总长有上限）；没有就是空串。 */
+function fileStem(caseName?: string): string {
+  return (caseName ?? "")
+    .replace(UNSAFE_FILE_CHARS, "-")
+    .replace(/\s+/g, " ")
+    .replace(/^[.\s-]+|[.\s]+$/g, "")
+    .slice(0, 60)
+    .trim();
+}
+
+/**
+ * 报告文件路径：`<baseDir>/<用例名>-测试报告.html`（如 `钉钉推送日志用例-测试报告.html`）。
+ *
+ * 名字是**固定的**：同一条用例的报告永远落在同一个文件上，产物清单里那行路径可以直接收藏、
+ * 也可以挂进 CI 归档。代价是后一次运行覆盖前一次——报告是「这次运行的样子」，要留历史就
+ * 该用 `--out` 或另存，而不是靠文件名堆时间戳（堆出来的名字谁也认不出是哪条用例）。
+ *
+ * 不带用例名时只剩 `测试报告.html`：内联文本、无源会话没有「哪条用例」可言。
+ */
+export function htmlReportFilePath(baseDir?: string, caseName?: string): string {
+  const suffix = t("reportHtml.reportSuffix");
+  const stem = fileStem(caseName);
+  const name = stem ? `${stem}-${suffix}.html` : `${suffix}.html`;
   return join(baseDir ?? "pageqa-report", name);
 }
 
@@ -343,9 +422,8 @@ export function htmlReportFilePath(baseDir?: string, now?: Date): string {
 export function writeHtmlReport(
   report: TestReport,
   baseDir?: string,
-  now?: Date,
 ): { path: string } {
-  const path = htmlReportFilePath(baseDir, now);
+  const path = htmlReportFilePath(baseDir, report.caseName);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, renderHtml(report), "utf8");
   return { path };

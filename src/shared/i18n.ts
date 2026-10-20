@@ -840,6 +840,7 @@ const catalogs: Record<Locale, Catalog> = {
     "reportHtml.noAssertions": "无断言记录",
     "reportHtml.pageTitle": "页面测试报告",
     "reportHtml.pageTitleSuite": "页面测试套件报告",
+    "reportHtml.reportSuffix": "测试报告",
     "reportHtml.detail": "用例明细",
     // ── 本次产物清单（src/report/side-outputs.ts；三条出口收尾各打一次，只走 stderr）──
     "log.sideOutputsTitle": "[pageqa] 本次产物：",
@@ -2064,6 +2065,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "reportHtml.noAssertions": "no assertions recorded",
     "reportHtml.pageTitle": "page test report",
     "reportHtml.pageTitleSuite": "page test suite report",
+    "reportHtml.reportSuffix": "test report",
     "reportHtml.detail": "case details",
     // ── side outputs summary (src/report/side-outputs.ts) ──
     "log.sideOutputsTitle": "[pageqa] side outputs:",

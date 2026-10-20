@@ -92,7 +92,8 @@ pageqa/
 ## 5. 报告与退出码
 
 - `src/report/report.ts` 组装报告。断言**优先取 `assert_text` 工具返回的结构化结果**（期望值 + 成立/不成立 + 证据，由工具层经 `onExec` 逐条上报）：工具结论是确定性的，而模型自述的措辞不可靠（常写成「…，断言成立。」，既没有期望值也无法解析，据此外推会把全部通过的用例报成「用例中的断言全部执行（实际 0/N）」的假失败）。只有在拿不到工具结果时（回放、纯文本输入）才解析结论文本（`断言「X」：成立/不成立` 句式），并沿用按关键字（不成立/未找到/失败/不存在）的降级判定。
-- 文本报告含结论（PASS/FAIL）、断言列表与证据、摘要、transcript；JSON 报告结构稳定：`{ status, mode?, assertions[], summary?, transcript, usage?, trace?, steps?, skipped?, durationMs? }`（`mode: "replay"` 标记回放；`skipped` 是回放中因元素未找到而跳过的步骤，不算失败但必须让人看见）。
+- 文本报告含结论（PASS/FAIL）、断言列表与证据、摘要、transcript；JSON 报告结构稳定：`{ status, mode?, assertions[], summary?, transcript, usage?, trace?, steps?, skipped?, durationMs?, caseName? }`（`mode: "replay"` 标记回放；`skipped` 是回放中因元素未找到而跳过的步骤，不算失败但必须让人看见；`caseName` 是报告所属的用例名，供报告文件名与抬头使用，取不到时缺省）。
+- **报告就叫「用例名-测试报告」**（HTML 报告）：文件名与抬头（`<title>` / `<h1>`）同源，如 `钉钉推送日志用例-测试报告.html`。用例名取用例文件的**一级标题**（`# 钉钉推送日志用例`），没有 H1 才退回文件名去扩展名；回放按脚本头部 `source.path` 读同一个 H1，源文件不在了退回文件名。不带时间戳——同一条用例永远落在同一个文件上（后一次覆盖前一次）；非法文件名字符换成 `-`、限长 60；取不到名字时只剩 `测试报告.html`。此前文件名只有时间戳、抬头是固定文案，`pageqa-report/` 里一屏文件谁也认不出谁。
 - token 消耗：`runAgent` 汇总本次运行全部 assistant 消息的 `usage`（含续跑轮次）为 `TokenUsage { input, output, cacheRead, cacheWrite, reasoning, total, calls }`；`runSuite` 用 `mergeUsage` 合并各场景用量。
 - 文本报告**末尾**输出一行 token 消耗（`formatUsage`），套件模式下每个场景块内也各有一行，末尾为合计；JSON 报告经 `usage` 字段输出。端点未返回 usage（`calls>0` 且 `total=0`）时须如实标注，不得把 0 当作真实消耗。
 - 全部断言通过 → 退出码 `0`；任一失败/错误 → 退出码 `1`。可直接接入 CI。

@@ -31,6 +31,11 @@ import {
 } from "./report/report.js";
 import { downloadedFiles } from "./report/downloads.js";
 import {
+  caseNameFromFile,
+  caseNameFromPath,
+  caseNameFromText,
+} from "./report/report-html.js";
+import {
   emitSideOutputs,
   reportDisabledByFlag,
   writeReportSideOutput,
@@ -826,6 +831,10 @@ async function interactiveMode(
   // `--no-side-outputs` 三种模式口径一致（批处理 / 回放 / 交互都认），关掉时如实说明是
   // 命令行标志，而不是把锅甩给 /setting（面板里那个开关其实还是开的）。
   const prefs = args.noSideOutputs ? SIDE_OUTPUTS_DISABLED : readSideOutputPrefs();
+  // 有源会话的用例名取自它的 `# 标题`；无源会话（场景由运行中的 `/run` 现加载）没有单一用例
+  // 可言，退回通用名字——宁可叫「测试报告」，也不能拿会话里最后加载的那个文件冒充整份报告。
+  result.report.caseName ??=
+    caseNameFromText(source.text) ?? caseNameFromPath(source.path);
   const reportOutcome = args.noSideOutputs
     ? reportDisabledByFlag()
     : writeReportSideOutput(result.report, prefs);
@@ -915,6 +924,10 @@ async function replayMode(args: CliArgs): Promise<number> {
       settleWaits: args.settleWaits,
       locateTimeoutMs: args.locateTimeoutMs,
     });
+    // 用例名取自脚本记下的源用例文件的一级标题；源文件不在了就退回文件名，
+    // 再不行才用脚本自身名字（`x.replay.json` → `x`）——报告名要说得清是哪条用例的回放。
+    result.report.caseName ??=
+      caseNameFromFile(script.source.path) ?? caseNameFromPath(path);
     const out = args.json ? result.json : result.text;
     if (args.out) writeFileSync(args.out, out + "\n");
     process.stdout.write(out + "\n");
@@ -1325,6 +1338,11 @@ async function main(): Promise<number> {
         ...(usageSink ? { onUsage: usageSink } : {}),
       });
     }
+    // 报告名用「用例名」（用例文件的一级标题，没有就用文件名）：`pageqa-report/` 里一屏
+    // `report-2026….html` 谁也认不出是哪条用例。内联文本也可能写了 `# 标题`，照样取。
+    result.report.caseName ??=
+      caseNameFromText(sourceText) ??
+      (isFile ? caseNameFromPath(rawInput) : undefined);
     let scriptError: string | undefined;
     let scriptOutcome: ScriptOutcome;
     if (scriptPath) {

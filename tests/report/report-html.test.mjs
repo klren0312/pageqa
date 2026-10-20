@@ -4,10 +4,14 @@ import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  caseNameFromFile,
+  caseNameFromPath,
+  caseNameFromText,
   escapeHtml,
   formatDurationMs,
   renderHtml,
   htmlReportFilePath,
+  reportTitle,
   writeHtmlReport,
 } from "../../dist/report/report-html.js";
 import { getLocale, setLocale } from "../../dist/shared/i18n.js";
@@ -177,6 +181,36 @@ describe("renderHtml", () => {
     assert.ok(!html.includes("<h1>==="));
   });
 
+  // 报告抬头要说清「这是哪条用例的报告」（2026-10-20 反馈：直接用「<用例名>-测试报告」）。
+  // 单场景、套件都用同一个名字：套件里各场景名太长，堆在页签里反而看不出重点。
+  test("带用例名 → 页签与 h1 都是「<用例名>-测试报告」", () => {
+    const html = renderHtml(base({ caseName: "钉钉推送日志用例" }));
+    assert.ok(html.includes("<title>钉钉推送日志用例-测试报告</title>"));
+    assert.ok(html.includes("<h1>钉钉推送日志用例-测试报告"));
+    assert.ok(!html.includes("<h1>页面测试报告"));
+  });
+
+  test("套件也只用用例名，不把各场景名堆进标题", () => {
+    const html = renderHtml(
+      base({
+        caseName: "钉钉推送日志用例",
+        scenarios: [
+          { name: "D1 很长很长的场景名", status: "pass", steps: [], trace: [], assertions: [] },
+          { name: "D2 另一个场景", status: "fail", steps: [], trace: [], assertions: [] },
+        ],
+      }),
+    );
+    assert.ok(html.includes("<title>钉钉推送日志用例-测试报告</title>"));
+    // 场景名仍然逐节出现在正文里
+    assert.ok(html.includes("D1 很长很长的场景名"));
+  });
+
+  test("用例名里的 HTML 字符照样转义（名字来自用例文件，不可信）", () => {
+    const html = renderHtml(base({ caseName: "<script>alert(1)</script>" }));
+    assert.ok(!html.includes("<title><script>alert(1)</script>"));
+    assert.ok(html.includes("&lt;script&gt;"));
+  });
+
   test("套件文档标题用套件名且无 ===", () => {
     const html = renderHtml(
       base({ scenarios: [], assertions: [], summary: "共 0 个场景，通过 0 个" }),
@@ -207,12 +241,101 @@ describe("escapeHtml / formatDurationMs", () => {
 });
 
 describe("htmlReportFilePath", () => {
-  test("默认在 pageqa-report 下，时间戳格式固定", () => {
-    const p = htmlReportFilePath(undefined, new Date("2026-09-23T08:09:10"));
+  // 报告名就是「<用例名>-测试报告」：同一条用例永远落在同一个文件上（2026-10-20 反馈）。
+  test("用例名 + 测试报告，默认放在 pageqa-report 下", () => {
     assert.equal(
-      p.replace(/\\/g, "/"),
-      "pageqa-report/report-20260923-080910.html",
+      htmlReportFilePath(undefined, "钉钉推送日志用例").replace(/\\/g, "/"),
+      "pageqa-report/钉钉推送日志用例-测试报告.html",
     );
+    assert.equal(
+      htmlReportFilePath("out", "plm-material-drawing-no").replace(/\\/g, "/"),
+      "out/plm-material-drawing-no-测试报告.html",
+    );
+  });
+
+  test("没有用例名时只剩「测试报告.html」", () => {
+    assert.equal(
+      htmlReportFilePath().replace(/\\/g, "/"),
+      "pageqa-report/测试报告.html",
+    );
+  });
+
+  test("非法文件名字符被换掉，超长被截断", () => {
+    const bad = htmlReportFilePath(undefined, 'a/b\\c:d*e?f"g<h>i|j');
+    const name = bad.replace(/\\/g, "/").split("/").at(-1);
+    assert.equal(bad.replace(/\\/g, "/").split("/").length, 2, "不能多出一层目录");
+    assert.ok(!/[\\/:*?"<>|]/.test(name), `文件名仍含非法字符：${name}`);
+    assert.ok(name.endsWith("-测试报告.html"));
+    assert.ok(
+      htmlReportFilePath(undefined, "x".repeat(200)).split(/[\\/]/).at(-1).length <=
+        60 + "-测试报告.html".length,
+    );
+    assert.ok(
+      htmlReportFilePath(undefined, "   ").replace(/\\/g, "/").endsWith("/测试报告.html"),
+    );
+  });
+});
+
+describe("caseNameFromText / caseNameFromPath / caseNameFromFile", () => {
+  test("用例文件的 H1 就是用例名（文件名是拼音/英文时尤其重要）", () => {
+    assert.equal(
+      caseNameFromText("# 钉钉推送日志用例\n\n正文…\n"),
+      "钉钉推送日志用例",
+    );
+    assert.equal(
+      caseNameFromText("> 说明\n\n#   PLM 新建物料并核对列表图号  \n"),
+      "PLM 新建物料并核对列表图号",
+    );
+  });
+
+  test("没有 H1 / H1 是空的 → undefined（不拿 ## 场景标题或空串顶替）", () => {
+    assert.equal(caseNameFromText("## 场景一\n步骤"), undefined);
+    assert.equal(caseNameFromText("#\n# \n"), undefined);
+    assert.equal(caseNameFromText(""), undefined);
+    assert.equal(caseNameFromText(null), undefined);
+  });
+
+  test("路径：用 .md 去扩展名，回放脚本的 .replay.json 整段去掉", () => {
+    assert.equal(
+      caseNameFromPath("C:/Users/dll/Desktop/plm-material-drawing-no.md"),
+      "plm-material-drawing-no",
+    );
+    assert.equal(caseNameFromPath("examples/smoke.md"), "smoke");
+    assert.equal(
+      caseNameFromPath("C:/x/plm-material-drawing-no.replay.json"),
+      "plm-material-drawing-no",
+    );
+  });
+
+  test("路径取不到名字时返回 undefined", () => {
+    assert.equal(caseNameFromPath(""), undefined);
+    assert.equal(caseNameFromPath("   "), undefined);
+    assert.equal(caseNameFromPath(null), undefined);
+    assert.equal(caseNameFromPath(".md"), undefined);
+  });
+
+  test("从文件读：读得到 H1 就用 H1，读不到（文件没了）退回文件名", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pageqa-case-"));
+    try {
+      const p = join(dir, "dingtalk-log.md");
+      writeFileSync(p, "# 钉钉推送日志用例\n\n## D1 场景\n", "utf8");
+      assert.equal(caseNameFromFile(p), "钉钉推送日志用例");
+      assert.equal(caseNameFromFile(join(dir, "gone.md")), "gone");
+      assert.equal(caseNameFromFile(null), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("reportTitle", () => {
+  test("用例名 + 测试报告（与文件名同源，产物清单里的路径与打开后的抬头一致）", () => {
+    assert.equal(reportTitle(base({ caseName: "钉钉推送日志用例" })), "钉钉推送日志用例-测试报告");
+  });
+
+  test("没有用例名时返回空串：渲染层据此退回通用标题", () => {
+    assert.equal(reportTitle(base()), "");
+    assert.equal(reportTitle(base({ caseName: "  " })), "");
   });
 });
 
@@ -221,9 +344,8 @@ describe("writeHtmlReport", () => {
     const dir = mkdtempSync(join(tmpdir(), "pageqa-html-"));
     try {
       const report = base({ durationMs: 500 });
-      const { path } = writeHtmlReport(report, dir, new Date("2026-09-23T15:30:01"));
-      assert.equal(path, htmlReportFilePath(dir, new Date("2026-09-23T15:30:01")));
-      assert.ok(path.includes("report-20260923-153001.html"));
+      const { path } = writeHtmlReport(report, dir);
+      assert.equal(path, htmlReportFilePath(dir));
       assert.ok(existsSync(path));
       const html = readFileSync(path, "utf8");
       assert.ok(html.includes("PASS"));
@@ -233,4 +355,13 @@ describe("writeHtmlReport", () => {
     }
   });
 
+  test("报告自带 caseName 时文件名跟着它走（旁路产物只传 report，不额外传名字）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pageqa-html-"));
+    try {
+      const { path } = writeHtmlReport(base({ caseName: "钉钉推送日志用例" }), dir);
+      assert.ok(path.replace(/\\/g, "/").endsWith("/钉钉推送日志用例-测试报告.html"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
