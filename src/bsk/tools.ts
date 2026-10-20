@@ -1696,7 +1696,15 @@ export function createBskOps(
           ["navigate", url, ...quiet, "--wait-until", "domcontentloaded"],
           signal,
         );
-        return `已导航到 ${url}\n${out}`;
+        // Page.navigate 遵守 HTTP 缓存：响应在 max-age 内时浏览器直接用旧副本、
+        // 请求根本不会发出去（实测同 URL 二次 navigate 服务器零请求）——刷新却带
+        // max-age=0 强制重验证，于是「agent 打开是旧页面、手动刷新才是新的」。
+        // 紧跟一次 --hard 重载（CDP ignoreCache=true）拿到的才是服务器当前版本。
+        const reloaded = await bsk(
+          ["reload", "--hard", ...quiet, "--wait-until", "domcontentloaded"],
+          signal,
+        );
+        return `已导航到 ${url}\n${out}${reloaded ? `\n${reloaded}` : ""}`;
       } catch (err) {
         // 被中止不是「页面打不开」，别拿诊断层去解释它。
         if (err instanceof BskAbortError) throw err;
