@@ -6,7 +6,7 @@
 ## 决策
 
 ### 1. 搬数据，不搬扩展
-pi-free 是 **Pi CLI 的扩展**：peer 依赖 `@earendil-works/pi-coding-agent` 与 `@earendil-works/pi-ai@^0.86`（pageqa 用的是 `^1.1.0`），只导出 `./dist/index.js` 一个入口，注册走 `pi.registerProvider()` 这个宿主 API。pageqa 没有 Pi 宿主，import 它只会拉进一棵装不下的依赖树。
+pi-free 是 **Pi CLI 的扩展**：peer 依赖 `@earendil-works/pi-coding-agent` 与 `@earendil-works/pi-ai@^0.86`（pageqa 用的是 `^1.3.0`），只导出 `./dist/index.js` 一个入口，注册走 `pi.registerProvider()` 这个宿主 API。pageqa 没有 Pi 宿主，import 它只会拉进一棵装不下的依赖树。
 
 能复用的是它**整理出来的数据**：base URL、鉴权变量名、哪些模型真的免费。据此新建 `src/free-providers.ts`，数据取自它的 `docs/providers.md` 与 `docs/free_models.md`（2026-08-26 审计），并在文件头写明来源与快照日期。
 
