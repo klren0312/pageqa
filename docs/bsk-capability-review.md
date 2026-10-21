@@ -19,7 +19,7 @@
 4. **值得向上游提的需求只有一条**：元素级条件等待（调研时拟名 `wait-for-selector` / `wait-for-function`，最终定名 `wait-for-element`）。这是 pageqa 不得不在页面侧用 `evaluate` 轮询自建 `wait_for` / 页面稳定检测的根因，且 bsk 在扩展侧实现能绕开后台标签页定时器节流。
 5. **结构性效率优化**集中在 `--json` 与 IPC 快路径两处：前者是透传 dialogs 的卡点，后者只覆盖 7 个命令，其余每条都要付 13–20ms 的子进程开销。
 
-> 落地进展：第 1 条（`press`）与第 2 条（`dialogs` 透传）已完成；第 1 条里点名的 `console` / `network` 缺口也已补上（阶段 2）。第 4 条（元素级条件等待）已在**上游 bsk 仓库**实现为 `bsk wait-for-element`（阶段 5）——但尚未合入上游发布，因此 pageqa 目前仍不能使用它。实施记录见第八节。
+> 落地进展：第 1 条（`press`）与第 2 条（`dialogs` 透传）已完成；第 1 条里点名的 `console` / `network` 缺口也已补上（阶段 2）。第 4 条（元素级条件等待）已在上游 bsk 仓库实现为 `bsk wait-for-element` 并于 bsk 0.3.3 发布，pageqa 已在**阶段 6** 接入（元素类条件走原生等待、文本条件仍走页面侧探针，旧版 bsk 自动降级）。实施记录见第八节。
 
 ---
 
@@ -212,7 +212,7 @@ pageqa 与 bsk 存在多处**逐字节 / 强格式**耦合，扩展 bsk 能力�
 | 2 | `assert_no_console_error` / `assert_network` | 需按 `download` 的模式产出 `AssertOutcome` 才会进报告 | 已完成（2026-09-29） |
 | 3 | `screenshot` + HTML 报告嵌图 | 失败现场证据 | 已完成（2026-09-29） |
 | 4 | `wheel` / `focus` / `blur` / `get-html` + 扩展 IPC 快路径 | 覆盖面扩展 | 已完成（2026-09-29）<br/>`select` 未接（按 value 匹配，与用例的可见文本对不上，理由见第八节） |
-| 5 | 向上游提 `wait-for-element` 条件等待 PR | 落地后可回收 `condition.ts` / `settle.ts` 的轮询逻辑 | 已在上游实现（2026-09-29），**未合入上游**；pageqa 待其发布后才可接入（见第八节） |
+| 5 | 向上游提 `wait-for-element` 条件等待 PR | 落地后可回收 `condition.ts` / `settle.ts` 的轮询逻辑 | 已在上游实现（2026-09-29）并随 bsk 0.3.3 发布；pageqa 已于阶段 6 接入（见第八节） |
 
 ---
 
@@ -419,9 +419,9 @@ bsk wait-for-element [TARGET] [--ref @eN | --selector CSS] --state <visible|hidd
 
 ### 待办
 
-无。7.2 的五个阶段均已完成（阶段 5 为上游实现，待提 PR）。
+无。7.2 的五个阶段均已完成（阶段 5 为上游实现，已随 bsk 0.3.3 发布；pageqa 侧接入见阶段 6）。
 
-若后续要回收 pageqa 的轮询逻辑，前置条件是：上游接纳并发布该命令 → 在 `pageqa` 的 `bsk/tools.ts` 增加 `wait_for` 工具（可走 IPC 快路径）→ 逐步用 bsk 原生等待替换 `condition.ts` / `settle.ts` 里的外层轮询。`settle.ts` 的「页面稳定检测」语义比单个元素状态复杂（要等网络与渲染都静下来），短时间内仍建议保留自研实现。
+`settle.ts`（「页面稳定检测」）**仍然保留自研实现**：它等的是「网络与渲染都安静」，单元素状态表达不了这个语义，`wait-for-element` 也不能替代它。
 
 ---
 

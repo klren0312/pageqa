@@ -288,6 +288,8 @@ const catalogs: Record<Locale, Catalog> = {
       "回放脚本含不支持的步骤类型（{kind}）：{path}\n  - 若是 pageqa 升级后生成的新脚本，请把 pageqa 一起升级到同一版本",
     "replay.err.badWaitFor":
       "回放脚本里的 wait_for 步骤必须**恰好**带一个条件（text / selector / gone 三选一）：{path}",
+    "replay.err.badWaitForState":
+      "回放脚本里的 wait_for 步骤的 state 只能是 visible / hidden / attached / detached，且只能配合 selector（gone 已等价于 hidden）：{path}",
     "replay.err.pressNoKey": "回放脚本里的 press 步骤缺少键名（key）：{path}",
     "replay.err.focusNoTarget":
       "回放脚本里的 focus / blur 步骤缺少目标（target）：没有目标就不知道要动谁的焦点：{path}",
@@ -1492,6 +1494,8 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "replay script contains an unsupported step kind ({kind}): {path}\n  - if the script was written by a newer pageqa, upgrade pageqa to the same version",
     "replay.err.badWaitFor":
       "a wait_for step in the replay script must carry exactly one condition (text / selector / gone): {path}",
+    "replay.err.badWaitForState":
+      "the state of a wait_for step must be visible / hidden / attached / detached, and only alongside selector (gone already means hidden): {path}",
     "replay.err.pressNoKey":
       "a press step in the replay script is missing its key name (key): {path}",
     "replay.err.focusNoTarget":

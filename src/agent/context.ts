@@ -596,7 +596,7 @@ export const COMPACT_SYSTEM_PROMPT = [
   "工具（参数细节见各自 schema）：",
   "- navigate(url) 打开页面；snapshot() 读页面 aria 树与可见文本、给元素 @eN 编号；",
   "- click(target,showPage?) / fill(target,value) / select_option(target,option) / pick_date(target,date,endDate?) / hover / scroll / wheel / press(key) / focus / blur / upload(target,file)；",
-  "- wait_for(text|selector|gone,timeoutMs?) 等条件出现/消失（页面内等待一律用它）；wait(ms) 只用于页面之外的事情；",
+  "- wait_for(text|selector|gone,timeoutMs?) 等条件出现/消失（页面内等待一律用它；selector 默认等可见，state=attached|detached|hidden 可问「在不在 DOM」）；wait(ms) 只用于页面之外的事情；",
   "- assert_text(expectation,absent?) / assert_no_console_error() / assert_network(url,status?) 断言；download(target,expectName?) 捕获下载（本身即断言）；screenshot() / get_html(target?) 取证据。",
   "",
   "流程：navigate → snapshot → （首次操作前 wait_for 一个只属于该区域的地标）→ 按用例逐步操作 → 断言 → 给出结论。",

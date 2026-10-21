@@ -63,6 +63,14 @@ describe("默认系统提示里的关键规则", () => {
     assert.match(prompt, /- wait_for\(text \| selector \| gone, timeoutMs\?\)/);
   });
 
+  test("wait_for 的 state 在提示词里有一席：区分「没出现」与「在 DOM 里但没显形」", () => {
+    // 这条规则不能只活在 schema 里：模型看不到工具返回值里的 attached/visible 时
+    // 根本不会想到去用它，只会反复等同一个条件直到超时。
+    assert.match(prompt, /state=attached\|detached\|hidden/);
+    assert.match(prompt, /在 DOM 里但没显形/);
+    assert.match(prompt, /末次探测还在不在 DOM/);
+  });
+
   // 模型会把提示词里的示例数字当成事实：单步用例照抄成「步骤完成：1/7」，
   // 续跑于是追着要根本不存在的第 2~7 步（实测它反问「请补充第 2 步至第 7 步」后罢工）。
   test("进度声明的总数以用例条数为准，不留可照抄的示例总数", () => {

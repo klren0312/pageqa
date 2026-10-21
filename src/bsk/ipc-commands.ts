@@ -7,8 +7,8 @@
  * 否则模型看到的操作回显、报告里的失败原因都会悄悄变样。
  *
  * 支持范围刻意只覆盖「高频 + 结果简单」的子集：
- * snapshot / click / fill / hover / scroll-to / wait-ms / evaluate
- * （最后一个是「页面稳定检测」的载体，见 settle.ts）。
+ * snapshot / click / fill / hover / scroll-to / wait-ms / wait-for-element / evaluate
+ * （最后一个是「页面稳定检测」与文本条件等待的载体，见 settle.ts / condition.ts）。
  * 其余（navigate 的失败诊断、upload/download 的文件传输与 `--json` 信封、
  * session 生命周期、observe/get-html…）继续走 CLI 子进程——它们的价值和复杂度都在
  * CLI 那一侧的渲染与文件处理上，搬过来只会多一份需要同步维护的实现。
@@ -46,6 +46,10 @@ const VALUE_FLAGS = new Set([
   "max-tokens",
   "value",
   "timeout",
+  // wait-for-element 的轮询间隔（裸 u32，不是 `30s` 那种时长语法）。
+  "poll-ms",
+  // wait-for-element 的状态（visible / hidden / attached / detached）。
+  "state",
   "settle",
   "await-promise",
   "return-by-value",
@@ -575,9 +579,67 @@ export function planIpcCall(args: string[]): IpcPlan | null {
       };
     }
 
+    case "wait-for-element": {
+      if (typeof session !== "string" || !session) return null;
+      if (positionals.length > 1) return null;
+      const target = optionalTarget(flags, positionals[0]);
+      // 目标必填：没有目标的等待等的是「什么」都说不清（CLI 也是报 missing target）。
+      if (!target || Object.keys(target).length === 0) return null;
+      const state = flags.get("state");
+      // 认不出的状态退回 CLI，由 clap 报它自己的那句话（它知道合法的四个值）。
+      if (state !== undefined && typeof state !== "string") return null;
+      const params: Record<string, unknown> = {
+        session_id: session,
+        ...target,
+        ...(typeof state === "string" ? { state } : {}),
+        ...tabId(flags),
+        ...timeoutMs(flags),
+      };
+      // `--poll-ms` 在 CLI 侧是裸 u32：非整数一律退回 CLI，别把它当毫秒解析器用。
+      const poll = flags.get("poll-ms");
+      if (poll !== undefined) {
+        if (typeof poll !== "string") return null;
+        const ms = Number(poll);
+        if (!Number.isInteger(ms) || ms < 0) return null;
+        params.poll_ms = ms;
+      }
+      return {
+        method: "tool.wait_for_element",
+        params,
+        sessionKey,
+        // 等待不改页面，但它存在的意义就是「等到页面变了」：调用方拿到结果后
+        // 必须重新观察，所以按改动型处理（请求已发出后出错不重发）。
+        mutating: true,
+        render: (result) =>
+          renderWaitForElement(result, typeof state === "string" ? state : "visible"),
+      };
+    }
+
     default:
       return null;
   }
+}
+
+/**
+ * `bsk wait-for-element` 的结果 → 与 CLI human 模式一致的一行。
+ *
+ * 措辞抄的是 `crates/bsk-cli/src/cli/waits.rs` 的 `dispatch_wait_for_element`：
+ * 两条路径（IPC / 子进程）回给上层的文本必须逐字一致，否则「走没走快路径」会变成
+ * 模型与报告里可见的差异。这里只负责形状；「达成了没」的措辞由上层（tools.ts）给。
+ *
+ * `state` 由调用方传入而不是从结果里读：bsk 的结果信封里**没有** state 字段
+ * （CLI 打印的是它自己的入参），照搬信封会把状态回显成 `?`。
+ */
+function renderWaitForElement(result: unknown, state: string): string {
+  const r = asRecord(result, "tool.wait_for_element");
+  if (typeof r.satisfied !== "boolean") throw badShape("tool.wait_for_element", "缺少 satisfied");
+  const observed = (value: unknown): string =>
+    value === true ? "true" : value === false ? "false" : "unknown";
+  return (
+    `wait-for-element ok tab=${num(r.tab_id)} target=${usedTarget(r)} state=${state}` +
+    ` satisfied=${r.satisfied} attached=${observed(r.attached)}` +
+    ` visible=${observed(r.visible)} elapsed_ms=${num(r.elapsed_ms)}`
+  );
 }
 
 /**

@@ -20,10 +20,44 @@
  *   「可能命中」的粗筛，真正的结论由一次 `innerText` 复核给出。
  * - **三种条件互斥**（出现文本 / 出现元素 / 元素消失），由调用方保证；这里只负责把
  *   给定的那一种翻译成探针。
+ *
+ * ## 与 `bsk wait-for-element` 的关系（两套实现，一套语义）
+ *
+ * 元素类条件（`selector` / `gone`）优先交给 bsk 原生等待（一次 RPC、轮询在扩展侧，不受后台
+ * 标签页定时器节流影响）；文本条件 bsk 表达不了，仍走这里的页面侧探针。原生命令不可用
+ * （旧版 bsk）时退回探针，**判定规则必须一致**——所以 `probeSaysMaybe` 按状态判定的矩阵
+ * 与 bsk 的 `ElementState::satisfied_by(attached, visible)` 逐条对齐，探针里的可见性判定
+ * 也抄 bsk 的口径（`checkVisibility` + 非零盒子 + computed style 兜底）。两套路径对同一页面
+ * 必须给同一个答案，否则「旧版通过、新版超时」会变成一条查不出来的差异。
  */
 
 /**
- * 等待条件：三者只能给一个（由工具层校验）。
+ * 元素等待的四种状态，语义与 bsk 的 `--state` 一一对应。
+ *
+ * `visible` / `hidden` 问的是**可见性**，`attached` / `detached` 问的是**是否在 DOM 里**。
+ * 分开表达的理由全在超时报告上：「还在树里但没显形」和「压根没出现过」是两种不同的 bug，
+ * 合并成一个「没等到」等于把排查方向也一起丢了。
+ */
+export type ElementState = "visible" | "hidden" | "attached" | "detached";
+
+/** 合法状态的运行期清单（工具层与回放脚本校验共用一份）。 */
+export const ELEMENT_STATES: readonly ElementState[] = [
+  "visible",
+  "hidden",
+  "attached",
+  "detached",
+];
+
+export function isElementState(value: unknown): value is ElementState {
+  return typeof value === "string" && (ELEMENT_STATES as readonly string[]).includes(value);
+}
+
+/**
+ * 等待条件：`text` / `selector` / `gone` 三者只能给一个（由工具层校验）。
+ *
+ * `state` 只修饰 `selector`：`selector` 不带 `state` 时等的是**可见**（与 bsk
+ * `wait-for-element` 的默认值一致，也是「等到它出现」这句话的字面意思）；`gone` 等价于
+ * `selector + state: "hidden"`，保留它是因为它是回放脚本里已有的写法，且比写两个字段更直白。
  *
  * 文案与操作层其余方法保持一致（硬编码中文）：这些字符串会进轨迹与报告，
  * 与「已点击」「页面已稳定」是同一层，不额外走 i18n。
@@ -31,17 +65,42 @@
 export interface WaitCondition {
   /** 等到页面**可见文本**中出现该文本。 */
   text?: string;
-  /** 等到该 CSS 选择器命中元素。 */
+  /** 等到该 CSS 选择器达到 `state` 描述的状态（缺省 `visible`）。 */
   selector?: string;
-  /** 等到该 CSS 选择器**不再**命中元素（如 loading 遮罩消失）。 */
+  /** 等到该 CSS 选择器**不再可见**（如 loading 遮罩消失；等价于 `selector + hidden`）。 */
   gone?: string;
+  /** `selector` 要等的状态；缺省 `visible`。只与 `selector` 搭配。 */
+  state?: ElementState;
+}
+
+/** 元素条件实际要等的状态（`gone` 归一成 `hidden`，`selector` 缺省 `visible`）。 */
+export function conditionState(cond: WaitCondition): ElementState | null {
+  if (cond.gone) return "hidden";
+  if (cond.selector) return cond.state ?? "visible";
+  return null;
+}
+
+/** 状态的中文说法（进日志、轨迹与报告）。 */
+export function describeState(state: ElementState): string {
+  switch (state) {
+    case "visible":
+      return "可见";
+    case "hidden":
+      return "不可见或已移除";
+    case "attached":
+      return "已进入 DOM";
+    case "detached":
+      return "已离开 DOM";
+  }
 }
 
 /** 条件的人类可读描述，用于日志、轨迹与报告。 */
 export function describeCondition(cond: WaitCondition): string {
   if (cond.text) return `文本「${cond.text}」`;
-  if (cond.selector) return `元素 ${cond.selector}`;
   if (cond.gone) return `元素 ${cond.gone} 消失`;
+  if (cond.selector) {
+    return `元素 ${cond.selector} ${describeState(cond.state ?? "visible")}`;
+  }
   return "（未指定条件）";
 }
 
@@ -51,7 +110,11 @@ function literal(value: string | undefined): string {
 }
 
 /**
- * 轮询探针：**只做便宜的事**（`querySelector` + `textContent`），同步返回两个布尔。
+ * 轮询探针：**只做便宜的事**（`querySelector` + 可见性 + `textContent`），同步返回几个布尔。
+ *
+ * 可见性判定抄的是 bsk 自己的口径（`checkVisibility` + 非零盒子 + computed style 兜底）：
+ * 这条探针是 `bsk wait-for-element` 不可用时的**降级路径**，两种路径对「可见」必须给同一个答案，
+ * 否则「旧版 bsk 上这条用例通过、新版上超时」会变成一条查不出来的差异。
  *
  * 不在这里判 `innerText`：那是命中复核与超时取证的事（见 buildConfirmExpression）。
  */
@@ -61,10 +124,42 @@ export function buildProbeExpression(cond: WaitCondition): string {
     `  var SEL = ${literal(cond.selector)};`,
     `  var GONE = ${literal(cond.gone)};`,
     `  var TXT = ${literal(cond.text)};`,
-    "  var out = { selectorHit: false, selectorPresent: false, textPresent: false };",
+    "  var out = {",
+    "    selectorHit: false, selectorVisible: false,",
+    "    gonePresent: false, goneVisible: false, textPresent: false,",
+    "  };",
+    "  var visible = function (el) {",
+    "    if (!el) return false;",
+    "    try {",
+    "      if (el.checkVisibility) {",
+    "        return !!el.checkVisibility({",
+    "          checkOpacity: true, checkVisibilityCSS: true, contentVisibilityAuto: true,",
+    "        });",
+    "      }",
+    "    } catch (e) {}",
+    "    try {",
+    "      var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;",
+    "      if (rect && !(rect.width > 0) && !(rect.height > 0)) return false;",
+    "      var style = window.getComputedStyle ? window.getComputedStyle(el) : null;",
+    "      if (!style) return true;",
+    "      if (style.display === 'none' || style.visibility === 'hidden') return false;",
+    "      if (style.opacity === '0' || style.opacity === 0) return false;",
+    "      return true;",
+    "    } catch (e) {",
+    "      return false;",
+    "    }",
+    "  };",
     "  try {",
-    "    if (SEL !== null) out.selectorHit = !!document.querySelector(SEL);",
-    "    if (GONE !== null) out.selectorPresent = !!document.querySelector(GONE);",
+    "    if (SEL !== null) {",
+    "      var el = document.querySelector(SEL);",
+    "      out.selectorHit = !!el;",
+    "      out.selectorVisible = visible(el);",
+    "    }",
+    "    if (GONE !== null) {",
+    "      var goneEl = document.querySelector(GONE);",
+    "      out.gonePresent = !!goneEl;",
+    "      out.goneVisible = visible(goneEl);",
+    "    }",
     "  } catch (e) { /* 选择器非法：当作没命中，由上层按超时处理 */ }",
     "  try {",
     "    if (TXT !== null) {",
@@ -100,8 +195,14 @@ export function buildConfirmExpression(cond: WaitCondition): string {
 
 /** 轮询探针的结果。 */
 export interface ConditionProbe {
+  /** `selector` 是否命中（命中不等于可见）。 */
   selectorHit: boolean;
-  selectorPresent: boolean;
+  /** `selector` 是否命中**且**可见。 */
+  selectorVisible: boolean;
+  /** `gone` 是否还命中（还在 DOM 里）。 */
+  gonePresent: boolean;
+  /** `gone` 是否还命中**且**可见（`gone` 要等到它变 false）。 */
+  goneVisible: boolean;
   textPresent: boolean;
 }
 
@@ -131,7 +232,9 @@ export function parseProbe(out: string): ConditionProbe | null {
   if (!raw) return null;
   return {
     selectorHit: raw.selectorHit === true,
-    selectorPresent: raw.selectorPresent === true,
+    selectorVisible: raw.selectorVisible === true,
+    gonePresent: raw.gonePresent === true,
+    goneVisible: raw.goneVisible === true,
     textPresent: raw.textPresent === true,
   };
 }
@@ -146,12 +249,43 @@ export function parseConfirm(out: string): ConditionConfirm | null {
   };
 }
 
-/** 探针是否已经可以判定命中（文本类条件还要等复核，因此这里不给结论）。 */
+/**
+ * 探针是否已经可以判定命中（文本类条件还要等复核，因此这里不给结论）。
+ *
+ * 元素类条件按 `state` 判定，规则与 bsk 的 `ElementState::satisfied_by(attached, visible)` 一致——
+ * 原生等待可用与否不该改变一条用例的结论。
+ */
 export function probeSaysMaybe(cond: WaitCondition, probe: ConditionProbe): boolean {
-  if (cond.selector) return probe.selectorHit;
-  if (cond.gone) return !probe.selectorPresent;
   if (cond.text) return probe.textPresent;
+  if (cond.gone) return !probe.goneVisible;
+  if (cond.selector) {
+    switch (cond.state ?? "visible") {
+      case "visible":
+        return probe.selectorVisible;
+      case "hidden":
+        return !probe.selectorVisible;
+      case "attached":
+        return probe.selectorHit;
+      case "detached":
+        return !probe.selectorHit;
+    }
+  }
   return false;
+}
+
+/**
+ * 元素类条件的末次探测证据，压成一行（超时报告与日志共用）。
+ *
+ * 措辞必须与 `describeNativeEvidence`（原生等待的超时证据）**逐字一致**：同一个条件
+ * 在旧版 bsk（探针）与新版（原生）上给出两种说法，会让人以为是两回事。
+ * 用「还在 DOM」而不是「命中」，是因为前者把「元素在不在」这个事实说全了，
+ * 而「命中」在 gone 条件下读起来正好反过来。
+ */
+export function describeProbe(cond: WaitCondition, probe: ConditionProbe): string {
+  if (cond.gone) {
+    return `末次探测：还在 DOM=${probe.gonePresent}，可见=${probe.goneVisible}`;
+  }
+  return `末次探测：还在 DOM=${probe.selectorHit}，可见=${probe.selectorVisible}`;
 }
 
 /** 文本条件的最终判定需要复核；选择器类条件探针说了算。 */

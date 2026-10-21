@@ -7,6 +7,7 @@
  * - 记语义定位符而不是 `@eN`。`@eN` 只在当时那次快照内有效（见 locator.ts）。
  */
 import { buildLocator, type Locator } from "../shared/locator.js";
+import { isElementState } from "../bsk/condition.js";
 import type { ReplayStep } from "./replay.js";
 import { restorePlaceholders, type RunVarValue } from "./vars.js";
 
@@ -268,13 +269,20 @@ export class Recorder {
       case "wait_for": {
         // 条件等待按**条件本身**录进脚本：回放时重新等同一个条件，而不是把这次等到的时长写死
         // （写死就退化成了 wait，正是这个工具要消灭的东西）。
+        const state = text("state");
+        // 状态只认四个值（工具层已校验过）：认不出来就不写进脚本，而不是把一个字符串写进去
+        // 让回放在加载时拒掉整份脚本。
+        const wantState = isElementState(state) && state !== "visible" ? state : undefined;
         const cond = {
           ...(text("text") ? { text: restore(text("text")) } : {}),
           ...(text("selector") ? { selector: text("selector") } : {}),
           ...(text("gone") ? { gone: text("gone") } : {}),
+          // 只有模型明确给过状态才写进脚本（与 download 的 timeoutMs 同一条规则）：
+          // 写死一个默认值会让将来改默认值失效。
+          ...(wantState ? { state: wantState } : {}),
         };
         // 三种条件互斥且必居其一，工具层已校验过；这里再兜一次，避免把空条件写进脚本。
-        if (Object.keys(cond).length !== 1) return;
+        if (Object.keys(cond).length !== 1 && !(cond.selector && cond.state)) return;
         const ms = Number(p["timeoutMs"]);
         this.steps.push({
           kind: "wait_for",

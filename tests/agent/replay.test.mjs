@@ -426,6 +426,39 @@ describe("Recorder 录制", () => {
     assert.equal(r.recorded.length, 0);
   });
 
+  test("wait_for 的 state 只有非默认值才写进脚本，且必须与 selector 搭配", () => {
+    const r = new Recorder(vars);
+    r.noteText("第 1 步完成：等列表行");
+    // 默认的 visible 不写：写死默认值会让将来改默认值失效（与 timeoutMs 同一条规则）。
+    r.noteTool({
+      name: "wait_for",
+      params: { selector: ".row", state: "visible" },
+      ok: true,
+      lastSnapshot: "",
+    });
+    r.noteText("第 2 步完成：等遮罩离开 DOM");
+    r.noteTool({
+      name: "wait_for",
+      params: { selector: ".el-loading-mask", state: "detached" },
+      ok: true,
+      lastSnapshot: "",
+    });
+    assert.deepEqual(r.recorded, [
+      { kind: "wait_for", step: 2, selector: ".row" },
+      { kind: "wait_for", step: 3, selector: ".el-loading-mask", state: "detached" },
+    ]);
+
+    // 工具层会拒绝的 shape（state 没配 selector）：不写进脚本，也不凭空补一个条件。
+    const bad = new Recorder(vars);
+    bad.noteTool({
+      name: "wait_for",
+      params: { text: "导出成功", state: "hidden" },
+      ok: true,
+      lastSnapshot: "",
+    });
+    assert.equal(bad.recorded.length, 0);
+  });
+
   test("press 录成一步：键名是主体，target 只在「先聚焦到谁」时出现", () => {
     const r = new Recorder(vars);
     r.noteText("第 1 步完成：已填入搜索词");
@@ -958,6 +991,18 @@ describe("回放失败语义（executeReplaySteps）", () => {
     assert.deepEqual(ops.calls, [["wait_for", { selector: ".row" }, undefined]]);
   });
 
+  test("wait_for 的 state 原样回放（旧脚本没有这个字段就不传）", async () => {
+    const ops = makeOps();
+    await run(ops, [
+      { kind: "wait_for", step: 1, selector: ".el-loading-mask", state: "detached" },
+      { kind: "wait_for", step: 2, gone: ".el-loading-mask" },
+    ]);
+    assert.deepEqual(ops.calls, [
+      ["wait_for", { selector: ".el-loading-mask", state: "detached" }, undefined],
+      ["wait_for", { gone: ".el-loading-mask" }, undefined],
+    ]);
+  });
+
   test("press 步骤：按的是录下的键名，没给 target 就按当前焦点", async () => {
     const ops = makeOps();
     await run(ops, [{ kind: "press", step: 1, key: "Enter", locator: null }]);
@@ -1432,6 +1477,43 @@ describe("回放脚本文件", () => {
     const loaded = loadReplayScript(ok);
     assert.equal(loaded.scenarios[0].steps[0].gone, ".el-loading-mask");
     assert.equal(loaded.scenarios[0].steps[0].timeoutMs, 5000);
+  });
+
+  test("wait_for 的 state 只认四个值且只能配 selector（否则加载时拒掉）", () => {
+    const base = { format: REPLAY_FORMAT, version: REPLAY_VERSION };
+    const write = (name, step) => {
+      const p = join(dir, name);
+      writeFileSync(
+        p,
+        JSON.stringify({ ...base, scenarios: [{ name: "A1", caseSteps: [], steps: [step] }] }),
+      );
+      return p;
+    };
+    for (const [i, step] of [
+      // 认不出的状态
+      { kind: "wait_for", step: null, selector: ".x", state: "clickable" },
+      // state 配在 gone 上（gone 已经是 hidden，写 state 说明脚本是手工改坏的）
+      { kind: "wait_for", step: null, gone: ".x", state: "hidden" },
+      // state 配在 text 上
+      { kind: "wait_for", step: null, text: "x", state: "attached" },
+    ].entries()) {
+      assert.throws(
+        () => loadReplayScript(write(`bad-waitfor-state-${i}.json`, step)),
+        /state 只能是 visible/,
+      );
+    }
+    // 四个合法状态都能加载，且不需要升脚本版本号
+    for (const state of ["visible", "hidden", "attached", "detached"]) {
+      const loaded = loadReplayScript(
+        write(`ok-waitfor-${state}.json`, {
+          kind: "wait_for",
+          step: 1,
+          selector: ".el-loading-mask",
+          state,
+        }),
+      );
+      assert.equal(loaded.scenarios[0].steps[0].state, state);
+    }
   });
 
   test("focus / blur 步骤缺目标当场拒绝（不知道要动谁的焦点，不该在回放中途静默跳过）", () => {

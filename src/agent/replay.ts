@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pollUntil } from "../bsk/condition.js";
+import { isElementState, type ElementState } from "../bsk/condition.js";
 import {
   closeSession,
   createBskOps,
@@ -271,10 +272,12 @@ export interface ReplayWaitForStep {
   step: number | null;
   /** 等到页面可见文本出现。 */
   text?: string;
-  /** 等到该 CSS 选择器命中元素。 */
+  /** 等到该 CSS 选择器达到 `state` 描述的状态（缺省 `visible`）。 */
   selector?: string;
-  /** 等到该 CSS 选择器不再命中元素（如 loading 遮罩消失）。 */
+  /** 等到该 CSS 选择器不再可见（如 loading 遮罩消失；等价于 `selector + hidden`）。 */
   gone?: string;
+  /** `selector` 要等的元素状态；缺省 `visible`。旧脚本里没有这个字段。 */
+  state?: ElementState;
   /** 等待上限（毫秒）；未给用当前默认值。 */
   timeoutMs?: number;
 }
@@ -493,6 +496,13 @@ export function loadReplayScript(path: string): ReplayScript {
         ).length;
         if (given !== 1) {
           throw new Error(t("replay.err.badWaitFor", { path }));
+        }
+        // `state` 只能修饰 selector：带在 text/gone 上说明脚本是手工改坏的
+        // （gone 本身已等价于 hidden），回放时会静默丢掉这个意图。
+        if (st.state !== undefined) {
+          if (!isElementState(st.state) || !st.selector) {
+            throw new Error(t("replay.err.badWaitForState", { path }));
+          }
         }
       }
       // 按键步骤的键名是这一步的全部内容：空键名等于「按了一个不知道什么的键」，
@@ -1213,6 +1223,8 @@ async function runStep(
             ...(step.text ? { text: expand(step.text) } : {}),
             ...(step.selector ? { selector: expand(step.selector) } : {}),
             ...(step.gone ? { gone: expand(step.gone) } : {}),
+            // 旧脚本没有 state 字段：缺省 visible，与录制当时的行为一致。
+            ...(step.state ? { state: step.state } : {}),
           },
           step.timeoutMs,
         ),

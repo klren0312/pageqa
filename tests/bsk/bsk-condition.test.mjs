@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import {
   buildConfirmExpression,
   buildProbeExpression,
+  conditionState,
   describeCondition,
+  describeProbe,
+  describeState,
+  ELEMENT_STATES,
+  isElementState,
   needsConfirm,
   parseConfirm,
   parseProbe,
@@ -14,13 +19,36 @@ import {
 // 纯单元测试：探针表达式是**同步**的，用最小的 document 替身在进程内真的跑一遍；
 // 轮询框架的 sleep/now 都是注入的，因此时间边界（首次采样、超时、间隔夹取）可以精确断言。
 
-function runProbe(expr, { query = () => null, text = "", innerText } = {}) {
+/**
+ * 跑一次探针。
+ *
+ * `visible` 控制假元素算不算可见：给了 `checkVisibility` 就按它（与页面里的首选项一致），
+ * 不给就落到 computed style 兜底分支——两条分支都必须能被测到，否则「降级路径说可见、
+ * 原生等待说不可见」这种差异会漏网。
+ */
+function runProbe(expr, { query = () => null, text = "", innerText, visible = true } = {}) {
+  const style = {
+    display: visible ? "block" : "none",
+    visibility: "visible",
+    opacity: "1",
+  };
   const doc = {
     body: { textContent: text, innerText: innerText ?? text },
     documentElement: { textContent: text },
     querySelector: query,
   };
-  return new Function("document", `return ${expr};`)(doc);
+  const win = {
+    getComputedStyle: () => style,
+  };
+  return new Function("document", "window", `return ${expr};`)(doc, win);
+}
+
+/** 一个永远「可见」的假元素（`checkVisibility` 优先分支）。 */
+function element(checkVisibility) {
+  return {
+    ...(checkVisibility === undefined ? {} : { checkVisibility: () => checkVisibility }),
+    getBoundingClientRect: () => ({ width: 10, height: 10 }),
+  };
 }
 
 describe("buildProbeExpression（便宜的那次采样）", () => {
@@ -30,14 +58,49 @@ describe("buildProbeExpression（便宜的那次采样）", () => {
 
   test("selector：命不命中如实反映", () => {
     const expr = buildProbeExpression({ selector: ".row" });
-    assert.equal(runProbe(expr, { query: (s) => (s === ".row" ? {} : null) }).selectorHit, true);
+    assert.equal(
+      runProbe(expr, { query: (s) => (s === ".row" ? element(true) : null) }).selectorHit,
+      true,
+    );
     assert.equal(runProbe(expr).selectorHit, false);
   });
 
-  test("gone：看的是元素**现在还在不在**", () => {
+  test("selector：命中不等于可见（与 bsk 的 attached / visible 两个事实对应）", () => {
+    const expr = buildProbeExpression({ selector: ".mask" });
+    const hidden = runProbe(expr, { query: () => element(false) });
+    assert.equal(hidden.selectorHit, true);
+    assert.equal(hidden.selectorVisible, false);
+
+    const shown = runProbe(expr, { query: () => element(true) });
+    assert.equal(shown.selectorVisible, true);
+  });
+
+  test("selector：没有 checkVisibility 的页面走 computed style / 盒子兜底", () => {
+    const expr = buildProbeExpression({ selector: ".mask" });
+    // 无 checkVisibility + display:none → 不可见
+    assert.equal(
+      runProbe(expr, { query: () => element(), visible: false }).selectorVisible,
+      false,
+    );
+    // 无 checkVisibility + 可见样式 → 可见
+    assert.equal(runProbe(expr, { query: () => element() }).selectorVisible, true);
+    // 零尺寸盒子 → 不可见（opacity/visibility 都正常）
+    assert.equal(
+      runProbe(expr, {
+        query: () => ({ getBoundingClientRect: () => ({ width: 0, height: 0 }) }),
+      }).selectorVisible,
+      false,
+    );
+  });
+
+  test("gone：看的是元素**现在还在不在 / 可不可见**", () => {
     const expr = buildProbeExpression({ gone: ".loading" });
-    assert.equal(runProbe(expr, { query: () => ({}) }).selectorPresent, true);
-    assert.equal(runProbe(expr).selectorPresent, false);
+    assert.equal(runProbe(expr, { query: () => element(true) }).gonePresent, true);
+    // v-show 隐藏的遮罩留在 DOM 里：还在，但不可见——这正是 gone 要等的那件事
+    const hiddenMask = runProbe(expr, { query: () => element(false) });
+    assert.equal(hiddenMask.gonePresent, true);
+    assert.equal(hiddenMask.goneVisible, false);
+    assert.equal(runProbe(expr).gonePresent, false);
   });
 
   test("text：先用 textContent 粗筛（便宜，不触发布局）", () => {
@@ -55,7 +118,8 @@ describe("buildProbeExpression（便宜的那次采样）", () => {
       },
     });
     assert.equal(out.selectorHit, false);
-    assert.equal(out.selectorPresent, false);
+    assert.equal(out.selectorVisible, false);
+    assert.equal(out.gonePresent, false);
   });
 
   test("三种条件可以同时出现在表达式里，但只有给到的那一种会被求值", () => {
@@ -86,9 +150,24 @@ describe("buildConfirmExpression（读可见文本）", () => {
 
 describe("解析与判定", () => {
   test("parseProbe：认不出的输出返回 null（调用方按「这次没取到」继续轮询）", () => {
-    assert.deepEqual(parseProbe('{"selectorHit":true,"selectorPresent":false,"textPresent":false}\n'), {
+    assert.deepEqual(
+      parseProbe(
+        '{"selectorHit":true,"selectorVisible":false,"gonePresent":true,"goneVisible":false,"textPresent":false}\n',
+      ),
+      {
+        selectorHit: true,
+        selectorVisible: false,
+        gonePresent: true,
+        goneVisible: false,
+        textPresent: false,
+      },
+    );
+    // 缺字段一律当 false：认不出来时不能凭空说「可见」。
+    assert.deepEqual(parseProbe('{"selectorHit":true}'), {
       selectorHit: true,
-      selectorPresent: false,
+      selectorVisible: false,
+      gonePresent: false,
+      goneVisible: false,
       textPresent: false,
     });
     assert.equal(parseProbe(""), null);
@@ -103,9 +182,15 @@ describe("解析与判定", () => {
   });
 
   test("probeSaysMaybe：文本类只看「字在不在 DOM 里」，最终结论交给复核", () => {
-    const probe = { selectorHit: true, selectorPresent: false, textPresent: true };
+    const probe = {
+      selectorHit: true,
+      selectorVisible: true,
+      gonePresent: false,
+      goneVisible: false,
+      textPresent: true,
+    };
     assert.equal(probeSaysMaybe({ selector: ".a" }, probe), true);
-    assert.equal(probeSaysMaybe({ gone: ".a" }, probe), true); // selectorPresent=false → 已消失
+    assert.equal(probeSaysMaybe({ gone: ".a" }, probe), true); // 不在 DOM 也不可见 → 已消失
     assert.equal(probeSaysMaybe({ text: "x" }, probe), true);
     assert.equal(probeSaysMaybe({}, probe), false);
     assert.equal(needsConfirm({ text: "x" }), true);
@@ -113,11 +198,62 @@ describe("解析与判定", () => {
     assert.equal(needsConfirm({ gone: ".a" }), false);
   });
 
+  test("probeSaysMaybe：状态矩阵与 bsk 的 satisfied_by(attached, visible) 逐条一致", () => {
+    // 四种观测 × 四种状态，全部钉死：两套实现（原生等待 / 探针降级）必须给同一个结论，
+    // 否则「旧版 bsk 通过、新版超时」会变成一条查不出来的差异。
+    const cases = [
+      // [在 DOM, 可见, 期望命中集合]
+      [true, true, ["visible", "attached"]],
+      [true, false, ["hidden", "attached"]],
+      [false, false, ["hidden", "detached"]],
+    ];
+    for (const [attached, visible, hits] of cases) {
+      const probe = {
+        selectorHit: attached,
+        selectorVisible: visible,
+        gonePresent: attached,
+        goneVisible: visible,
+        textPresent: false,
+      };
+      for (const state of ELEMENT_STATES) {
+        assert.equal(
+          probeSaysMaybe({ selector: ".x", state }, probe),
+          hits.includes(state),
+          `attached=${attached} visible=${visible} state=${state}`,
+        );
+      }
+    }
+  });
+
+  test("conditionState：gone 归一成 hidden，selector 缺省 visible，文本没有状态", () => {
+    assert.equal(conditionState({ text: "x" }), null);
+    assert.equal(conditionState({ gone: ".mask" }), "hidden");
+    assert.equal(conditionState({ selector: ".row" }), "visible");
+    assert.equal(conditionState({ selector: ".row", state: "detached" }), "detached");
+    assert.equal(isElementState("hidden"), true);
+    assert.equal(isElementState("clickable"), false);
+    assert.equal(isElementState(undefined), false);
+  });
+
+  test("describeProbe：超时报告把「在不在 DOM」与「可不可见」分开说", () => {
+    const probe = {
+      selectorHit: true,
+      selectorVisible: false,
+      gonePresent: false,
+      goneVisible: false,
+      textPresent: false,
+    };
+    assert.equal(describeProbe({ selector: ".x" }, probe), "末次探测：还在 DOM=true，可见=false");
+    assert.equal(describeProbe({ gone: ".x" }, probe), "末次探测：还在 DOM=false，可见=false");
+  });
+
   test("describeCondition：三种条件各说各话，空条件不装懂", () => {
     assert.equal(describeCondition({ text: "导出成功" }), "文本「导出成功」");
-    assert.equal(describeCondition({ selector: ".row" }), "元素 .row");
+    assert.equal(describeCondition({ selector: ".row" }), "元素 .row 可见");
+    assert.equal(describeCondition({ selector: ".row", state: "attached" }), "元素 .row 已进入 DOM");
     assert.equal(describeCondition({ gone: ".loading" }), "元素 .loading 消失");
     assert.equal(describeCondition({}), "（未指定条件）");
+    assert.equal(describeState("detached"), "已离开 DOM");
   });
 });
 

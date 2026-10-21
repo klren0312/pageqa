@@ -198,6 +198,50 @@ describe("planIpcCall：argv → RPC", () => {
     assert.equal(planIpcCall(["evaluate", "1"]), null); // 缺 --session
   });
 
+  test("wait-for-element：目标、状态、预算与轮询间隔全部透传", () => {
+    const plan = planIpcCall([
+      "wait-for-element",
+      "#orders-panel .el-loading-mask",
+      "--state",
+      "hidden",
+      "--timeout",
+      "20s",
+      "--poll-ms",
+      "50",
+      "--session",
+      "s1",
+      "--quiet",
+    ]);
+    assert.equal(plan.method, "tool.wait_for_element");
+    assert.deepEqual(plan.params, {
+      session_id: "s1",
+      selector: "#orders-panel .el-loading-mask",
+      state: "hidden",
+      timeout_ms: 20_000,
+      poll_ms: 50,
+    });
+    assert.equal(plan.sessionKey, "s1");
+    // 等待不改页面，但它存在的意义就是「等到页面变了」：请求发出后出错不能重发。
+    assert.equal(plan.mutating, true);
+
+    // 缺省不带 --state / --poll-ms：让 bsk 用它自己的默认值（visible / 100ms），
+    // 在这里补一份等于把两个默认值钉死在这个文件里。
+    const minimal = planIpcCall(["wait-for-element", "@e3", "--session", "s1"]);
+    assert.deepEqual(minimal.params, { session_id: "s1", ref: "@e3" });
+
+    // 用法错误一律退回 CLI，由它报自己那句话。
+    assert.equal(planIpcCall(["wait-for-element", "--session", "s1"]), null); // 缺目标
+    assert.equal(
+      planIpcCall(["wait-for-element", "#a", "#b", "--session", "s1"]),
+      null,
+    ); // 两个目标
+    assert.equal(planIpcCall(["wait-for-element", "#a"]), null); // 缺 session
+    assert.equal(
+      planIpcCall(["wait-for-element", "#a", "--poll-ms", "abc", "--session", "s1"]),
+      null,
+    );
+  });
+
   test("press：键名走位置参数，聚焦目标走 --ref/--selector", () => {
     const plan = planIpcCall(["press", "Enter", "--session", "s1", "--quiet"]);
     assert.equal(plan.method, "tool.press");
@@ -420,6 +464,43 @@ describe("结果渲染与 CLI 文本一致", () => {
       "fill ok tab=3 target=@e5 length=3",
     );
     assert.equal(render(planIpcCall(["wait-ms", "50"]), { waited_ms: 50 }), "waited_ms=50");
+  });
+
+  test("wait-for-element 的行格式与 CLI 逐字一致（含 unknown 证据与裸 ref）", () => {
+    assert.equal(
+      render(
+        planIpcCall(["wait-for-element", "#mask", "--state", "hidden", "--session", "s1"]),
+        {
+          tab_id: 9,
+          used_selector: "#mask",
+          satisfied: false,
+          attached: true,
+          visible: false,
+          elapsed_ms: 10_004,
+        },
+      ),
+      "wait-for-element ok tab=9 target=#mask state=hidden satisfied=false" +
+        " attached=true visible=false elapsed_ms=10004",
+    );
+    // 没探测到（attached/visible 为 null）时打印 unknown，而不是编一个 false。
+    assert.equal(
+      render(planIpcCall(["wait-for-element", "@e3", "--session", "s1"]), {
+        tab_id: 1,
+        used_ref: "e3",
+        satisfied: false,
+        attached: null,
+        visible: null,
+        elapsed_ms: 100,
+      }),
+      "wait-for-element ok tab=1 target=@e3 state=visible satisfied=false" +
+        " attached=unknown visible=unknown elapsed_ms=100",
+    );
+    // 缺 satisfied 说明协议对不上：当传输问题处理，不编一个默认结论。
+    assert.throws(() =>
+      render(planIpcCall(["wait-for-element", "#mask", "--session", "s1"]), {
+        tab_id: 9,
+      }),
+    );
   });
 
   test("evaluate：对象值按紧凑 JSON 回显；脚本抛异常时 stdout 为空（与 CLI 同形）", () => {

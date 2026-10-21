@@ -32,13 +32,19 @@ import { debugLog, info, timer } from "../shared/log.js";
 import {
   buildConfirmExpression,
   buildProbeExpression,
+  conditionState,
   describeCondition,
+  describeProbe,
+  describeState,
+  ELEMENT_STATES,
+  isElementState,
   needsConfirm,
   parseConfirm,
   parseProbe,
   pollUntil,
   probeSaysMaybe,
   type ConditionProbe,
+  type ElementState,
   type WaitCondition,
 } from "./condition.js";
 import { buildSettleProbeExpression, describeSample, isSettled, parseSettleSample } from "./settle.js";
@@ -134,6 +140,15 @@ const SETTLE_POLL_MS = 50;
 /** 距离上一个资源结束多久算「网络安静」（毫秒）。 */
 const SETTLE_NETWORK_QUIET_MS = 200;
 
+/**
+ * 预判为「同文档导航」（只差 hash / 路由片段）时，`--wait-until` 的预算（毫秒）。
+ *
+ * 同文档导航不会产生新的文档加载，任何 lifecycle 档位都等不到，等到超时是**必然**的。
+ * 导航动作本身是瞬时的（实测拿到 timeout 时页面已在目标地址），所以这里只需要一个
+ * 短到能立刻返回、又长到不会把慢页面误判成「没到位」的预算。
+ */
+const SAME_DOCUMENT_WAIT_MS = 1_000;
+
 /** 单次探针的超时（毫秒）。探针是同步表达式，正常是毫秒级；这个上限只防页面卡死。 */
 const SETTLE_PROBE_TIMEOUT_MS = 5_000;
 
@@ -148,6 +163,24 @@ export const MAX_WAIT_FOR_TIMEOUT_MS = 60_000;
 
 /** `wait_for` 的轮询间隔（毫秒）：一次探针在 IPC 快路径下是毫秒级，150ms 已经足够灵敏。 */
 const WAIT_FOR_POLL_MS = 150;
+
+/**
+ * `bsk wait-for-element` 的轮询间隔（毫秒）。
+ *
+ * 与 `WAIT_FOR_POLL_MS` 不是一回事：那个是**我们**轮询的间隔（每次一轮 IPC 往返），
+ * 这个是**扩展内部**轮询的间隔（一次 RPC 内部消化）。100ms 是 bsk 自己的默认值，
+ * 改它没有收益——等待的墙钟由页面决定，不由轮询频率决定。
+ */
+const NATIVE_WAIT_POLL_MS = 100;
+
+/**
+ * `bsk wait-for-element` 的轮询上限：**一次**原生命令就等满（最多 300s），
+ * 不像探针降级路径那样被 `MAX_WAIT_FOR_TIMEOUT_MS` 夹住。
+ *
+ * 原生等待的每次轮询都在扩展内部，一次 RPC 的代价是常数；而探针路径每个轮询间隔
+ * 都要一次 IPC 往返，长时间轮询不值得。这个差异就是接入它的主要收益。
+ */
+const NATIVE_WAIT_MAX_MS = 300_000;
 
 /**
  * 等下拉浮层 / 日期面板出现的上限（毫秒）。
@@ -221,6 +254,27 @@ let commandChain: Promise<unknown> = Promise.resolve();
  */
 let ipcDisabled = false;
 let ipcSuspendedUntil = 0;
+
+/**
+ * 当前 bsk 是否支持 `wait-for-element`（旧版 bsk 没有这条命令）。
+ *
+ * 置为 false 之后**本进程内不再尝试**：旧版本不会在进程跑着的时候变新，每次条件等待
+ * 都先付一次「命令不存在」的失败没有任何意义。与 `ipcDisabled` 同一条降级套路。
+ */
+let nativeWaitUsable = true;
+
+/**
+ * 现在能不能用 `bsk wait-for-element`。
+ *
+ * `PAGEQA_BSK_WAIT_FOR_ELEMENT=0`（也接受 `off`/`false`）强制走页面侧探针：
+ * 旧版 bsk 的降级路径平时跑不到（本机 bsk 已经有了），而「降级后结论是否一致」
+ * 恰好是最需要真机验证的一条——与 `PAGEQA_BSK_IPC` 同一个动机。
+ */
+function nativeWaitAllowed(): boolean {
+  if (!nativeWaitUsable) return false;
+  const flag = process.env.PAGEQA_BSK_WAIT_FOR_ELEMENT?.trim().toLowerCase();
+  return !(flag === "0" || flag === "off" || flag === "false");
+}
 
 /** 传输层问题的冷却时长：期间直接走 CLI，不再尝试 IPC。 */
 const IPC_SUSPEND_MS = 30_000;
@@ -321,7 +375,7 @@ function runBsk(
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const done = timer();
-    debugLog("[bsk] $ bsk " + args.join(" "));
+    debugLog(`[bsk] $ bsk ${args.join(" ")}`);
     if (signal?.aborted) {
       reject(new BskAbortError(t("bsk.err.abortedBefore", { cmd: args.join(" ") })));
       return;
@@ -385,6 +439,117 @@ function runBsk(
     };
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/**
+ * 两个地址是否「同一个文档」——只差 hash，或本来就相等。
+ *
+ * 这是「导航不会产生新文档」的**静态**判据（URL 层面）：同源 + 同 path/query 就成立。
+ * 同文档导航不会触发任何 lifecycle 事件，因此 `bsk navigate --wait-until …` 必然等到超时
+ * （见 recoverSameDocumentNavigation）。
+ *
+ * 解析不了（不是合法 URL，几乎只有 about:blank）时退回「去掉 hash 后字符相等」，
+ * 而不是直接判 false：宁可多压一次短超时，也别把一个能用的导航判死。
+ */
+export function isSameDocumentNavigation(from: string, to: string): boolean {
+  if (!from || !to) return false;
+  try {
+    const a = new URL(from);
+    const b = new URL(to);
+    return (
+      a.origin === b.origin && a.pathname === b.pathname && a.search === b.search
+    );
+  } catch {
+    return (from.split("#")[0] ?? "") === (to.split("#")[0] ?? "");
+  }
+}
+
+/**
+ * 地址归一化：把 `#/` 与空 hash 视为同一个地址（SPA 首页常见），其余原样。
+ *
+ * 只做这一项归一：多做一步「猜意图」就会把真失败的地址判成命中。
+ */
+export function canonicalUrl(raw: string): string {
+  const text = raw.trim();
+  if (!text) return text;
+  const hash = text.indexOf("#");
+  if (hash < 0) return text;
+  const base = text.slice(0, hash);
+  const frag = text.slice(hash + 1);
+  return frag === "" || frag === "/" ? base : text;
+}
+
+/**
+ * 这次失败是不是「当前 bsk 没有 wait-for-element 这条命令」。
+ *
+ * 两种形状都认：daemon 的 `unknown_method`（IPC 快路径）与 clap 的用法错误（子进程）。
+ * 旧版 bsk 的 clap 会回一句 `unexpected argument '--state' found` / `unrecognized subcommand`，
+ * 退出码非零；但**只认这句措辞**，不把任何非零退出都当成「命令不存在」——
+ * 真故障（CDP 断了、ref 失效）被当成「旧版本」静默退回探针，会把一次失败拖成一次慢。
+ */
+export function isMissingWaitForElement(err: unknown): boolean {
+  const e = err as { bskCode?: unknown; stderr?: unknown; stdout?: unknown; message?: string } | null;
+  if (e?.bskCode === "unknown_method") return true;
+  const text = [
+    typeof e?.stderr === "string" ? e.stderr : "",
+    typeof e?.stdout === "string" ? e.stdout : "",
+    e?.message ?? "",
+  ].join("\n");
+  return (
+    /unrecognized subcommand/.test(text) ||
+    /unexpected argument '--state'/.test(text) ||
+    /unexpected argument '--poll-ms'/.test(text) ||
+    /wait-for-element[^\n]*(?:not found|does not exist|unknown)/i.test(text)
+  );
+}
+
+/** `bsk wait-for-element` 的结果（只取 pageqa 用到的字段）。 */
+interface NativeWaitResult {
+  satisfied: boolean;
+  /** 末次探测时是否在 DOM 里；未探测到时为 null。 */
+  attached: boolean | null;
+  /** 末次探测时是否可见；未探测到时为 null。 */
+  visible: boolean | null;
+  elapsedMs: number | null;
+}
+
+/**
+ * 解析 `bsk wait-for-element` 的 human 输出。
+ *
+ * 行格式（与 `crates/bsk-cli/src/cli/waits.rs` 一致）：
+ * `wait-for-element ok tab=1 target=#mask state=visible satisfied=true attached=true visible=true elapsed_ms=7`
+ *
+ * 注意**不读 stdout 的 JSON**：那条路径要加 `--json`，而 `--json` 在本仓库的 IPC 层是
+ * 明确拒绝的参数（见 ipc-commands.ts 的 REJECTED_FLAGS）；human 行两条路径都拿得到，
+ * 而且与 CLI 子进程逐字相同。认不出来返回 null（调用方退回探针）。
+ */
+export function parseNativeWait(out: string): NativeWaitResult | null {
+  const line = out.trim();
+  if (!line) return null;
+  const satisfied = line.match(/satisfied=(true|false)/);
+  if (!satisfied) return null;
+  const bool = (name: string): boolean | null => {
+    const m = line.match(new RegExp(`${name}=(true|false)`));
+    return m ? m[1] === "true" : null;
+  };
+  const elapsed = line.match(/elapsed_ms=(\d+)/);
+  return {
+    satisfied: satisfied[1] === "true",
+    attached: bool("attached"),
+    visible: bool("visible"),
+    elapsedMs: elapsed ? Number(elapsed[1]) : null,
+  };
+}
+
+/**
+ * 原生等待超时时的取证句：「还在树里但没显形」与「压根没出现过」是两种不同的 bug。
+ *
+ * `attached`/`visible` 是**末次探测**的证据，不是返回这一刻的重新观测（bsk 的语义），
+ * 所以措辞里不说「现在」——把人引向「刷新一下就知道了」比不给证据更糟。
+ */
+function describeNativeEvidence(r: NativeWaitResult): string {
+  if (r.attached === null || r.visible === null) return "";
+  return `末次探测：还在 DOM=${r.attached}，可见=${r.visible}`;
 }
 
 /**
@@ -772,8 +937,7 @@ export interface BskOps {
    * 又不像 `settle` 那样等的是「页面稳定」这个代理指标，条件不成立就一定等满上限，
    * 因此不存在提前放行的风险。
    */
-  waitFor(cond: WaitCondition, timeoutMs?: number, signal?: AbortSignal): Promise<string>;
-  /**
+  waitFor(cond: WaitCondition, timeoutMs?: number, signal?: AbortSignal): Promise<string>;  /**
    * 选择一个下拉/级联选项：点开控件 → 等浮层 → 按可见文本匹配选项 → 真实点击。
    *
    * 存在的理由是**省往返**：通用路径下这一步是「click 点开 → snapshot 看编号 →
@@ -1221,7 +1385,7 @@ export function createBskOps(
       );
     } else {
       // 快照体积直接决定上下文压力（长流程易因上下文超限被中断）
-      debugLog("[bsk] snapshot 字符数=" + raw.length);
+      debugLog(`[bsk] snapshot 字符数=${raw.length}`);
     }
     snapshotRawText = raw;
     snapshotText = slim.text;
@@ -1275,9 +1439,109 @@ export function createBskOps(
   };
 
   /**
-   * daemon 端 sleep（`wait-ms` 不接受 --session）。
-   * 抽成本地函数是因为 `settle` 的兜底路径也要用它——写成对象方法会依赖 `this`。
+   * `navigate` 撞上「等不到生命周期事件」时的形态。
+   *
+   * 只在 `--wait-until` 超时（bsk `reached=timeout` / 退出码 4）时出现：页面本身没报错，
+   * 只是那次**导航没有产生新的文档**。
    */
+  function isNavigationLifecycleTimeout(err: unknown): boolean {
+    const e = err as { stdout?: unknown; stderr?: unknown } | null;
+    const text = [
+      typeof e?.stdout === "string" ? e.stdout : "",
+      typeof e?.stderr === "string" ? e.stderr : "",
+    ].join("\n");
+    return (
+      /reached=timeout/.test(text) ||
+      /timed out waiting for lifecycle/i.test(text)
+    );
+  }
+
+  /**
+   * 页面此刻的地址与文档标识（用于「这次导航真的落到了目标地址吗」的核对）。
+   *
+   * `timeOrigin` 是判断**有没有发生新的文档导航**的可靠信号：同文档的 hash / SPA
+   * 路由切换不会重置它，真正的文档导航一定会。只读：这里不会改动页面。
+   * 任何异常都返回 null（核对失败就当核对没做，按原样报错）。
+   */
+  const readPageLocation = async (
+    signal?: AbortSignal,
+  ): Promise<{ href: string; readyState: string } | null> => {
+    try {
+      const out = await bsk(
+        [
+          "evaluate",
+          '(() => ({ href: location.href, readyState: document.readyState }))()',
+          "--session",
+          session,
+          "--quiet",
+          "--timeout",
+          `${SETTLE_PROBE_TIMEOUT_MS}ms`,
+        ],
+        signal,
+        SETTLE_PROBE_TIMEOUT_MS + 10_000,
+      );
+      const raw = out.trim();
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as { href?: unknown; readyState?: unknown };
+      if (typeof parsed?.href !== "string") return null;
+      return {
+        href: parsed.href,
+        readyState:
+          typeof parsed.readyState === "string" ? parsed.readyState : "",
+      };
+    } catch (err) {
+      if (err instanceof BskAbortError) throw err;
+      return null;
+    }
+  };
+
+  /**
+   * 导航「等不到生命周期」时，确认它到底成没成。
+   *
+   * 背景（真机复现）：**同文档的 hash / SPA 路由切换不会触发任何 lifecycle 事件**——
+   * `Page.navigate` 到只差 hash 的地址时，Chromium 只换 hash，不发 `commit` /
+   * `DOMContentLoaded` / `load`，于是 `bsk navigate` 一直等到超时（\`reached=timeout\`，
+   * 退出码 4），而页面其实**已经在目标地址上、而且已经可用**。
+   * 把这种情况判成 navigate 失败是错的：后续 `wait_for` 全都能正常跑，只是白等了 30s，
+   * 还会把一个本来健康的用例判死（实测：钉钉日志用例里“跳到 #/system/messages/... ”就是这条路径）。
+   *
+   * 两条判据都要成立才改判：
+   * 1. 页面当前地址就是目标地址（或只差 hash）——否则导航真的没到；
+   * 2. 文档已经出了 `loading`——地址对了但还在加载不算完成。
+   *
+   * 任一条不成立就原样报错：这里只把「已经到位却报错」扭正，不替真正的失败开脱。
+   */
+  const recoverSameDocumentNavigation = async (
+    url: string,
+    err: unknown,
+    signal?: AbortSignal,
+  ): Promise<string | null> => {
+    if (!isNavigationLifecycleTimeout(err)) return null;
+    const page = await readPageLocation(signal);
+    if (!page) return null;
+    const target = canonicalUrl(url);
+    const current = canonicalUrl(page.href);
+    // 地址对不上：导航确实没到目标（被重定向、或根本没完成），不能扭正。
+    if (!(current === target || isSameDocumentNavigation(page.href, url))) {
+      debugLog(
+        `[bsk] navigate 超时且页面地址不符（目标 ${url}，当前 ${page.href}），按失败处理`,
+      );
+      return null;
+    }
+    if (page.readyState === "loading") {
+      debugLog("[bsk] navigate 超时、地址已对但文档仍在 loading，按失败处理");
+      return null;
+    }
+    debugLog(
+      `[bsk] navigate 等不到生命周期，但页面已在目标地址（${page.href}，readyState=${page.readyState}）：` +
+        "按同文档导航（hash / SPA 路由）处理，不判失败",
+    );
+    return (
+      `已导航到 ${url}\n（该地址与当前页只差 hash / 路由片段，浏览器不会产生新的文档加载，` +
+      `因此等不到 DOMContentLoaded；已确认页面就在目标地址且已就绪，readyState=${page.readyState}）`
+    );
+  };
+
   const doWait = async (ms: number, signal?: AbortSignal): Promise<string> => {
     // 等待本身就是为了让页面变化（异步渲染/动画/弹窗），因此必须置为不新鲜：
     // 回放的「每步重试前重新取快照」正是靠它生效的。
@@ -1308,7 +1572,7 @@ export function createBskOps(
     const expr = buildSettleProbeExpression();
     for (;;) {
       const elapsed = Date.now() - started;
-      let sample;
+      let sample: ReturnType<typeof parseSettleSample>;
       try {
         const out = await bsk(
           ["evaluate", expr, "--session", session, "--timeout", `${SETTLE_PROBE_TIMEOUT_MS}ms`],
@@ -1347,18 +1611,34 @@ export function createBskOps(
   /**
    * 等到条件成立（见 condition.ts）：页面**可见文本**出现、元素出现、或元素消失。
    *
-   * 一条 `evaluate` 探针就是一次 IPC 往返（快路径下毫秒级），因此轮询是便宜的；
+   * 元素类条件优先交给 `bsk wait-for-element`：轮询在扩展内部，**一次 RPC 等满整个上限**，
+   * 而且不依赖页面里的定时器（后台标签页的定时器会被节流到 1s 以上）。文本条件 bsk 表达不了，
+   * 仍走页面侧探针：一条 `evaluate` 就是一次 IPC 往返（快路径下毫秒级），因此轮询也是便宜的；
    * 命中判定与超时取证各多花一次 `evaluate`（读 `innerText` 比 `textContent` 贵，
    * 所以只在需要结论时读，而不是每次轮询都读）。
+   *
+   * 两条路径必须给同一个结论：原生命令不可用（旧版 bsk）时退回探针，而 `probeSaysMaybe`
+   * 的状态矩阵与 bsk 的 `satisfied_by(attached, visible)` 逐条对齐（见 condition.ts 文件头）。
    */
   const doWaitFor = async (
     cond: WaitCondition,
     timeoutMs: number = DEFAULT_WAIT_FOR_TIMEOUT_MS,
     signal?: AbortSignal,
   ): Promise<string> => {
-    const limit = Math.min(Math.max(1, Math.round(timeoutMs)), MAX_WAIT_FOR_TIMEOUT_MS);
+    const requested = Math.max(1, Math.round(timeoutMs));
     // 等待的意义就是让页面变化：缓存的快照一律不能再信（与 wait / settle 同一条规则）。
     markStale();
+    const what = describeCondition(cond);
+
+    const state = conditionState(cond);
+    const selector = cond.gone ?? cond.selector;
+    if (state && selector && nativeWaitAllowed()) {
+      const native = await tryNativeWait(selector, state, requested, signal);
+      if (native) return native;
+    }
+
+    // 探针路径：轮询间隔由我们控制，上限被 MAX_WAIT_FOR_TIMEOUT_MS 夹住（每个间隔一次往返）。
+    const limit = Math.min(requested, MAX_WAIT_FOR_TIMEOUT_MS);
     const probeExpr = buildProbeExpression(cond);
     const confirmExpr = buildConfirmExpression(cond);
     const probe = async (expr: string): Promise<string> =>
@@ -1384,7 +1664,6 @@ export function createBskOps(
       },
     });
 
-    const what = describeCondition(cond);
     if (outcome.hit) {
       debugLog(`[bsk] wait_for：${what} 已达成（等待 ${outcome.waitedMs}ms，探针 ${outcome.polls} 次）`);
       return `等待「${what}」：已达成（等待 ${outcome.waitedMs}ms）`;
@@ -1397,13 +1676,82 @@ export function createBskOps(
       excerpt = confirmed?.excerpt ?? "";
     } catch (err) {
       if (err instanceof BskAbortError) throw err;
-      debugLog("[bsk] wait_for 取证失败：" + (err instanceof Error ? err.message : String(err)));
+      debugLog(
+        `[bsk] wait_for 取证失败：${err instanceof Error ? err.message : String(err)}`,
+      );
     }
+    // 元素类条件补一句末次探测证据：「还在树里但没显形」与「压根没出现过」是两种 bug。
+    const evidence =
+      state && !cond.text && outcome.last ? `（${describeProbe(cond, outcome.last)}）` : "";
     debugLog(`[bsk] wait_for：${what} 未达成（等待 ${outcome.waitedMs}ms）`);
     return (
-      `等待「${what}」：${limit}ms 内未达成` +
+      `等待「${what}」：${limit}ms 内未达成${evidence}` +
       (excerpt ? `（页面当前可见文本：「${excerpt}」）` : "") +
       `。不要重复等待同一个条件，先用 snapshot 确认页面当前状态`
+    );
+  };
+
+  /**
+   * 原生等待：`bsk wait-for-element`（一次 RPC 等满整个上限）。
+   *
+   * 返回 null 表示**这个命令在当前 bsk 上不可用**（旧版：`unknown_method` 或 clap 不认它），
+   * 调用方退回探针路径并记住这个结论（同 IPC 快路径的降级套路）。
+   *
+   * 其余失败一律上抛：一次已经跑起来的原生等待超时是「回答」不是错误（bsk 退出码 0），
+   * 所以走到异常分支的都是真故障（CDP 断了、ref 失效），把它当成「命令不可用」静默重跑
+   * 只会把一次真故障埋成一次慢。
+   */
+  const tryNativeWait = async (
+    selector: string,
+    state: ElementState,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<string | null> => {
+    const limit = Math.min(timeoutMs, NATIVE_WAIT_MAX_MS);
+    let out: string;
+    try {
+      out = await bsk(
+        [
+          "wait-for-element",
+          selector,
+          "--state",
+          state,
+          "--timeout",
+          `${limit}ms`,
+          "--poll-ms",
+          String(NATIVE_WAIT_POLL_MS),
+          ...quiet,
+        ],
+        signal,
+        limit + 30_000,
+      );
+    } catch (err) {
+      if (err instanceof BskAbortError) throw err;
+      if (isMissingWaitForElement(err)) {
+        nativeWaitUsable = false;
+        debugLog(
+          "[bsk] 当前 bsk 不支持 wait-for-element（旧版本），本次运行改用页面侧探针轮询",
+        );
+        return null;
+      }
+      throw err;
+    }
+    const parsed = parseNativeWait(out);
+    if (!parsed) {
+      debugLog(`[bsk] wait-for-element 输出认不出来，退回探针轮询：${out.trim()}`);
+      return null;
+    }
+    const what = `元素 ${selector} ${describeState(state)}`;
+    if (parsed.satisfied) {
+      debugLog(`[bsk] wait_for：${what} 已达成（原生等待 ${parsed.elapsedMs ?? "?"}ms）`);
+      return `等待「${what}」：已达成（等待 ${parsed.elapsedMs ?? limit}ms）`;
+    }
+    const observed = describeNativeEvidence(parsed);
+    debugLog(`[bsk] wait_for：${what} 未达成（原生等待 ${parsed.elapsedMs ?? "?"}ms）`);
+    return (
+      `等待「${what}」：${limit}ms 内未达成` +
+      (observed ? `（${observed}）` : "") +
+      "。不要重复等待同一个条件，先用 snapshot 确认页面当前状态"
     );
   };
 
@@ -1475,18 +1823,6 @@ export function createBskOps(
     signal?: AbortSignal,
   ): Promise<OverlayProbe | null> =>
     parseOverlayProbe(await evalExpr(buildOverlayProbeExpression(), signal));
-
-  /** 等一个可见浮层出现；命中时表达式会顺手标记那个浮层。 */
-  const waitOverlay = async (
-    signal?: AbortSignal,
-  ): Promise<OverlayProbe | null> =>
-    await pollProbe<OverlayProbe>(
-      buildOverlayProbeExpression(),
-      (sample) => sample?.hit === true,
-      parseOverlayProbe,
-      PICKER_WAIT_MS,
-      signal,
-    );
 
   /**
    * 问「target **自己**打开了吗」——按它声明的关联（`aria-controls`）找它的浮层。
@@ -1579,18 +1915,15 @@ export function createBskOps(
       if (dir === 0) return state;
       // 箭头限定在刚标记的那个面板内：全局选择器会命中 DOM 里第一个面板的箭头，
       // 页面上有多个日期选择器时那可能是别人的（点不到，或把别的控件改掉）。
-      const moved = await clickFirst(
-        scopedToRoot(
-          range
-            ? dir > 0
-              ? DATE_RANGE_NEXT_SELECTORS
-              : DATE_RANGE_PREV_SELECTORS
-            : dir > 0
-              ? DATE_NEXT_SELECTORS
-              : DATE_PREV_SELECTORS,
-        ),
-        signal,
-      );
+      // 四档组合（范围/单日 × 上/下月）拆成显式选择：嵌套三元在这里容易把
+      // 「范围面板的下一月」与「单日面板的上一月」接错。
+      let arrowSelectors: readonly string[];
+      if (range) {
+        arrowSelectors = dir > 0 ? DATE_RANGE_NEXT_SELECTORS : DATE_RANGE_PREV_SELECTORS;
+      } else {
+        arrowSelectors = dir > 0 ? DATE_NEXT_SELECTORS : DATE_PREV_SELECTORS;
+      }
+      const moved = await clickFirst(scopedToRoot(arrowSelectors), signal);
       // 箭头全都不存在就停在这里：再循环也只是重复失败，点不到目标日时会如实报错。
       if (!moved) return state;
       state = await probeDatePanel(signal);
@@ -1691,10 +2024,26 @@ export function createBskOps(
 
     async navigate(url: string, signal?: AbortSignal): Promise<string> {
       markStale();
+      // 先读一次当前地址：如果这次导航与当前页只差 hash / 路由片段，浏览器不会产生
+      // 新的文档加载，`--wait-until` 的任何档位都等不到（实测连 `commit` 也没有），
+      // 于是命令会空等到超时才返回。那种情况下把预算压到几百毫秒：导航本身是瞬时的，
+      // 超时后下面的 recoverSameDocumentNavigation 会确认页面确实到位并改判成功。
+      const before = await readPageLocation(signal);
+      const sameDocument =
+        before !== null && isSameDocumentNavigation(before.href, url);
+      const waitTimeout = sameDocument ? SAME_DOCUMENT_WAIT_MS : undefined;
       try {
         const out = await bsk(
-          ["navigate", url, ...quiet, "--wait-until", "domcontentloaded"],
+          [
+            "navigate",
+            url,
+            ...quiet,
+            "--wait-until",
+            "domcontentloaded",
+            ...(waitTimeout ? ["--timeout", `${waitTimeout}ms`] : []),
+          ],
           signal,
+          waitTimeout ? waitTimeout + 30_000 : undefined,
         );
         // Page.navigate 遵守 HTTP 缓存：响应在 max-age 内时浏览器直接用旧副本、
         // 请求根本不会发出去（实测同 URL 二次 navigate 服务器零请求）——刷新却带
@@ -1708,10 +2057,15 @@ export function createBskOps(
       } catch (err) {
         // 被中止不是「页面打不开」，别拿诊断层去解释它。
         if (err instanceof BskAbortError) throw err;
+        // 先问一句「真的没导航成吗」：同文档的 hash / SPA 路由切换不会产生新的
+        // 文档加载，因此永远等不到 lifecycle，但页面其实已经在目标地址上。
+        // 把它判成失败会让后面一整串步骤白跑（见 recoverSameDocumentNavigation）。
+        const recovered = await recoverSameDocumentNavigation(url, err, signal);
+        if (recovered) return recovered;
         const diagnosis = diagnoseNavigateFailure(url, readErrorText(err));
         // 翻译不了就原样抛出：诊断层的价值来自「说得准」，硬套分类比不解释更糟。
         if (!diagnosis) throw err;
-        debugLog("[bsk] navigate 失败已翻译为可读原因：" + diagnosis);
+        debugLog(`[bsk] navigate 失败已翻译为可读原因：${diagnosis}`);
         throw new Error(diagnosis);
       }
     },
@@ -1771,7 +2125,7 @@ export function createBskOps(
       // （见 DOWNLOAD_ATTEMPTS），不是「页面已变还接着用旧编号」——重试前再判必然失败，
       // 会把这条兜底时序抖动的重试彻底废掉。
       const landing = checkRef("download", target);
-      if (landing) debugLog("[bsk] download 落点：" + landing);
+      if (landing) debugLog(`[bsk] download 落点：${landing}`);
       markStale();
       const now = new Date();
       const explicit = out?.trim() ? out.trim() : undefined;
@@ -1843,7 +2197,7 @@ export function createBskOps(
       }
       if (raw === null) {
         const detail = bskErrorDetail(lastFailure);
-        debugLog("[bsk] download 未捕获到下载：" + detail);
+        debugLog(`[bsk] download 未捕获到下载：${detail}`);
         // bsk 认得出来的那一类要翻译成人话（与 navigate-diagnosis 同一条原则：只翻译不猜测）。
         // `download_capture_failed` 实测是「daemon/浏览器刚重启或刚升级，下载捕获还没就绪」：
         // 只报「点了没产生下载」会让人去查页面，而真正该做的是重连扩展/稍后再试。
@@ -1995,8 +2349,12 @@ export function createBskOps(
         throw new Error(t("bsk.screenshot.refOnly", { target }));
       }
       const landed = target ? checkRef("screenshot", target) : "";
-      const label = fullPage ? "full-page" : target ? "element" : "viewport";
-      const dest = screenshotPath(new Date(), label, options?.out);
+      // 三档落盘名：整页 / 单元素 / 视口。写成 if/else 而不是嵌套三元：
+      // 这个值会进截图清单与报告文件名，读错一档会让证据指向错的东西。
+      let screenshotLabel = "viewport";
+      if (fullPage) screenshotLabel = "full-page";
+      else if (target) screenshotLabel = "element";
+      const dest = screenshotPath(new Date(), screenshotLabel, options?.out);
       ensureScreenshotDirFor(dest);
       const args = ["screenshot", "--out", dest, "--json", ...quiet];
       if (fullPage) args.push("--full-page");
@@ -2018,7 +2376,7 @@ export function createBskOps(
         typeof meta?.byte_size === "number" ? meta.byte_size : fileSizeOrNull(path);
       recordScreenshot(path);
       return (
-        `已截图（${label}）：${path}` +
+        `已截图（${screenshotLabel}）：${path}` +
         (size ? `，${size}` : "") +
         (typeof bytes === "number" && bytes > 0 ? `，${bytes} 字节` : "") +
         landed
@@ -3189,10 +3547,10 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     name: "wait_for",
     label: "Wait For",
     description:
-      "等到页面出现某个东西：text（等到可见文本出现）、selector（等到元素出现）、gone（等到元素消失，如 loading 遮罩）。" +
-      "三者**只能给一个**。已知在等什么时用它，不要用 wait 猜秒数：条件达成会立刻返回，" +
-      "因此比盲等更快也更稳；到了 timeoutMs（默认 3000）仍未达成会如实返回「未达成」并附上" +
-      "页面当前可见文本，那时应当 snapshot 看清页面，而不是再等一遍。" +
+      "等到页面出现某个东西：text（等到可见文本出现）、selector（等到元素达到某个状态，默认可见）、gone（等到元素不可见/消失，如 loading 遮罩）。" +
+      "三者**只能给一个**；state 只配合 selector。已知在等什么时用它，不要用 wait 猜秒数：条件达成会立刻返回，" +
+      "因此比盲等更快也更稳；到了 timeoutMs（默认 3000）仍未达成会如实返回「未达成」并附上证据" +
+      "（元素类条件附末次探测的「还在 DOM / 可见」），那时应当 snapshot 看清页面，而不是再等一遍。" +
       "**必用它的时机**：navigate 进入新页面后、点击展开下拉/弹窗/抽屉后、点搜索或提交后——" +
       "都等一个**只在该状态出现**的地标（标题区的文字、表头、面板里的字段标签或菜单项；" +
       "菜单与导航里的字到处都是，不能当地标）。" +
@@ -3209,11 +3567,31 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
             "快照里的名字可能来自 aria-label / placeholder / title（如 `combobox \"创建时间 [has-submenu]\"`、" +
             "带 placeholder 的输入框），那类名字用 text 永远等不到，要等它们请改用 selector",
         },
-        selector: { type: "string", description: "等到该 CSS 选择器命中元素" },
-        gone: { type: "string", description: "等到该 CSS 选择器不再命中元素（如 loading 消失）" },
+        selector: {
+          type: "string",
+          description:
+            "等到该 CSS 选择器达到 state 描述的状态（默认 visible）。注意只看**第一个**匹配元素：" +
+            "宽泛的选择器（如 .el-loading-mask）可能命中另一个已隐藏的遮罩，请带上区域限定（如 #orders-panel .el-loading-mask）",
+        },
+        gone: {
+          type: "string",
+          description:
+            "等到该 CSS 选择器**不再可见**（如 loading 遮罩消失）。等价于 selector + state=hidden：" +
+            "元素被移除、或被 v-show/display:none 隐藏都算；要严格等「离开 DOM」请用 selector + state=detached",
+        },
+        state: {
+          type: "string",
+          enum: ["visible", "hidden", "attached", "detached"],
+          description:
+            "可选，只配合 selector：visible（默认，可见）/ hidden（不可见或已移除）/ " +
+            "attached（已在 DOM 里，不要求可见）/ detached（已离开 DOM）。" +
+            "要区分「没出现」还是「在 DOM 里但没显形」时用它们——超时报告会把这两个事实分开写",
+        },
         timeoutMs: {
           type: "number",
-          description: `等待上限（毫秒，默认 ${DEFAULT_WAIT_FOR_TIMEOUT_MS}，最大 ${MAX_WAIT_FOR_TIMEOUT_MS}）`,
+          description:
+            `等待上限（毫秒，默认 ${DEFAULT_WAIT_FOR_TIMEOUT_MS}）。元素类条件由浏览器侧一次等满（上限 ${NATIVE_WAIT_MAX_MS}），` +
+            `文本条件在 pageqa 侧轮询（上限 ${MAX_WAIT_FOR_TIMEOUT_MS}）`,
         },
         showPage: SHOW_PAGE_PARAM,
       },
@@ -3235,12 +3613,28 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
             : "wait_for 的 text / selector / gone 只能给一个（分别是「等到文本出现」「等到元素出现」「等到元素消失」）",
         );
       }
+      // state 只修饰 selector：给 text/gone 配 state 是对工具的误读（gone 本身就是 hidden），
+      // 默默忽略比报错危险——模型会以为自己的意图生效了。
+      if (p.state !== undefined && p.state !== null && String(p.state).trim() !== "") {
+        if (!isElementState(p.state)) {
+          throw new Error(
+            `wait_for 的 state 只能是 ${ELEMENT_STATES.join(" / ")}（收到「${String(p.state)}」）`,
+          );
+        }
+        if (!cond.selector) {
+          throw new Error(
+            "wait_for 的 state 只能配合 selector 使用（gone 已等价于 hidden；text 等的是文本不是元素状态）",
+          );
+        }
+        if (p.state !== "visible") cond.state = p.state;
+      }
       return exec(
         "wait_for",
         {
           ...(cond.text ? { text: cond.text } : {}),
           ...(cond.selector ? { selector: cond.selector } : {}),
           ...(cond.gone ? { gone: cond.gone } : {}),
+          ...(cond.state ? { state: cond.state } : {}),
           ...(typeof p.timeoutMs === "number" ? { timeoutMs: p.timeoutMs } : {}),
           ...(p.showPage ? { showPage: true } : {}),
         },
@@ -3485,6 +3879,8 @@ interface WaitForParams {
   text?: string;
   selector?: string;
   gone?: string;
+  /** 只配合 selector：要等的元素状态（缺省 visible）。 */
+  state?: string;
   timeoutMs?: number;
   showPage?: boolean;
 }
@@ -3533,7 +3929,7 @@ export async function captureSessionScreenshot(
     const meta = parseBskJson<BskScreenshotJson>(out);
     // bsk 明确说「没截成」时不当成证据（与工具层同一条判定）。
     if (meta?.capture_unavailable?.trim()) {
-      debugLog("[bsk] 收尾截图未成：" + meta.capture_unavailable);
+      debugLog(`[bsk] 收尾截图未成：${meta.capture_unavailable}`);
       return null;
     }
     const path = meta?.path?.trim() || dest;
