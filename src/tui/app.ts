@@ -2691,13 +2691,8 @@ export async function runInteractive(
       }
       // 浮层打开时把 Esc 留给列表自己处理（SelectList 的 onCancel）。
       if (tui.hasOverlay()) return undefined;
-      // 还没落地的输入（正在格式化 / 排队等格式化）：Esc 表示「这条不要了」。
-      // 取消后继续走下面的场景中止逻辑——同时有场景在跑时，Esc 的语义仍是「停下」。
-      const cancelledFormats = formatSubmitter.cancelAll(cancelledError());
-      if (cancelledFormats > 0) {
-        append(warn(t("tui.format.cancelled", { n: cancelledFormats })));
-      }
-      // 其余时候只在有场景在跑时接管，否则留给编辑器（它用 Esc 关自动补全）。
+      // 有场景在跑时，Esc 只中止场景：还没落地的输入可能是给后续场景的，不能顺手丢掉。
+      // 没有场景在跑时，Esc 才用来丢弃正在格式化 / 排队等格式化的输入。
       if (queue.running()) {
         // 并发之后「当前场景」不再唯一：一次中止全部在跑的，并逐个点名，
         // 免得用户以为「只停了第一个」（见 ADR-0013）。
@@ -2712,7 +2707,11 @@ export async function runInteractive(
         );
         return { consume: true };
       }
-      if (cancelledFormats > 0) return { consume: true };
+      const cancelledFormats = formatSubmitter.cancelAll(cancelledError());
+      if (cancelledFormats > 0) {
+        append(warn(t("tui.format.cancelled", { n: cancelledFormats })));
+        return { consume: true };
+      }
     }
     return undefined;
   });

@@ -439,8 +439,9 @@ export function parseArgs(argv: string[]): CliArgs {
     if (args.replay) args.error = t("err.runWithReplay");
     else if (args.tui) args.error = t("err.runWithTui");
     else if (!args.input && !globalOnly) args.error = t("err.runNeedsInput");
-  } else if (args.input !== undefined && !args.tui && !args.replay && !globalOnly) {
-    // 裸的 `pageqa <input>`：以前会直接开跑；现在一律拒绝，引导到显式 run / TUI。
+  } else if (args.input !== undefined && !args.replay && !globalOnly) {
+    // 裸的 `pageqa <input>` / `pageqa --tui <input>`：以前会直接开跑；现在一律拒绝。
+    // TUI 只接收无参启动，用例在界面里用 /run 加载——命令行执行只剩显式 run。
     args.error = t("err.bareInput");
   }
   return args;
@@ -864,7 +865,6 @@ function exitCodeFor(report: TestReport): number {
  */
 function detectInteractive(
   args: CliArgs,
-  isFile: boolean,
   hasInput: boolean,
   // 并发度与「要不要进交互模式」无关（TUI 的队列自己认这个值，见 ADR-0013 决策三），
   // 保留形参只为让调用点继续把完整上下文传进来；下划线前缀表明「刻意不用」。
@@ -888,9 +888,6 @@ function detectInteractive(
     }
     if (args.session) {
       return { run: false, error: t("err.tuiWithSession") };
-    }
-    if (hasInput && !isFile) {
-      return { run: false, error: t("err.tuiNeedsFile") };
     }
     if (!tty) {
       return { run: false, error: t("err.tuiNeedsTty") };
@@ -1235,7 +1232,7 @@ async function main(): Promise<number> {
   // 非 TTY（管道 / CI）维持原口径：打印帮助并退出码 1——那里没有「人看不看这个终端」
   // 这个判据，而 help 是它唯一的发现途径（ADR-0005 决策一）。
   if (!args.input) {
-    const interactive = detectInteractive(args, false, false, concurrency);
+    const interactive = detectInteractive(args, false, concurrency);
     if (interactive.error) {
       process.stderr.write(t("err.param", { msg: interactive.error }) + "\n\n");
       return 1;
@@ -1360,7 +1357,7 @@ async function main(): Promise<number> {
       : undefined;
 
   // ── 交互模式：跑用例的同时可以提交新场景（会写回落点）──
-  const interactive = detectInteractive(args, isFile, true, concurrency);
+  const interactive = detectInteractive(args, true, concurrency);
   if (interactive.error) {
     process.stderr.write(t("err.param", { msg: interactive.error }) + "\n\n");
     return 1;

@@ -110,12 +110,12 @@ export function takePage(
   return { lines: lines.slice(start, i), next: i };
 }
 
-function readKey(): Promise<string> {
+function readKey(): Promise<string | null> {
   return new Promise((resolve) => {
     const input = process.stdin;
     const wasRaw = input.isRaw ?? false;
     let done = false;
-    const finish = (key: string) => {
+    const finish = (key: string | null) => {
       if (done) return;
       done = true;
       input.off("data", onData);
@@ -136,7 +136,8 @@ function readKey(): Promise<string> {
     try {
       input.setRawMode?.(true);
     } catch {
-      finish("q");
+      // 终端不支持 raw 键盘输入：返回 null，让调用方把剩余帮助完整打出来。
+      finish(null);
       return;
     }
     input.resume();
@@ -168,6 +169,11 @@ export async function pageInternally(text: string): Promise<void> {
     out.write(prompt);
     const key = await readKey();
     out.write(clearPrompt);
+    if (key === null) {
+      // raw 模式不可用：不再等待按键，把剩余帮助完整输出，避免只看到第一页。
+      out.write(lines.slice(start).join("\n") + "\n");
+      return;
+    }
     if (key === "q" || key === "Q" || key === "\u0003" || key === "\u001b") {
       quit = true;
       break;

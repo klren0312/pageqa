@@ -144,10 +144,13 @@ describe("CLI 参数解析", () => {
     }
   });
 
-  test("显式 --tui 仍可预加载用例；run 不能与 --tui / --replay 同用", () => {
-    const tui = parseArgs(["--tui", "examples/smoke.md"]);
+  test("--tui 不接用例；run 不能与 --tui / --replay 同用", () => {
+    const tui = parseArgs(["--tui"]);
     assert.equal(tui.error, undefined);
-    assert.equal(tui.input, "examples/smoke.md");
+    assert.match(
+      parseArgs(["--tui", "examples/smoke.md"]).error ?? "",
+      /已移除直接 `pageqa <用例>`/,
+    );
 
     assert.match(
       parseArgs(["run", "--tui", "examples/smoke.md"]).error ?? "",

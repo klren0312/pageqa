@@ -43,10 +43,11 @@ Run `pageqa` with no arguments in an interactive terminal and the TUI opens auto
 
 ```bash
 pageqa                           # empty session: empty queue, no write-back target; /run a case file any time
-pageqa --tui examples/smoke.md   # force interactive and preload a case file (errors in a non-TTY)
+pageqa --tui                     # force interactive mode (errors in a non-TTY)
+/run examples/smoke.md           # load a case inside the TUI (switches the write-back target)
 ```
 
-Auto-entry: with no `--json`, bare **`pageqa`** enters the TUI on a TTY. Run a case in batch with `pageqa run <case>` (never enters the TUI), or preload one explicitly with `pageqa --tui <case>`. **Inline text only goes through `run`**; `--json` / `--replay` / `--prefer-replay` / `--session` / `--only` / `run` never enter the TUI (`--tui` together with `--only` errors immediately). To disable: `pageqa --no-tui` or `PAGEQA_NO_TUI=1`.
+Auto-entry: with no `--json`, bare **`pageqa`** enters the TUI on a TTY. Run a case in batch with `pageqa run <case>` (never enters the TUI); interactive mode does not accept a case on the command line — load it with `/run` after entering. **Inline text only goes through `run`**; `--json` / `--replay` / `--prefer-replay` / `--session` / `--only` / `run` never enter the TUI (`--tui` together with `--only` errors immediately). To disable: `pageqa --no-tui` or `PAGEQA_NO_TUI=1`.
 
 ### Layout
 
@@ -80,7 +81,7 @@ Auto-entry: with no `--json`, bare **`pageqa`** enters the TUI on a TTY. Run a c
 ### Submitting scenarios
 
 - Type natural language in the input box and press **Enter**: the current model first formats the text into a pageqa case (`## scenario name`, one step per line, one assertion per line). The formatted text is printed in full to the log — **that is what gets written back and executed**, not your raw input.
-- If the model is unavailable, takes longer than 60 seconds, returns no executable steps, or drops a `${...}` placeholder from the original text, submission falls back to the original text (exactly the pre-formatting behavior) and says why in the log. Pressing `Esc` while formatting discards inputs that have not been queued yet.
+- If the model is unavailable, takes longer than 60 seconds, returns no executable steps, or drops a `${...}` placeholder from the original text, submission falls back to the original text (exactly the pre-formatting behavior) and says why in the log. Pressing `Esc` while idle discards inputs that have not been queued yet.
 - Submitting means "write-back + enqueue": with a target it appends to the target file first, then enqueues (so "what you type is what you keep"); if a scenario is already running, the new one queues and runs automatically after. **Shift+Enter** inserts a newline (for multi-scenario cases).
 
 ### Commands (start a line with `/`; typing `/` pops up a fuzzy command list)
@@ -104,7 +105,7 @@ Auto-entry: with no `--json`, bare **`pageqa`** enters the TUI on a TTY. Run a c
 | --- | --- |
 | `Enter` | Submit input |
 | `Shift+Enter` | Newline |
-| `Esc` | Abort the running scenario (recorded as "cancelled", not counted in exit code, not written to replay); discard inputs not yet queued by formatting; cancels a pending prompt |
+| `Esc` | Abort the running scenario (recorded as "cancelled", not counted in exit code, not written to replay); when idle, discard inputs not yet queued by formatting; cancels a pending prompt |
 | `Ctrl+C` | Finish: abort current + cancel all pending → restore terminal → print summary report (normal exit, never a hard kill; a second press during wind-down means "stop waiting") |
 | `PageUp`/`PageDown` | Scroll the log a page |
 | `↑`/`↓` | Scroll the log when the input box is empty (some terminals report the wheel as these) |
@@ -312,7 +313,7 @@ Rules are matched top-down, first match wins; anything unmatched falls back to `
 | `--suite` | Force multi-scenario suite mode |
 | `--only <index\|title>` | Run just one scenario (index from 1, or an exact title match); output stays suite-shaped. Mutually exclusive with `--suite`/`--tui`/`--replay` |
 | `--concurrency <n>` | Run up to n scenarios at once (**a limit**, default 1; `PAGEQA_CONCURRENCY` / the `concurrency` config field also work). Capped at 8, exceeding it errors; interactive mode honours it too (`/setting` > concurrency changes it live), `--replay` does not |
-| `--tui` / `--no-tui` | Force interactive on/off (`PAGEQA_NO_TUI=1` also works) |
+| `--tui` / `--no-tui` | Force interactive on/off (`PAGEQA_NO_TUI=1` also works); `--tui` takes no case — load it with `/run` inside |
 | `--no-pager` | Print long help without a pager (default pager: Space/Enter next, q quit; `PAGER=cat` also works) |
 | `--emit-script [path]` | Freeze a replay script (on by default, next to the source case) |
 | `--no-side-outputs` | Write no side outputs (HTML report, default replay script); an explicit `--emit-script <path>` still wins |
@@ -411,7 +412,7 @@ Natural-language intent
 
 Replay script -> pageqa --replay -> reuses the same bsk op layer -> real browser -> report + exit code (no LLM called)
 
-Interactive mode (pageqa --tui <case file>)
+Interactive mode (pageqa / --tui; load cases with /run)
    ├─> TUI: kanban band (5 status columns) + scrolling log viewport (progress logs merged via setSink) + fixed bottom input box
    ├─> run queue: serial by default (concurrency 1/2/3/4/6/8 via /setting); submitted new scenarios are written back to the target then enqueued
    └─> exit -> restore main screen -> summary report (stdout/--out) + exit code (cancelled not counted)
