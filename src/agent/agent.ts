@@ -652,8 +652,16 @@ async function initializeAgent(
   // ── 连通性探活：模型不通就一条用例都不跑 ──
   // 位置很关键：必须在 bsk 就绪检查与建 session **之前**。模型连不上却先把浏览器窗口
   // 开起来，既白等十几秒，也留下一个「看起来跑起来了」的现场。
-  info(t("log.checkModel", { model: model.id }));
-  await ensureModelReachable(catalog, choice, model, opts);
+  //
+  // 套件父进程已在派发前统一探过（`PAGEQA_SKIP_MODEL_PROBE=1`）：多场景时不再每个
+  // 子进程各付一次 ping。TTL 由父进程控制；模型中途挂掉仍会在首次真实调用上暴露。
+  const skipModelProbe = process.env.PAGEQA_SKIP_MODEL_PROBE === "1";
+  if (skipModelProbe) {
+    debugLog("[runAgent] 父进程已完成模型探活，跳过本场景的重复探活");
+  } else {
+    info(t("log.checkModel", { model: model.id }));
+    await ensureModelReachable(catalog, choice, model, opts);
+  }
   info(t("log.llmReady", { model: model.id }));
 
   info(t("log.checkDaemon"));

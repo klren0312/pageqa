@@ -11,6 +11,7 @@ import {
   type Scenario,
 } from "./agent.js";
 import { closeSession, ensureBskReady, ensureSession } from "../bsk/tools.js";
+import { createProbeCache } from "./model-probe-cache.js";
 import { debugLog, info } from "../shared/log.js";
 import { getLocale, t } from "../shared/i18n.js";
 import {
@@ -93,6 +94,12 @@ export interface ForkSuiteOptions {
   onChildUsage?: (usage: TokenUsage) => void;
   /** 同时跑几个场景的上限（默认 1，逐个跑）。超过 `MAX_CONCURRENCY` 由 CLI 先拦下。 */
   concurrency?: number;
+  /**
+   * 套件级模型探活（默认 `probeModelReachable`）。
+   *
+   * 抽成可注入项是为了让 fork 编排的单测不需要真的连模型；生产路径不要传。
+   */
+  probe?: () => Promise<void>;
 }
 
 /**
@@ -102,6 +109,15 @@ export interface ForkSuiteOptions {
  * 数字失控时先把人机两边都拖垮；而静默截断会让人以为「我说 16 怎么只跑了 8」。
  */
 export const MAX_CONCURRENCY = 8;
+
+/**
+ * 多场景套件的模型探活复用窗口（毫秒）。
+ *
+ * 探活是一次真实的模型往返；父进程统一探一次后，30s 内启动的场景不再各付一次。
+ * 窗口取短值：模型中途挂掉时，最多这一小段时间内的场景会跳过探活，它们的首次
+ * 真实调用仍会失败，但不会把一个已经挂掉的端点缓存很久。
+ */
+const SUITE_PROBE_TTL_MS = 30_000;
 
 /**
  * 带并发上限地跑一批任务，结果按**原始下标**放回数组；被跳过的位置留 `undefined`。
@@ -210,6 +226,13 @@ export async function runSuiteInChildren(
   if (isConcurrencySessionConflict(concurrency, scenarios.length, opts.session)) {
     throw new ConcurrencySessionConflictError(concurrency);
   }
+  // 多场景才值得由父进程统一探活；单场景仍由子进程自己探，保持原路径。
+  const suiteProbe =
+    scenarios.length > 1
+      ? createProbeCache(opts.probe ?? probeModelReachable, {
+          ttlMs: SUITE_PROBE_TTL_MS,
+        })
+      : null;
   info(
     t("log.suiteStart", {
       n: scenarios.length,
@@ -252,6 +275,22 @@ export async function runSuiteInChildren(
         }),
       );
 
+      // 探活放在建 session 之前：多场景套件里只探一次，失败时连浏览器都不开。
+      // 子进程随后跳过自己的重复 ping（`PAGEQA_SKIP_MODEL_PROBE`）。
+      if (suiteProbe) {
+        try {
+          await suiteProbe();
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          const error = err instanceof Error ? err : new Error(detail);
+          failures.set(i, { reason: "infrastructure", detail });
+          if (!fatal) fatal = { kind: "model", error, detail };
+          stopped = true;
+          info(t("log.suiteModelGone", { done: reports.size }));
+          return;
+        }
+      }
+
       // ── 父进程持 session 的生命周期（ADR-0013 决策四）──
       // 让子进程上报 session id 在最需要它的时候（崩溃、被强杀）恰好不可靠；
       // 由父进程建、父进程收，子进程只是拿去用。
@@ -281,6 +320,7 @@ export async function runSuiteInChildren(
         scriptPath,
         debug: opts.debug,
         timeoutMs: opts.timeoutMs,
+        skipModelProbe: Boolean(suiteProbe),
         emitLog,
         // 并发时日志必然交错，父进程的「开始/结束」行已经分不清谁是谁——
         // 只有这时才给每行加场景编号前缀（逐个跑时加了只会挤掉日志正文，见 ADR-0013 决策九）。
@@ -506,6 +546,8 @@ export interface RunChildOptions extends ChildInvocation {
   /** 用户中止（交互模式按 Esc）。 */
   abortSignal?: AbortSignal;
   onUsage?: (usage: TokenUsage) => void;
+  /** 父进程已完成模型探活：子进程跳过自己的 ping（套件编排用）。 */
+  skipModelProbe?: boolean;
 }
 
 /** 日志前缀里场景名的长度上限：再长就把日志正文挤出屏幕，归属反而看不清了。 */
@@ -556,13 +598,15 @@ export async function runScenarioChild(opts: RunChildOptions): Promise<ChildRunR
   const args = buildChildArgs(opts);
   debugLog(`[suite] fork 场景 ${opts.scenarioIndex + 1}/${opts.total}`);
 
-  const env = opts.model
-    ? {
-        ...process.env,
-        PAGEQA_LLM_MODEL: opts.model.model,
-        PAGEQA_LLM_PROVIDER: opts.model.provider,
-      }
-    : process.env;
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (opts.model) {
+    env.PAGEQA_LLM_MODEL = opts.model.model;
+    env.PAGEQA_LLM_PROVIDER = opts.model.provider;
+  }
+  // 显式设置/清除：父进程自己可能也是被套件拉起的，不能把上层的 skip 标记漏给
+  // 「本该自己探活」的子进程。
+  if (opts.skipModelProbe) env.PAGEQA_SKIP_MODEL_PROBE = "1";
+  else delete env.PAGEQA_SKIP_MODEL_PROBE;
 
   const child = spawn(process.execPath, [opts.entry, ...args], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -869,6 +913,8 @@ export interface ChildScenarioOptions {
    */
   logTag?: string;
   entry?: string;
+  /** 父进程（TUI 队列）已完成模型探活：子进程跳过自己的 ping。 */
+  skipModelProbe?: boolean;
 }
 
 /**
@@ -911,6 +957,7 @@ export async function runScenarioInChild(
       scriptPath,
       usageStream: true,
       model: opts.model,
+      skipModelProbe: opts.skipModelProbe,
       ...(opts.logTag ? { logTag: opts.logTag } : {}),
       abortSignal: opts.abortSignal,
       timeoutMs: opts.timeoutMs,

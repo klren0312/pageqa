@@ -76,6 +76,29 @@ describe("并发与共享 session 的语义冲突", () => {
   });
 });
 
+describe("套件级模型探活", () => {
+  test("多场景只探活一次；失败在建 session / fork 之前终止", async () => {
+    let probes = 0;
+    await assert.rejects(
+      () =>
+        runSuiteInChildren({
+          script: CASE,
+          input: "case.md",
+          sourcePath: null,
+          timeoutMs: 1_000,
+          wantScript: false,
+          concurrency: 2,
+          probe: async () => {
+            probes += 1;
+            throw new Error("模型挂了");
+          },
+        }),
+      /模型挂了/,
+    );
+    assert.equal(probes, 1, "并发场景应共享同一次探活，不能各 ping 一次");
+  });
+});
+
 describe("--only 的场景选择", () => {
   test("纯数字按序号（1 起）", () => {
     const scenarios = splitScenarios(CASE);

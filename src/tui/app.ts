@@ -180,6 +180,7 @@ import {
   listLogoutOptions,
   listModelOptions,
   loadBuiltinProviders,
+  probeModel,
   refreshFreeProviders,
   resolveModel,
   PAGEQA_PROVIDER_ID,
@@ -646,6 +647,40 @@ export async function runInteractive(
   const catalog = await createModelCatalog();
   /** 本次会话当前使用的模型：每个场景开跑时取值，切换只影响之后的场景。 */
   let currentChoice: ModelChoice = { ...catalog.defaultChoice };
+  /**
+   * 队列级模型探活缓存。
+   *
+   * 每个场景子进程原本各发一次 ping；同一模型在 30s 内只由父进程探一次，子进程
+   * 拿到 `skipModelProbe` 后跳过。探活失败不写时间戳，下一次仍会重试。
+   * 用户中止导致的探活返回不算模型故障，交给子进程原有的取消路径。
+   */
+  const TUI_PROBE_TTL_MS = 30_000;
+  let lastProbeKey = "";
+  let lastProbeAt = 0;
+  async function ensureTuiModelProbe(
+    choice: ModelChoice,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const model = resolveModel(catalog, choice);
+    if (!model) return false;
+    const key = `${choice.provider}/${choice.model}`;
+    if (
+      key === lastProbeKey &&
+      Date.now() - lastProbeAt < TUI_PROBE_TTL_MS
+    ) {
+      return true;
+    }
+    if (signal?.aborted) return false;
+    const result = await probeModel(catalog, model, { signal });
+    // 探活期间用户按了 Esc：不是模型不可达，交给子进程按「已取消」收尾。
+    if (signal?.aborted) return false;
+    if (!result.ok) {
+      throw new ModelUnreachableError(choice.provider, model.id, result.reason);
+    }
+    lastProbeKey = key;
+    lastProbeAt = Date.now();
+    return true;
+  }
   /** config.json 里保存的启动默认（选中即写盘；写失败时它与 currentChoice 会短暂不一致）。 */
   let defaultChoice: ModelChoice = { ...catalog.defaultChoice };
   /**
@@ -1820,12 +1855,21 @@ export async function runInteractive(
     // 判定在派发这一刻求值：并发量之后被 `/setting` 改过的话，只有改完之后派发的场景带前缀。
     const parallel = concurrency > 1 && queue.all().length > 1;
     let result: AgentRunResult;
+    // 模型在开跑那一刻定下来：探活与子进程必须用同一个选择，否则探活期间 /model
+    // 会让「已探活的 A」被当成「要跑的 B」而跳过 B 的探活。
+    const scenarioChoice = { ...currentChoice };
     // 上下文窗口取「开跑那一刻」的模型，与传给子进程的 model 参数同源。
     runningContexts.set(item.id, {
       used: 0,
-      window: resolveModel(catalog, currentChoice)?.contextWindow,
+      window: resolveModel(catalog, scenarioChoice)?.contextWindow,
     });
     try {
+      // 父进程先按 30s TTL 探活：同一模型的多条排队场景不再各付一次 ping。
+      // 探活失败由下面的 ModelUnreachableError 分支停掉整条队列。
+      const probed = await ensureTuiModelProbe(
+        scenarioChoice,
+        item.abort.signal,
+      );
       // 场景交给独立子进程跑（ADR-0013）：本进程只负责把「日志往哪写、用量往哪报、
       // 会话选了哪个模型」接进去，执行本身与批处理共用同一个执行器。
       //
@@ -1837,10 +1881,11 @@ export async function runInteractive(
         // 用「开跑那一刻」的选择：用户在场景执行期间 /model，只影响之后的场景，
         // 不会把跑到一半的会话换成另一个模型（那会让报告里的模型归属含糊不清）。
         // `/model` 只改本进程内存，所以必须显式传给子进程。
-        model: { ...currentChoice },
+        model: scenarioChoice,
         debug: opts.debug,
         timeoutMs: opts.scenarioTimeoutMs,
         abortSignal: item.abort.signal,
+        skipModelProbe: probed,
         // 子进程的进度日志直接进日志视口：它自带时间戳，与 log.ts 的输出同形。
         onChildLog: append,
         // 并发时给每行加 `[#k 场景名]` 前缀，串行时原样转发。
