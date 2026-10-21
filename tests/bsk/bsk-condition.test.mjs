@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import {
   buildConfirmExpression,
   buildProbeExpression,
+  clampWaitMs,
   conditionState,
   describeCondition,
   describeProbe,
   describeState,
   ELEMENT_STATES,
   isElementState,
+  MAX_TEXT_WAIT_MS,
   needsConfirm,
   parseConfirm,
   parseProbe,
@@ -109,6 +111,14 @@ describe("buildProbeExpression（便宜的那次采样）", () => {
     assert.equal(runProbe(expr, { text: "还没好" }).textPresent, false);
   });
 
+  test("text：换行/多空格与跨节点拆分不会被误判为未出现", () => {
+    const expr = buildProbeExpression({ text: "处理中 10 份" });
+    // innerText 常把同一行文案拆成换行；textContent 甚至可能没有空格。
+    assert.equal(runProbe(expr, { text: "处理中\n10\n份" }).textPresent, true);
+    assert.equal(runProbe(expr, { text: "处理中10份" }).textPresent, true);
+    assert.equal(runProbe(expr, { text: "处理中 11 份" }).textPresent, false);
+  });
+
   test("CSS 选择器非法（页面里抛异常）不影响其它判定，也不抛出", () => {
     const expr = buildProbeExpression({ selector: "!!!", gone: ".x" });
     const out = runProbe(expr, {
@@ -145,6 +155,32 @@ describe("buildConfirmExpression（读可见文本）", () => {
     const expr = buildConfirmExpression({ text: "x" });
     const out = runProbe(expr, { innerText: "啊".repeat(500) });
     assert.equal(out.excerpt.length, 160);
+  });
+
+  test("可见文本匹配同样归一化空白与跨节点拆分", () => {
+    const expr = buildConfirmExpression({ text: "处理中 10 份" });
+    assert.equal(
+      runProbe(expr, { innerText: "全部工单 30 份\n处理中\n10\n份\n" }).visibleHit,
+      true,
+    );
+    assert.equal(
+      runProbe(expr, { innerText: "全部工单 30 份 处理中10份" }).visibleHit,
+      true,
+    );
+    assert.equal(
+      runProbe(expr, { innerText: "全部工单 30 份 处理中 11 份" }).visibleHit,
+      false,
+    );
+  });
+});
+
+describe("等待预算", () => {
+  test("文本条件最多等 5 秒，元素条件保留原预算", () => {
+    assert.equal(MAX_TEXT_WAIT_MS, 5_000);
+    assert.equal(clampWaitMs({ text: "x" }, 30_000), 5_000);
+    assert.equal(clampWaitMs({ text: "x" }, 3_000), 3_000);
+    assert.equal(clampWaitMs({ selector: ".row" }, 15_000), 15_000);
+    assert.equal(clampWaitMs({ gone: ".mask" }, 30_000), 30_000);
   });
 });
 

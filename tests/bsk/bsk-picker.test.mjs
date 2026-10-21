@@ -137,6 +137,10 @@ describe("浮层探针：只认「可见」的那一个", () => {
       selector: ".x",
       count: 2,
     });
+    assert.deepEqual(
+      parseOverlayProbe('{"hit":false,"selector":null,"count":0,"linked":false}'),
+      { hit: false, selector: null, count: 0, linked: false },
+    );
     assert.equal(parseOverlayProbe("boom"), null);
     assert.equal(parseOverlayProbe("[]"), null);
   });
@@ -522,6 +526,7 @@ describe("按关联定位 target 自己的浮层（aria-controls）", () => {
     const { doc, popper } = linked({ expanded: true });
     const out = run(buildOwnOverlayExpression("#msg .el-select__wrapper"), { dom: doc });
     assert.equal(out.hit, true);
+    assert.equal(out.linked, true);
     assert.equal(popper.getAttribute(ROOT_ATTR), "1");
   });
 
@@ -529,6 +534,7 @@ describe("按关联定位 target 自己的浮层（aria-controls）", () => {
     const { doc, popper } = linked({ expanded: false });
     const out = run(buildOwnOverlayExpression("#msg .el-select__wrapper"), { dom: doc });
     assert.equal(out.hit, false, "关着却判成打开，就会「跳过点击」跳错");
+    assert.equal(out.linked, true, "关联仍然存在，只是浮层还没展开");
     assert.equal(popper.getAttribute(ROOT_ATTR), null);
   });
 
@@ -551,6 +557,7 @@ describe("按关联定位 target 自己的浮层（aria-controls）", () => {
     };
     const out = run(buildOwnOverlayExpression("#plain"), { dom: doc });
     assert.equal(out.hit, false);
+    assert.equal(out.linked, false, "没有关联时调用方应直接走通用浮层，而不是等满 3s");
   });
 });
 

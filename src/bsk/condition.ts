@@ -53,6 +53,21 @@ export function isElementState(value: unknown): value is ElementState {
 }
 
 /**
+ * 文本条件的等待上限（毫秒）。
+ *
+ * 页面里的可见文字（提示、表头、弹窗标题）正常在秒级出现；模型有时会传 15s、30s，
+ * 一旦文字根本不在页面上（写错、被本地化替换），这些预算就全变成纯等待。元素条件不同：
+ * 表格/列表可能要等接口，保留调用方给的较长预算。文本条件超过 5000ms 一律收窄，
+ * 并把真实上限写进结果，让模型知道该先 snapshot 核对，而不是继续等。
+ */
+export const MAX_TEXT_WAIT_MS = 5_000;
+
+/** 按条件类型收窄等待预算：只压文本条件，元素条件原样返回。 */
+export function clampWaitMs(cond: WaitCondition, timeoutMs: number): number {
+  return cond.text ? Math.min(timeoutMs, MAX_TEXT_WAIT_MS) : timeoutMs;
+}
+
+/**
  * 等待条件：`text` / `selector` / `gone` 三者只能给一个（由工具层校验）。
  *
  * `state` 只修饰 `selector`：`selector` 不带 `state` 时等的是**可见**（与 bsk
@@ -117,6 +132,9 @@ function literal(value: string | undefined): string {
  * 否则「旧版 bsk 上这条用例通过、新版上超时」会变成一条查不出来的差异。
  *
  * 不在这里判 `innerText`：那是命中复核与超时取证的事（见 buildConfirmExpression）。
+ *
+ * 文本粗筛会先归一化空白，再退一步忽略全部空白：同一段文案在 DOM 里常被拆成多个节点
+ * （例如 `处理中` + `10` + `份`）或夹着换行，直接 `indexOf` 会漏，等满整个预算才报未达成。
  */
 export function buildProbeExpression(cond: WaitCondition): string {
   return [
@@ -164,7 +182,12 @@ export function buildProbeExpression(cond: WaitCondition): string {
     "  try {",
     "    if (TXT !== null) {",
     "      var root = document.body || document.documentElement;",
-    "      out.textPresent = !!root && root.textContent.indexOf(TXT) !== -1;",
+    "      var text = root ? (root.textContent || \"\") : \"\";",
+    "      var want = String(TXT).replace(/\\s+/g, \" \").trim();",
+    "      var wantFlat = String(TXT).replace(/\\s+/g, \"\");",
+    "      var flat = text.replace(/\\s+/g, \" \");",
+    "      var squash = text.replace(/\\s+/g, \"\");",
+    "      out.textPresent = text.indexOf(TXT) !== -1 || flat.indexOf(want) !== -1 || squash.indexOf(wantFlat) !== -1;",
     "    }",
     "  } catch (e) {}",
     "  return out;",
@@ -185,8 +208,11 @@ export function buildConfirmExpression(cond: WaitCondition): string {
     "  var body = document.body;",
     "  var visible = body ? body.innerText || \"\" : \"\";",
     "  var flat = visible.replace(/\\s+/g, \" \").trim();",
+    "  var want = TXT === null ? \"\" : String(TXT).replace(/\\s+/g, \" \").trim();",
+    "  var wantFlat = TXT === null ? \"\" : String(TXT).replace(/\\s+/g, \"\");",
+    "  var squash = visible.replace(/\\s+/g, \"\");",
     "  return {",
-    "    visibleHit: TXT === null ? false : visible.indexOf(TXT) !== -1,",
+    "    visibleHit: TXT === null ? false : (visible.indexOf(TXT) !== -1 || flat.indexOf(want) !== -1 || squash.indexOf(wantFlat) !== -1),",
     "    excerpt: flat.slice(0, 160),",
     "  };",
     "})()",

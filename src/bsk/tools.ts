@@ -32,12 +32,14 @@ import { debugLog, info, timer } from "../shared/log.js";
 import {
   buildConfirmExpression,
   buildProbeExpression,
+  clampWaitMs,
   conditionState,
   describeCondition,
   describeProbe,
   describeState,
   ELEMENT_STATES,
   isElementState,
+  MAX_TEXT_WAIT_MS,
   needsConfirm,
   parseConfirm,
   parseProbe,
@@ -48,6 +50,11 @@ import {
   type WaitCondition,
 } from "./condition.js";
 import { buildSettleProbeExpression, describeSample, isSettled, parseSettleSample } from "./settle.js";
+import {
+  NAVIGATION_TIMING_EXPR,
+  parseNavigationTiming,
+  shouldHardReload,
+} from "./navigate-cache.js";
 import {
   buildClearMarksExpression,
   buildDateDayMarkExpression,
@@ -193,11 +200,12 @@ const PICKER_WAIT_MS = 3_000;
 /**
  * 等浮层**收起**的上限（毫秒）。
  *
- * 关闭动画是 200–300ms 级。这段等待不是洁癖：浮层收起前一直盖在下面的控件上，
- * 不等它消失就去点下一个控件，那一下会落在浮层上——A 的下拉没关、B 的下拉没开，
- * 后续读到的是 A 的选项（真实页面上正是这么串的）。等不到也无妨，多选下拉本就不关。
+ * 关闭动画是 200–300ms 级，500ms 已是两倍余量。这段等待不是洁癖：浮层收起前一直盖在
+ * 下面的控件上，不等它消失就去点下一个控件，那一下会落在浮层上——A 的下拉没关、
+ * B 的下拉没开，后续读到的是 A 的选项（真实页面上正是这么串的）。多选下拉本就不关，
+ * 等不到也无妨，交给下一次操作自己的定位逻辑；原来的 1.5s 只是让多选每次白等一秒。
  */
-const PICKER_CLOSE_MS = 1_500;
+const PICKER_CLOSE_MS = 500;
 
 /**
  * 日期面板最多点几次「上/下一月」。
@@ -1625,7 +1633,17 @@ export function createBskOps(
     timeoutMs: number = DEFAULT_WAIT_FOR_TIMEOUT_MS,
     signal?: AbortSignal,
   ): Promise<string> => {
-    const requested = Math.max(1, Math.round(timeoutMs));
+    const requested = Number.isFinite(timeoutMs)
+      ? Math.max(1, Math.round(timeoutMs))
+      : DEFAULT_WAIT_FOR_TIMEOUT_MS;
+    // 文本条件等满 15s/30s 通常只是在等一个根本不在页面上的字；元素条件保留长预算
+    // （表格/列表可能要等接口）。收窄后把真实上限写进结果，模型才知道该先 snapshot。
+    const budget = clampWaitMs(cond, requested);
+    if (budget !== requested) {
+      debugLog(
+        `[bsk] wait_for：文本条件等待上限 ${MAX_TEXT_WAIT_MS}ms，请求 ${requested}ms 已收窄`,
+      );
+    }
     // 等待的意义就是让页面变化：缓存的快照一律不能再信（与 wait / settle 同一条规则）。
     markStale();
     const what = describeCondition(cond);
@@ -1633,12 +1651,12 @@ export function createBskOps(
     const state = conditionState(cond);
     const selector = cond.gone ?? cond.selector;
     if (state && selector && nativeWaitAllowed()) {
-      const native = await tryNativeWait(selector, state, requested, signal);
+      const native = await tryNativeWait(selector, state, budget, signal);
       if (native) return native;
     }
 
     // 探针路径：轮询间隔由我们控制，上限被 MAX_WAIT_FOR_TIMEOUT_MS 夹住（每个间隔一次往返）。
-    const limit = Math.min(requested, MAX_WAIT_FOR_TIMEOUT_MS);
+    const limit = Math.min(budget, MAX_WAIT_FOR_TIMEOUT_MS);
     const probeExpr = buildProbeExpression(cond);
     const confirmExpr = buildConfirmExpression(cond);
     const probe = async (expr: string): Promise<string> =>
@@ -1849,6 +1867,18 @@ export function createBskOps(
       signal,
     );
 
+  /** 等任意可见浮层出现（没有 aria-controls 的组件走这条，通常一次探测就命中）。 */
+  const waitAnyOverlay = async (
+    signal?: AbortSignal,
+  ): Promise<OverlayProbe | null> =>
+    await pollProbe<OverlayProbe>(
+      buildOverlayProbeExpression(),
+      (sample) => sample?.hit === true,
+      parseOverlayProbe,
+      PICKER_WAIT_MS,
+      signal,
+    );
+
   /** 页面上还有没有可见浮层（下拉、菜单、日期面板、通用 popper 都算）。 */
   const anyOverlayVisible = async (signal?: AbortSignal): Promise<boolean> =>
     parseOverlayProbe(
@@ -2048,11 +2078,30 @@ export function createBskOps(
         // Page.navigate 遵守 HTTP 缓存：响应在 max-age 内时浏览器直接用旧副本、
         // 请求根本不会发出去（实测同 URL 二次 navigate 服务器零请求）——刷新却带
         // max-age=0 强制重验证，于是「agent 打开是旧页面、手动刷新才是新的」。
-        // 紧跟一次 --hard 重载（CDP ignoreCache=true）拿到的才是服务器当前版本。
-        const reloaded = await bsk(
-          ["reload", "--hard", ...quiet, "--wait-until", "domcontentloaded"],
-          signal,
+        //
+        // 但不能因此让每个页面都付两次文档加载：先读 Navigation Timing，只有文档确实
+        // 来自缓存（或拿不到判断依据）时才 `--hard` 重载；明确走了网络就跳过。
+        let timing: ReturnType<typeof parseNavigationTiming> = null;
+        try {
+          timing = parseNavigationTiming(await evalExpr(NAVIGATION_TIMING_EXPR, signal));
+        } catch (err2) {
+          if (err2 instanceof BskAbortError) throw err2;
+          debugLog(
+            "[bsk] navigate 缓存判定失败，按旧行为硬刷新：" +
+              (err2 instanceof Error ? err2.message : String(err2)),
+          );
+        }
+        const needReload = shouldHardReload(timing);
+        debugLog(
+          `[bsk] navigate 缓存判定：transferSize=${timing?.transferSize ?? "?"}` +
+            ` deliveryType=${timing?.deliveryType || "?"} → ${needReload ? "硬刷新" : "跳过硬刷新"}`,
         );
+        const reloaded = needReload
+          ? await bsk(
+              ["reload", "--hard", ...quiet, "--wait-until", "domcontentloaded"],
+              signal,
+            )
+          : "";
         return `已导航到 ${url}\n${out}${reloaded ? `\n${reloaded}` : ""}`;
       } catch (err) {
         // 被中止不是「页面打不开」，别拿诊断层去解释它。
@@ -2481,7 +2530,12 @@ export function createBskOps(
       let overlay: OverlayProbe | null = await probeOwnOverlay(target, signal);
       if (!overlay?.hit) {
         await bsk(["click", target, ...quiet], signal);
-        overlay = await waitOwnOverlay(target, signal);
+        // 没有可解析的 aria-controls 时，自己的浮层永远不会命中；直接等通用浮层，
+        // 否则每次都要先白等 PICKER_WAIT_MS 才回退（Element Plus 下拉实测每次多 3s）。
+        overlay =
+          overlay?.linked === false
+            ? await waitAnyOverlay(signal)
+            : await waitOwnOverlay(target, signal);
       }
       // 组件库没有 `aria-controls`（或结构不同）时回退到「任意可见浮层」：通用组件也能用，
       // 代价是页面上同时有多个同类浮层时可能读错——那种情况会以「没有这个选项，当前可选项：
@@ -3549,7 +3603,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     description:
       "等到页面出现某个东西：text（等到可见文本出现）、selector（等到元素达到某个状态，默认可见）、gone（等到元素不可见/消失，如 loading 遮罩）。" +
       "三者**只能给一个**；state 只配合 selector。已知在等什么时用它，不要用 wait 猜秒数：条件达成会立刻返回，" +
-      "因此比盲等更快也更稳；到了 timeoutMs（默认 3000）仍未达成会如实返回「未达成」并附上证据" +
+      "因此比盲等更快也更稳；到了 timeoutMs（默认 3000；文本条件最多 5000）仍未达成会如实返回「未达成」并附上证据" +
       "（元素类条件附末次探测的「还在 DOM / 可见」），那时应当 snapshot 看清页面，而不是再等一遍。" +
       "**必用它的时机**：navigate 进入新页面后、点击展开下拉/弹窗/抽屉后、点搜索或提交后——" +
       "都等一个**只在该状态出现**的地标（标题区的文字、表头、面板里的字段标签或菜单项；" +
@@ -3590,8 +3644,8 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         timeoutMs: {
           type: "number",
           description:
-            `等待上限（毫秒，默认 ${DEFAULT_WAIT_FOR_TIMEOUT_MS}）。元素类条件由浏览器侧一次等满（上限 ${NATIVE_WAIT_MAX_MS}），` +
-            `文本条件在 pageqa 侧轮询（上限 ${MAX_WAIT_FOR_TIMEOUT_MS}）`,
+            `等待上限（毫秒，默认 ${DEFAULT_WAIT_FOR_TIMEOUT_MS}）。元素类条件由浏览器侧一次等满（上限 ${NATIVE_WAIT_MAX_MS}）；` +
+            `文本条件在 pageqa 侧轮询，最多 ${MAX_TEXT_WAIT_MS}（页面文字正常在秒级出现，等不到应先 snapshot 核对）`,
         },
         showPage: SHOW_PAGE_PARAM,
       },

@@ -243,7 +243,7 @@ export function buildOwnOverlayExpression(target: string): string {
     "  if (!trigger) {",
     "    try { trigger = document.activeElement; } catch (e) { trigger = null; }",
     "  }",
-    "  if (!trigger) return { hit: false, selector: null, count: 0 };",
+    "  if (!trigger) return { hit: false, selector: null, count: 0, linked: false };",
     "  var scopes = [trigger];",
     "  try {",
     "    var inner = trigger.querySelectorAll('[aria-controls]');",
@@ -251,6 +251,7 @@ export function buildOwnOverlayExpression(target: string): string {
     "  } catch (e) {}",
     "  try { var up = trigger.closest('[aria-controls]'); if (up) scopes.push(up); } catch (e) {}",
     "  var owned = null;",
+    "  var linked = false;",
     "  for (var s = 0; s < scopes.length && !owned; s++) {",
     "    var id = null;",
     "    try { id = scopes[s].getAttribute('aria-controls'); } catch (e) {}",
@@ -258,13 +259,14 @@ export function buildOwnOverlayExpression(target: string): string {
     "    var box = null;",
     "    try { box = document.getElementById(id); } catch (e) {}",
     "    if (!box) continue;",
+    "    linked = true;",
     "    var host = null;",
     "    try { host = box.closest('.el-popper') || box.closest('.el-select-dropdown'); } catch (e) {}",
     "    owned = host || box;",
     "  }",
-    "  if (!owned || !isVisible(owned)) return { hit: false, selector: null, count: 0 };",
+    "  if (!owned || !isVisible(owned)) return { hit: false, selector: null, count: 0, linked: linked };",
     "  markRoot(owned);",
-    "  return { hit: true, selector: null, count: 1 };",
+    "  return { hit: true, selector: null, count: 1, linked: true };",
     "})()",
   ].join("\n");
 }
@@ -275,6 +277,13 @@ export interface OverlayProbe {
   selector: string | null;
   /** 该选择器在页面上命中的节点数（诊断用：说明「只差可见性」还是「根本没有」）。 */
   count: number;
+  /**
+   * 触发元素是否声明了可解析的 `aria-controls`。
+   *
+   * `false` 表示「等它自己的浮层」永远不会命中——组件库没写这个关联，调用方应直接
+   * 走「任意可见浮层」的回退路径，而不是先等满一个注定失败的 3s 预算。
+   */
+  linked?: boolean;
 }
 
 export function parseOverlayProbe(out: string): OverlayProbe | null {
@@ -284,6 +293,7 @@ export function parseOverlayProbe(out: string): OverlayProbe | null {
     hit: raw.hit === true,
     selector: typeof raw.selector === "string" ? raw.selector : null,
     count: typeof raw.count === "number" ? raw.count : 0,
+    ...(typeof raw.linked === "boolean" ? { linked: raw.linked } : {}),
   };
 }
 
