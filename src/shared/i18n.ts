@@ -509,7 +509,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.hint":
       "Enter 提交 · Shift+Enter 换行 · Esc 中止当前场景 · ↑↓/PgUp/PgDn 滚日志 · Ctrl+P 历史 · Ctrl+C 收工 · /help",
     "tui.help":
-      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /replay <脚本> 加载一个回放脚本（.json）的场景，零模型重跑\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择模型（Enter 即切换并设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /proxy         查看/开关模型请求的代理路由（配置 ~/.pageqa/proxy.json）\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入（写了 `## 标题` 就是场景名，否则取首行摘要）\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
+      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /replay <脚本> 加载一个回放脚本（.json）的场景，零模型重跑\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择模型（Enter 即切换并设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /proxy         查看/开关模型请求的代理路由（配置 ~/.pageqa/proxy.json）\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入：先用当前模型整理成用例（## 场景名 / 一行一步 / 断言单独成行），再写回并入队\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
     "tui.scroll.paused": "↓ 已暂停跟随 · End 回到底部",
     "tui.appended": "（追加）",
     "tui.replayTag": "（回放）",
@@ -531,6 +531,19 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.sceneEnd":
       '场景 #{i}「{name}」结束：{tag}（断言 {n} 条，耗时 {duration}）',
     "tui.sceneError": '场景 #{i}「{name}」执行出错：{msg}',
+    // ── 追加输入的模型格式化（src/tui/format-case.ts + app.ts）──
+    "tui.format.status": "格式化 {n} 条",
+    "tui.format.pending": "正在把输入格式化成用例（{model}）…",
+    "tui.format.done":
+      "格式化完成：{n} 个场景 · {steps} 步 · {assertions} 条断言（下面这段就是写回并执行的用例）",
+    "tui.format.fallback": "格式化失败（{msg}），按原文提交",
+    "tui.format.cancelled": "已取消 {n} 条尚未落地的输入",
+    "tui.format.noModel": "当前没有可用模型",
+    "tui.format.timeout": "格式化超时（{ms}s）",
+    "tui.format.truncated": "模型输出被截断",
+    "tui.format.empty": "模型没有返回可执行的步骤",
+    "tui.new.busyFormatting":
+      "还有 {n} 条输入正在格式化：等它完成，或按 Esc 取消后再 /new",
     "tui.wroteBack": "已写回源用例文件：## {name}",
     "tui.writeBackFail":
       "写回源用例文件失败（该场景仍会执行）：{msg}",
@@ -720,7 +733,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.abortScene":
       "已请求中止 {n} 个在跑的场景（{names}），剩余步骤不再执行",
     "tui.enterHint":
-      "输入一段自然语言用例并回车即可追加场景（有落点时写回该文件）；/run <用例文件> 加载已有用例；/help 查看命令。",
+      "输入一段自然语言测试文本并回车：模型先整理成用例（## 场景名 / 一行一步 / 断言单独成行），再写回到落点并执行；/run <用例文件> 加载已有用例；/help 查看命令。",
     "tui.interactiveStart": "交互模式：{n} 个初始场景已入队",
     "tui.sourceFile": "源用例文件：{path}（追加场景会写回这里）",
     "tui.running": "运行中 {i}/{n}（{duration}）",
@@ -1722,7 +1735,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.hint":
       "Enter submit · Shift+Enter newline · Esc abort current scenario · ↑↓/PgUp/PgDn scroll log · Ctrl+P history · Ctrl+C finish · /help",
     "tui.help":
-      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /replay <f>    load the scenarios of a replay script (.json) and rerun them with no model\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model (Enter switches and sets it as the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /proxy         inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input (with `## title` it becomes the scenario name, otherwise the first-line summary)\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
+      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /replay <f>    load the scenarios of a replay script (.json) and rerun them with no model\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model (Enter switches and sets it as the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /proxy         inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input: the current model first formats it into a case (## scenario name / one line per step / one assertion per line), then it is written back and queued\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
     "tui.scroll.paused": "↓ follow paused · End to jump to bottom",
     "tui.appended": " (appended)",
     "tui.replayTag": " (replay)",
@@ -1744,6 +1757,20 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.sceneEnd":
       'scenario #{i} "{name}" ended: {tag} ({n} assertions, elapsed {duration})',
     "tui.sceneError": 'scenario #{i} "{name}" errored: {msg}',
+    // ── model formatting for appended input (src/tui/format-case.ts + app.ts) ──
+    "tui.format.status": "formatting {n}",
+    "tui.format.pending": "formatting the input into a case ({model})…",
+    "tui.format.done":
+      "formatted: {n} scenario(s) · {steps} step(s) · {assertions} assertion(s) (the text below is what gets written back and executed)",
+    "tui.format.fallback":
+      "formatting failed ({msg}); submitting the original text",
+    "tui.format.cancelled": "cancelled {n} input(s) not yet queued",
+    "tui.format.noModel": "no model is available",
+    "tui.format.timeout": "formatting timed out ({ms}s)",
+    "tui.format.truncated": "the model output was truncated",
+    "tui.format.empty": "the model returned no executable steps",
+    "tui.new.busyFormatting":
+      "{n} input(s) are still being formatted: wait for them, or press Esc to cancel before /new",
     "tui.wroteBack": "written back to source case file: ## {name}",
     "tui.writeBackFail":
       "failed to write back to source case file (scenario still runs): {msg}",
@@ -1949,7 +1976,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.abortScene":
       "requested abort of {n} running scenario(s) ({names}); remaining steps will not run",
     "tui.enterHint":
-      "type a natural-language case and press Enter to append a scenario (written back to the write-back target, if any); /run <case file> loads an existing case; /help for commands.",
+      "type a natural-language test text and press Enter: the model first formats it into a case (## scenario name / one line per step / one assertion per line), then it is written back to the target and executed; /run <case file> loads an existing case; /help for commands.",
     "tui.interactiveStart": "interactive mode: {n} initial scenario(s) queued",
     "tui.sourceFile":
       "source case file: {path} (appended scenarios are written back here)",

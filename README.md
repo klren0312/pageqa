@@ -79,8 +79,9 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 
 ### Submitting scenarios
 
-- Type natural language in the input box and press **Enter**; if the text contains `## title`, that line is the scenario name, otherwise the first line is used. **Shift+Enter** inserts a newline (for multi-scenario cases).
-- Submitting means "write-back + enqueue": with a target it appends to the target file first, then enqueues (so "what you type is what you keep"); if a scenario is already running, the new one queues and runs automatically after.
+- Type natural language in the input box and press **Enter**: the current model first formats the text into a pageqa case (`## scenario name`, one step per line, one assertion per line). The formatted text is printed in full to the log — **that is what gets written back and executed**, not your raw input.
+- If the model is unavailable, takes longer than 60 seconds, or returns no executable steps, submission falls back to the original text (exactly the pre-formatting behavior) and says why in the log. Pressing `Esc` while formatting discards inputs that have not been queued yet.
+- Submitting means "write-back + enqueue": with a target it appends to the target file first, then enqueues (so "what you type is what you keep"); if a scenario is already running, the new one queues and runs automatically after. **Shift+Enter** inserts a newline (for multi-scenario cases).
 
 ### Commands (start a line with `/`; typing `/` pops up a fuzzy command list)
 

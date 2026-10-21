@@ -41,6 +41,13 @@
  * - 落点为空时，追加的场景只存在于本次会话，不写任何文件——退出时要明说，
  *   否则「敲下去就等于留下了」这条前提被抽掉而没人告诉用户。
  *
+ * 追加输入的格式化（见 `./format-case.ts`）：
+ * - 输入框提交的自由文本先交给当前模型整理成用例格式（`##` 场景、一行一步、
+ *   断言单独成行），再走原有的「写回 + 入队」；整理结果完整回显到视口，
+ *   写回与执行的也是它，而不是原文；
+ * - 提交按顺序串行格式化（异步完成顺序不能打乱队列编号）；模型不可用、超时或
+ *   输出不可执行时回退为原文提交；`Esc` 与收工可取消还没落地的输入。
+ *
  * `/new` 开新会话（见 ADR-0009）：
  * - 清空视口与运行队列、token 计数从头开始，**但上一批先归档**——退出时的汇总报告与
  *   回放脚本覆盖整个进程跑过的全部场景（见 `./batches.ts`）；
@@ -74,7 +81,9 @@ import {
 } from "../agent/suite.js";
 import { info, setSink } from "../shared/log.js";
 import {
+  addUsage,
   cacheHitRate,
+  countAssertions,
   emptyUsage,
   formatTokens,
   formatUsage,
@@ -135,6 +144,13 @@ import {
   resolveCaseFile,
   resolveReplayFile,
 } from "./case-source.js";
+import {
+  buildFormatPrompt,
+  FORMAT_MAX_TOKENS,
+  FORMAT_SYSTEM_PROMPT,
+  FORMAT_TIMEOUT_MS,
+  parseFormattedCase,
+} from "./format-case.js";
 import { getLocale, setLocale, t } from "../shared/i18n.js";
 import {
   CONFIG_PATH,
@@ -574,6 +590,27 @@ export async function runInteractive(
   /** 上一次上报的累计用量：算增量用。场景结束时随实时值一起清掉。 */
   const prevRunningUsages = new Map<number, TokenUsage>();
 
+  /**
+   * 输入格式化的累计用量。
+   *
+   * 格式化发生在主进程（不是场景子进程），因此不在任何 `AgentRunResult` 里；
+   * 但它是真实烧掉的 token，退出报告的总用量不能少算这一块。
+   * `sessionFormatterUsage` 只记当前批次，`/new` 重置它（与其它 token 计数一致）。
+   */
+  let formatterUsage: TokenUsage = emptyUsage();
+  let sessionFormatterUsage: TokenUsage = emptyUsage();
+
+  /**
+   * 已提交但还没走完格式化的输入（每个提交一个中止器）。
+   *
+   * 提交之间按顺序排队：先格式化完上一条，再把下一条送进模型。这样入队顺序与用户
+   * 敲下的顺序一致；Esc / 收工可以一次取消全部还没落地的输入。
+   */
+  const pendingFormats: AbortController[] = [];
+  /** 尚未走完格式化的提交数：状态栏与 `/new` 的防呆都看它。 */
+  let formatting = 0;
+  let formatChain: Promise<void> = Promise.resolve();
+
   /** token 数 → 紧凑文本：与报告同源（report.ts 的 `formatTokens`），这里只做转发。 */
   const fmtTokens = formatTokens;
 
@@ -584,7 +621,7 @@ export async function runInteractive(
    * 显示的仍是上一个场景的数字。
    */
   function sessionUsage(): TokenUsage {
-    let acc = emptyUsage();
+    let acc = sessionFormatterUsage;
     for (const r of results.values()) acc = mergeUsage(acc, r.usage);
     for (const u of runningUsages.values()) acc = mergeUsage(acc, u);
     return acc;
@@ -1546,6 +1583,8 @@ export async function runInteractive(
   }
 
   function updateStatus(): void {
+    // 收尾后异步任务（格式化的 finally 等）仍可能回调到这里：界面已拆，不能再渲染。
+    if (teardown) return;
     const all = queue.all();
     const runningAll = queue.runningAll();
     const running = runningAll[0];
@@ -1584,6 +1623,10 @@ export async function runInteractive(
       bits.push(dim(t("tui.starting")));
     }
     bits.push(t("tui.pending", { n: waiting }));
+    // 格式化还没落地时队列是看不到它的：显式报一句，否则「回车后没反应」会被当成卡住。
+    if (formatting > 0) {
+      bits.push(accent(t("tui.format.status", { n: formatting })));
+    }
     // 当前模型常驻状态栏：切换过模型之后，这一栏是「这一条场景到底用哪个模型」的唯一凭据。
     bits.push(dim(t("tui.model.status", { model: modelLabel(currentChoice) })));
     if (writtenBack > 0) bits.push(dim(t("tui.writtenBack", { n: writtenBack })));
@@ -1935,10 +1978,16 @@ export async function runInteractive(
    * 拒绝过的两件事仍在拒绝之列：不在用户工作目录里凭空造文件、不静默降级成别的行为。
    * 代价是这些场景关掉就没，所以这里与退出时都要把话说出来（见 ADR-0005 决策六）。
    */
-  function addScenarios(text: string): void {
+  function addScenarios(
+    text: string,
+    /**
+     * 写回落点。默认取**此刻**的落点；异步格式化要用「提交那一刻」的值——
+     * 否则格式化期间 `/run` 换过文件，这条用例会被写进用户当时还没打开的文件。
+     */
+    target: string | undefined = writeBackTarget,
+  ): void {
     const scenarios = scenariosFromInput(text);
     if (scenarios.length === 0) return;
-    const target = writeBackTarget;
     const origin: ScenarioOrigin = target
       ? { kind: "added", path: target }
       : { kind: "added" };
@@ -1969,6 +2018,164 @@ export async function runInteractive(
     }
     // 队列空闲时立刻开跑；正在跑则等当前场景结束后自动接上。
     queue.pump();
+  }
+
+  /** 格式化一次提交的结果：取消与失败要分开——取消绝不能回退成「按原文提交」。 */
+  type FormatOutcome =
+    | { kind: "ok"; text: string }
+    | { kind: "cancelled" }
+    | { kind: "failed"; msg: string };
+
+  /**
+   * 用当前会话模型把用户输入整理成 pageqa 用例格式。
+   *
+   * 超时、端点报错、输出为空都只是**这一次格式化**失败：调用方会回退为原文提交，
+   * 用户敲下的东西不会因为模型抽风而消失。用户主动取消（Esc / 收工）则另算，
+   * 那条输入就是不要了，不回退。
+   */
+  async function formatCaseByModel(
+    raw: string,
+    signal: AbortSignal,
+  ): Promise<FormatOutcome> {
+    const model = resolveModel(catalog, currentChoice);
+    if (!model) return { kind: "failed", msg: t("tui.format.noModel") };
+    const timeout = AbortSignal.timeout(FORMAT_TIMEOUT_MS);
+    const combined = AbortSignal.any([signal, timeout]);
+    try {
+      const reply = await catalog.models.completeSimple(
+        model,
+        {
+          systemPrompt: FORMAT_SYSTEM_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: buildFormatPrompt(raw),
+              timestamp: Date.now(),
+            },
+          ],
+        },
+        { signal: combined, maxTokens: FORMAT_MAX_TOKENS },
+      );
+      if (signal.aborted) return { kind: "cancelled" };
+      if (reply.stopReason !== "stop") {
+        if (timeout.aborted) {
+          return {
+            kind: "failed",
+            msg: t("tui.format.timeout", { ms: FORMAT_TIMEOUT_MS / 1000 }),
+          };
+        }
+        // 这里 signal 还没中止（上面查过）：端点自己报 aborted 也只是这次格式化失败。
+        return {
+          kind: "failed",
+          msg:
+            reply.errorMessage ??
+            (reply.stopReason === "length"
+              ? t("tui.format.truncated")
+              : reply.stopReason),
+        };
+      }
+      formatterUsage = addUsage(formatterUsage, reply.usage);
+      sessionFormatterUsage = addUsage(sessionFormatterUsage, reply.usage);
+      updateStatus();
+      const text = reply.content
+        .map((c) => (c.type === "text" ? c.text : ""))
+        .join("");
+      const parsed = parseFormattedCase(text);
+      return parsed
+        ? { kind: "ok", text: parsed }
+        : { kind: "failed", msg: t("tui.format.empty") };
+    } catch (err2) {
+      if (signal.aborted) return { kind: "cancelled" };
+      if (timeout.aborted) {
+        return {
+          kind: "failed",
+          msg: t("tui.format.timeout", { ms: FORMAT_TIMEOUT_MS / 1000 }),
+        };
+      }
+      return { kind: "failed", msg: msgOf(err2) };
+    }
+  }
+
+  /**
+   * 格式化一个提交，然后把**整理后的文本**交给原有的「写回 + 入队」路径。
+   *
+   * 视口里要打出整理结果：写进落点文件、真正被执行的都必须是这段，而不是用户原文。
+   * 模型不可用时回退原文，行为退回到接入格式化之前，输入不会被吞掉。
+   */
+  async function formatAndAdd(
+    raw: string,
+    signal: AbortSignal,
+    target: string | undefined,
+  ): Promise<void> {
+    append(dim(t("tui.format.pending", { model: modelLabel(currentChoice) })));
+    const outcome = await formatCaseByModel(raw, signal);
+    if (signal.aborted || shuttingDown) return;
+    if (outcome.kind === "cancelled") return;
+    if (outcome.kind === "failed") {
+      append(warn(t("tui.format.fallback", { msg: outcome.msg })));
+      addScenarios(raw, target);
+      return;
+    }
+    const scenarios = scenariosFromInput(outcome.text);
+    if (scenarios.length === 0) {
+      append(warn(t("tui.format.fallback", { msg: t("tui.format.empty") })));
+      addScenarios(raw, target);
+      return;
+    }
+    const steps = scenarios.reduce(
+      (n, sc) => n + numberSteps(sc.body).steps.length,
+      0,
+    );
+    const assertions = scenarios.reduce(
+      (n, sc) => n + countAssertions(sc.body),
+      0,
+    );
+    append(
+      accent(
+        t("tui.format.done", {
+          n: scenarios.length,
+          steps,
+          assertions,
+        }),
+      ),
+    );
+    for (const line of outcome.text.split("\n")) append(dim("  " + line));
+    addScenarios(outcome.text, target);
+  }
+
+  /**
+   * 提交一段自由文本：按提交顺序串行格式化，再逐个入队。
+   *
+   * 串行是刻意的：格式化是异步的，并发跑完的顺序不可控，而队列编号与执行顺序
+   * 必须跟用户敲下的顺序一致。`pendingFormats` 让 Esc / 收工能取消还没落地的输入。
+   */
+  function submitUserText(text: string): void {
+    if (shuttingDown) return;
+    // 落点在提交那一刻定下来：格式化是异步的，期间 `/run` 换过文件也不影响这一条。
+    const target = writeBackTarget;
+    const controller = new AbortController();
+    pendingFormats.push(controller);
+    formatting += 1;
+    updateStatus();
+    const job = formatChain.then(async () => {
+      try {
+        if (!controller.signal.aborted && !shuttingDown) {
+          await formatAndAdd(text, controller.signal, target);
+        }
+      } catch (err2) {
+        // 兜底：格式化链路之外的意外错误也不能把输入吞掉。
+        if (!shuttingDown && !controller.signal.aborted) {
+          append(err(t("tui.format.fallback", { msg: msgOf(err2) })));
+          addScenarios(text, target);
+        }
+      } finally {
+        const idx = pendingFormats.indexOf(controller);
+        if (idx >= 0) pendingFormats.splice(idx, 1);
+        formatting = Math.max(0, formatting - 1);
+        updateStatus();
+      }
+    });
+    formatChain = job.catch(() => {});
   }
 
   /**
@@ -2223,6 +2430,11 @@ export async function runInteractive(
       }
       return;
     }
+    // 格式化中的输入还没进队列，但它是「已提交」的：静默开新会话会让它落进新队列。
+    if (formatting > 0) {
+      append(err(t("tui.new.busyFormatting", { n: formatting })));
+      return;
+    }
     const batch = snapshotBatch(queue.all(), results, originLabel);
     batches.push(batch);
     const pass = batch.members.filter(
@@ -2242,6 +2454,7 @@ export async function runInteractive(
     runningUsages.clear();
     runningContexts.clear();
     prevRunningUsages.clear();
+    sessionFormatterUsage = emptyUsage();
     queue = new ScenarioQueue(runScenario, updateStatus, () => concurrency);
     append(
       title(
@@ -2349,6 +2562,10 @@ export async function runInteractive(
     // 不中止的话下面的等队列循环会白等到超时。
     loginController?.abort();
     rejectAsk(cancelledError());
+    // 还没走完格式化的输入同理：不等它、也不会在收尾之后再入队。
+    for (const controller of pendingFormats.splice(0)) {
+      controller.abort(cancelledError());
+    }
     if (queue.runningAll().length > 0) {
       append(dim(t("tui.abortingCurrent", { n: queue.runningAll().length })));
       queue.abortRunning();
@@ -2398,7 +2615,7 @@ export async function runInteractive(
     // 新场景的日志会在看不见的地方刷过去（而「正在跑」的唯一现场就是这片日志）。
     transcript.scrollToEnd();
     if (text.startsWith("/")) runCommand(text);
-    else addScenarios(text);
+    else submitUserText(text);
   };
 
   // Esc / Ctrl+C 走全局监听：它们在编辑器之前被处理，
@@ -2433,6 +2650,17 @@ export async function runInteractive(
       }
       // 浮层打开时把 Esc 留给列表自己处理（SelectList 的 onCancel）。
       if (tui.hasOverlay()) return undefined;
+      // 还没落地的输入（正在格式化 / 排队等格式化）：Esc 表示「这条不要了」。
+      // 取消后继续走下面的场景中止逻辑——同时有场景在跑时，Esc 的语义仍是「停下」。
+      let cancelledFormats = 0;
+      if (pendingFormats.length > 0) {
+        const cancelled = pendingFormats.splice(0);
+        for (const controller of cancelled) {
+          controller.abort(cancelledError());
+        }
+        cancelledFormats = cancelled.length;
+        append(warn(t("tui.format.cancelled", { n: cancelledFormats })));
+      }
       // 其余时候只在有场景在跑时接管，否则留给编辑器（它用 Esc 关自动补全）。
       if (queue.running()) {
         // 并发之后「当前场景」不再唯一：一次中止全部在跑的，并逐个点名，
@@ -2448,6 +2676,7 @@ export async function runInteractive(
         );
         return { consume: true };
       }
+      if (cancelledFormats > 0) return { consume: true };
     }
     return undefined;
   });
@@ -2516,6 +2745,10 @@ export async function runInteractive(
   // 一条都没跑过（全在排队中被取消）时并集为 0：此时**不写** durationMs，
   // 让报告末行说「不可用」而不是一个 `0ms`（那会被读成「快得不可能」）。
   if (total.executionMs > 0) summary.durationMs = total.executionMs;
+  // 格式化发生在主进程、不在场景子进程里：汇入总用量，退出报告才不会少算这部分。
+  if (formatterUsage.calls > 0) {
+    summary.usage = mergeUsage(summary.usage ?? emptyUsage(), formatterUsage);
+  }
   if (opts.scriptPath) summary.script = opts.scriptPath;
   const text = renderSuiteText(summary, members, total.names);
   const recordings = total.recordings;
