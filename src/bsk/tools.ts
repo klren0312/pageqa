@@ -3829,6 +3829,9 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     },
   };
 
+  // 所有工具共用同一个浏览器页面与 BskOps 实例：模型一次返回多个调用时必须按顺序执行，
+  // 否则 click/fill 会互相踩页面状态，assert_text 的 lastAssert 也会串。顺序执行也让
+  // 模型可以放心把「同一页面状态下的多条独立断言」放进同一轮，省掉每条断言一轮往返。
   return [
     navigate,
     snapshot,
@@ -3851,7 +3854,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     assertText,
     assertNoConsoleError,
     assertNetwork,
-  ];
+  ].map((tool) => ({ ...tool, executionMode: "sequential" as const }));
 }
 
 interface NavParams {
