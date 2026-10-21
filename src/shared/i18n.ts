@@ -48,6 +48,8 @@ const catalogs: Record<Locale, Catalog> = {
     "log.thinkingDowngraded":
       "模型思考：这个端点不接受关闭思考的字段（{field}），已自动去掉，本进程后续不再发送；要永久如此请设 thinkingFormat=none",
     "log.replayStartup": "[pageqa] ===== 回放启动 =====",
+    "log.preferReplay": "[pageqa] 命中匹配的回放脚本，零模型回放：{path}",
+    "log.preferReplaySkip": "[pageqa] 未自动回放：{reason}；改为现场运行",
     "log.warn": "[pageqa] 警告：{msg}",
     "log.readScriptFile": "[pageqa] 已读取脚本文件 {path}（{chars} 字符）",
     "log.readInline": "[pageqa] 已读取内联用例（{chars} 字符）",
@@ -298,6 +300,9 @@ const catalogs: Record<Locale, Catalog> = {
     "replay.normalized":
       "[pageqa] 已把脚本里写死的录制取值还原为占位符（回放时重新展开）：{items}",
     "replay.drift.missing": "源用例已不存在：{path}",
+    "replay.prefer.noScript": "没有同名的回放脚本",
+    "replay.prefer.noHash": "回放脚本没有记录源用例哈希",
+    "replay.prefer.otherSource": "回放脚本记录的是另一个源文件",
     "replay.drift.changed":
       "源用例内容已变更（{path}）：脚本基于录制时的版本，建议重新用 LLM 跑一次并重新生成",
     "replay.drift.unreadable": "源用例读取失败（{path}）：{msg}",
@@ -988,6 +993,8 @@ const catalogs: Record<Locale, Catalog> = {
                   会被当作用例输入而不是输出路径
                   无论 PASS/FAIL 都会生成，便于排查与续写
   --replay <file>  零模型回放已有的回放脚本（详见下方「回放脚本」）
+  --prefer-replay  若同名 .replay.json 结构合法、源路径一致且源哈希未变，则零模型回放；
+                   否则现场运行。与 --only / --emit-script / --tui / 显式并发互斥
   --semantic       回放时断言改用 Jev 语义判断（默认字符串包含）
   --init-config    在用户目录创建/重置配置文件
   --out <file>     将报告写入文件
@@ -1254,6 +1261,10 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "log.thinkingDowngraded":
       "model thinking: this endpoint rejects the thinking-off field ({field}); it was removed and will not be sent again in this process. Set thinkingFormat=none to make that permanent",
     "log.replayStartup": "[pageqa] ===== replay startup =====",
+    "log.preferReplay":
+      "[pageqa] matched a fresh replay script; replaying with no model: {path}",
+    "log.preferReplaySkip":
+      "[pageqa] not replaying automatically: {reason}; running live instead",
     "log.warn": "[pageqa] warning: {msg}",
     "log.readScriptFile":
       "[pageqa] read script file {path} ({chars} chars)",
@@ -1522,6 +1533,9 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "replay.normalized":
       "[pageqa] restored recorded literal values in the script back to placeholders (re-expanded at replay time): {items}",
     "replay.drift.missing": "source case file no longer exists: {path}",
+    "replay.prefer.noScript": "no replay script with the same name",
+    "replay.prefer.noHash": "the replay script has no source hash",
+    "replay.prefer.otherSource": "the replay script was recorded from another source file",
     "replay.drift.changed":
       "source case content has changed ({path}): the script was recorded against an earlier version; re-run with the LLM and regenerate",
     "replay.drift.unreadable": "failed to read the source case file ({path}): {msg}",
@@ -2246,6 +2260,9 @@ Options:
                   it is treated as case input rather than an output path
                   generated for both PASS/FAIL, convenient for debugging and continuation
   --replay <file>  replay an existing script with zero models (see "Replay script" below)
+  --prefer-replay  replay with zero models when the sibling .replay.json is valid, from the
+                   same source path, and its source hash still matches; otherwise run live.
+                   Ignored with --only / --emit-script / --tui / explicit concurrency
   --semantic       at replay, assertions use Jev semantic judgment (default string contains)
   --init-config    create/reset the config file in the user directory
   --out <file>     write the report to a file

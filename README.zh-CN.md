@@ -46,7 +46,7 @@ pageqa examples/smoke.md     # 打开一个用例文件并交互式运行
 pageqa --tui examples/smoke.md   # 显式强制进入（非 TTY 下会直接报错）
 ```
 
-进入条件（自动）：终端是 TTY 且未给 `--json`，且满足「给了用例文件」或「什么都没给」。**内联文本不会进入 TUI**（走批处理）；`--json` / `--replay` / `--session` / `--only` 会阻止进入（`--tui` 与 `--only` 同给则直接报错）。想关掉交互：`pageqa --no-tui` 或 `PAGEQA_NO_TUI=1`。
+进入条件（自动）：终端是 TTY 且未给 `--json`，且满足「给了用例文件」或「什么都没给」。**内联文本不会进入 TUI**（走批处理）；`--json` / `--replay` / `--prefer-replay` / `--session` / `--only` 会阻止进入（`--tui` 与 `--only` 同给则直接报错）。想关掉交互：`pageqa --no-tui` 或 `PAGEQA_NO_TUI=1`。
 
 ### 界面布局
 
@@ -154,7 +154,10 @@ pageqa --emit-script examples/smoke.md              # 显式生成脚本（默�
 pageqa --replay examples/smoke.replay.json          # 零模型回放
 pageqa --replay examples/smoke.replay.json --json   # 机器可读报告
 pageqa --replay examples/smoke.replay.json --semantic  # 断言改用 Jev 语义判断
+pageqa --prefer-replay examples/smoke.md             # 脚本仍匹配当前用例就零模型回放，否则现场运行
 ```
+
+`--prefer-replay` 只在「同名 `.replay.json` 结构合法 + 源路径一致 + 源哈希未变」时自动回放；否则打印原因并回退现场运行。它不改变默认行为，与 `--only` / `--emit-script` / `--tui` / 显式并发互斥。
 
 要点：脚本存**语义定位符**（角色+可访问名+同名序号+祖先路径），重跑时按当前快照重定位，小改动通常仍命中；找不到元素时如实说明原因而非乱猜。元素未找到 → 跳过并继续（报告中列出），其它失败 → 记失败并跑完整个用例；`navigate` 失败 → 直接中止。想「遇错即停」加 `--fail-fast`。
 
@@ -313,6 +316,7 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 | `--no-lint` | 跳过「跑用例前的格式预检」（默认开；预检只在 stderr 提示、不拦执行）。要设门槛就用 `pageqa lint` |
 | `lint`（子命令） | `pageqa lint <用例文件…>`：静态校验用例格式，不开浏览器、不调模型（`--json` / `--strict`）；退出码 `1` 表示有 `error` |
 | `--replay <file>` | 零模型回放已有脚本 |
+| `--prefer-replay` | 同名回放脚本仍匹配当前用例时零模型回放，否则现场运行 |
 | `--semantic` | 回放时断言用 Jev 语义判断 |
 | `--fail-fast` | 回放时任一失败即停该场景 |
 | `--settle-waits` | 回放时把 `wait` 步骤执行成「等页面稳定，上限为脚本记下的毫秒数」而不是等满。更快，但「为页面之外的事情留的等待」（服务端导出、后台排队）可能被提前放行 |

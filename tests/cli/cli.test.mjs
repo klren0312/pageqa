@@ -142,6 +142,14 @@ describe("CLI 参数解析", () => {
     assert.equal(on.json, true);
   });
 
+  test("--prefer-replay 是布尔开关", () => {
+    assert.equal(parseArgs(["case.md"]).preferReplay, false);
+    const on = parseArgs(["--prefer-replay", "case.md"]);
+    assert.equal(on.error, undefined);
+    assert.equal(on.preferReplay, true);
+    assert.equal(on.input, "case.md");
+  });
+
   test("--settle-waits 默认关，显式给出才开", () => {
     assert.equal(parseArgs(["--replay", "a.json"]).settleWaits, false);
     const on = parseArgs(["--replay", "a.json", "--settle-waits"]);

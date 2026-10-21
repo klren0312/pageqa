@@ -46,7 +46,7 @@ pageqa examples/smoke.md     # open a case file and run it interactively
 pageqa --tui examples/smoke.md   # force interactive (errors immediately in a non-TTY)
 ```
 
-Auto-entry condition: a TTY with no `--json`, and either **a case file is given** or **nothing is given**. **Inline text does not enter the TUI** (it runs in batch); `--json` / `--replay` / `--session` / `--only` block the TUI (`--tui` together with `--only` errors immediately). To disable: `pageqa --no-tui` or `PAGEQA_NO_TUI=1`.
+Auto-entry condition: a TTY with no `--json`, and either **a case file is given** or **nothing is given**. **Inline text does not enter the TUI** (it runs in batch); `--json` / `--replay` / `--prefer-replay` / `--session` / `--only` block the TUI (`--tui` together with `--only` errors immediately). To disable: `pageqa --no-tui` or `PAGEQA_NO_TUI=1`.
 
 ### Layout
 
@@ -156,7 +156,10 @@ pageqa --emit-script examples/smoke.md              # explicitly generate the sc
 pageqa --replay examples/smoke.replay.json          # zero-model replay
 pageqa --replay examples/smoke.replay.json --json   # machine-readable report
 pageqa --replay examples/smoke.replay.json --semantic  # assertions use Jev semantic judgment
+pageqa --prefer-replay examples/smoke.md            # replay with zero models if the script still matches; otherwise run live
 ```
+
+`--prefer-replay` only auto-replays when the sibling `.replay.json` is structurally valid, was recorded from the same source path, and its source hash still matches the current case. Otherwise it prints the reason and falls back to a live run. It does not change the default behavior and is ignored with `--only` / `--emit-script` / `--tui` / explicit concurrency.
 
 Notes: the script stores **semantic locators** (role + accessible name + same-name index + ancestor path), re-resolved against the current snapshot at replay time, so small page changes usually still hit; on unresolved elements it reports the cause instead of guessing. Element-not-found → skip and continue (listed in the report); other failures → recorded as fail and the whole case still runs; `navigate` failure → abort immediately. Add `--fail-fast` to stop a scenario on first failure.
 
@@ -315,6 +318,7 @@ Rules are matched top-down, first match wins; anything unmatched falls back to `
 | `--no-lint` | Skip the case-format pre-check before a run (on by default; it only advises on stderr and never blocks). To gate on it use `pageqa lint` |
 | `lint` (subcommand) | `pageqa lint <case file...>`: static case-format check, no browser and no model (`--json` / `--strict`); exit code `1` means there is an `error` |
 | `--replay <file>` | Replay an existing script with zero models |
+| `--prefer-replay` | Replay with zero models when the sibling script still matches the current case; otherwise run live |
 | `--semantic` | At replay, assertions use Jev semantic judgment |
 | `--fail-fast` | At replay, stop a scenario on first failure |
 | `--settle-waits` | At replay, run `wait` steps as "wait until the page settles, capped at the recorded milliseconds" instead of sleeping the full time. Faster, but a wait that existed for something outside the page (a server-side export, a background queue) can be released early |

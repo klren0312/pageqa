@@ -50,6 +50,7 @@ import {
   type ReplayScript,
   type ScenarioRecording,
 } from "./agent/replay.js";
+import { findFreshReplay } from "./agent/replay-preference.js";
 // `agent/vars.js` 只做时间格式化与占位符展开（实测 ~2ms），且 `buildHelp` 是同步的、
 // `--help` 就要用——没有理由为它改成异步。
 import { captureRunVars, expandVars, VAR_HELP } from "./agent/vars.js";
@@ -82,6 +83,11 @@ interface CliArgs {
   debug: boolean;
   /** `--replay <file>`：零模型回放一个已有的回放脚本。 */
   replay?: string;
+  /**
+   * `--prefer-replay`：用例文件旁有「源哈希仍匹配」的同名回放脚本时，零模型回放；
+   * 否则回退现场运行。与 `--only` / `--emit-script` / `--tui` / 显式并发互斥。
+   */
+  preferReplay: boolean;
   /** `--emit-script [path]`：运行结束后把本次操作序列固化成回放脚本。 */
   emitScript: boolean;
   emitScriptPath?: string;
@@ -190,6 +196,7 @@ function emptyCliArgs(): CliArgs {
     help: false,
     version: false,
     debug: false,
+    preferReplay: false,
     emitScript: false,
     semantic: false,
     failFast: false,
@@ -323,6 +330,9 @@ export function parseArgs(argv: string[]): CliArgs {
         args.replay = v;
         break;
       }
+      case "--prefer-replay":
+        args.preferReplay = true;
+        break;
       case "--emit-script": {
         args.emitScript = true;
         // 路径可选：只有「看起来像路径」的后一个 token 才被当作输出路径消费，
@@ -781,6 +791,9 @@ function detectInteractive(
   if (args.noTui || process.env.PAGEQA_NO_TUI) return { run: false };
   // `--only` 是批处理选项：不自动进交互模式（理由同上）。
   if (args.only !== undefined) return { run: false };
+  // `--prefer-replay` 也是批处理选项：命中回放时已经在上面返回；未命中也不该
+  // 因为终端是 TTY 就突然转进交互模式。
+  if (args.preferReplay) return { run: false };
   // 自动识别：两个流都是 TTY、未给 --json，且「给了源用例文件」或「什么都没给」。
   // 前者是「跑这条用例」，后者是「先开个会话再决定跑什么」（ADR-0005 决策一）。
   // 内联文本仍不进——批处理与交互的差别只该是「人看不看这个终端」。
@@ -1135,6 +1148,28 @@ async function main(): Promise<number> {
     return 1;
   }
   const sourceText = isFile ? readFileSync(rawInput, "utf8") : rawInput;
+
+  // ── --prefer-replay：同名脚本源哈希仍匹配时，零模型回放 ──
+  // 只对「文件输入 + 没有冲突的批处理选项」生效；命中后不再走模型探活、lint 与浏览器。
+  // 这些选项各自要求现场执行（只跑一个场景 / 重新生成脚本 / 强制 TUI / 显式并发）。
+  if (
+    args.preferReplay &&
+    isFile &&
+    args.only === undefined &&
+    !args.emitScript &&
+    !args.tui &&
+    !(args.concurrency !== undefined && concurrency > 1)
+  ) {
+    const candidate = defaultScriptPath(rawInput, true);
+    const preferred = findFreshReplay(rawInput, candidate);
+    if (preferred.kind === "use") {
+      info(t("log.preferReplay", { path: preferred.path }));
+      setDebug(args.debug);
+      return await replayMode({ ...args, replay: preferred.path });
+    }
+    info(t("log.preferReplaySkip", { reason: preferred.reason }));
+  }
+
   /**
    * 跑用例前的格式预检：只提示、不拦。
    *
