@@ -128,7 +128,7 @@ sequenceDiagram
     M->>M: 第5步完成：断言成立。<br/>步骤完成：5/5
 ```
 
-其中 `assistant` 的动作以 `[toolCall] <工具名> <JSON 参数>` 文本行存储（见 `src/session/archive.ts`），`tool` 消息是执行结果（带 `[tool-ok]` / `[tool-error]` 标记）——这个格式是 pageqa 自己的协议，也是模型要学会"生成"的目标格式。
+其中 `assistant` 的动作在存档里是 `[toolCall] <工具名> <JSON 参数>` 文本行，但这**只是 archive.ts 的渲染**，不是模型真正要输出的东西：推理走 OpenAI tools 协议，模型要输出 `<tool_call>{"name":..,"arguments":..}</tool_call>`。所以 `prepare_data.py` 会把渲染文本还原成原生 `tool_calls`，训练时用 `apply_chat_template(messages, tools=...)` 渲染——否则模型只会把调用写成一行业务文本，浏览器一步都不动（实测三个场景全部「工具记录 0 条」）。`tool` 消息是执行结果（带 `[tool-ok]` / `[tool-error]` 标记）。
 
 ---
 

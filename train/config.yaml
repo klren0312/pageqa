@@ -48,8 +48,10 @@ lora:
 # ---------- 数据 / 快照截断（关键）----------
 # pageqa 的快照（aria 树）动辄几万字符，不截断直接撑爆 8GB。
 data:
-  max_snapshot_chars: 2000   # 单条含快照的消息最多保留多少字符（首尾保留，中间丢弃）
-  max_seq_length: 2048        # tokenizer 截断上限；本机 8GB 安全值，显存够可提到 4096
+  # 训练序列必须装得下「压缩版系统提示 + 21 个工具 schema」≈ 3.8k token，
+  # 所以快照压到 1000 字符、序列放到 5120。窗口再大 8GB 显存就撑不住了。
+  max_snapshot_chars: 1000
+  max_seq_length: 5120
   in_file: "train/data/sessions.jsonl"      # export-sessions.mjs 产物
   train_file: "train/data/train.jsonl"
   eval_file: "train/data/eval.jsonl"
@@ -59,10 +61,16 @@ data:
 # ---------- 训练超参 ----------
 training:
   output_dir: "train/outputs/qwen2.5-1.5b-qlora"
-  num_train_epochs: 6
+  # assistant-only loss 下每条样本只有 ~50-80 个监督 token，需要更多轮才学得进去；
+  # 3 epoch ≈ 36 步（seq 5120，约 1 分钟/步）。
+  num_train_epochs: 3
   per_device_train_batch_size: 1     # 8GB 只能 1
+  per_device_eval_batch_size: 1      # 评测也按 1，5120 长度下 batch 8 会 OOM
   gradient_accumulation_steps: 8     # 等效 batch 8，弥补 batch=1
-  learning_rate: 2.0e-4              # QLoRA 常用 2e-4
+  # 只在 assistant 段算 loss（见 train_qlora.py tokenize）：同样的 lr 下收敛更慢，
+  # 因此配 eval_strategy=epoch 逐轮看 eval_loss，一旦回升就说明过拟合了。
+  learning_rate: 1.5e-4
+  eval_strategy: "epoch"
   lr_scheduler_type: "cosine"
   warmup_ratio: 0.03
   optim: "adamw_torch"           # 原 paged_adamw_8bit 依赖 bitsandbytes，会在第 0 步初始化失败；

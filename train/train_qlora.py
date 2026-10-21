@@ -126,16 +126,38 @@ def main():
     }
     raw = load_dataset("json", data_files=data_files)
 
-    def tokenize(example):
-        # 把 chat 消息渲染成带特殊 token 的文本
-        text = tokenizer.apply_chat_template(
-            example["messages"], tokenize=False, add_generation_prompt=False
+    def render(msgs, tools):
+        return tokenizer.apply_chat_template(
+            msgs, tools=tools, tokenize=False, add_generation_prompt=False
         )
+
+    def tokenize(example):
+        # 必须带 tools 一起渲染：推理时 21 个工具的 schema 由 API 传给模型，
+        # 模板会把它们写进 system 段并规定 `<tool_call>{"name":..,"arguments":..}</tool_call>`
+        # 的输出格式。不带 tools 渲染，训练分布与推理分布就是两套对话格式。
+        msgs = example["messages"]
+        tools = example.get("tools") or None
+        text = render(msgs, tools)
         enc = tokenizer(text, truncation=True, max_length=max_seq, add_special_tokens=False)
-        enc["labels"] = enc["input_ids"].copy()
+
+        # labels 只在 assistant 段上计算（-100 屏蔽 system / 用例 / 工具结果）。
+        # 全序列都算 loss 会让 1.5B 去「背」固定前缀：实测 loss 掉到 0.08，
+        # 模型转而背诵训练样本（连发多个工具调用、抢答「步骤完成：4/4」）。
+        # chat 模板是纯字符串拼接，所以「前缀渲染长度」就是各消息的分界。
+        labels = [-100] * len(enc["input_ids"])
+        prev = 0
+        for i, m in enumerate(msgs):
+            cur = len(tokenizer(render(msgs[: i + 1], tools), add_special_tokens=False)["input_ids"])
+            if m.get("role") == "assistant":
+                lo, hi = prev, min(cur, len(labels))
+                if hi > lo:
+                    labels[lo:hi] = enc["input_ids"][lo:hi]
+            prev = cur
+        # 兜底：没有任何 assistant 段时退回整段学习，避免整条样本没有监督信号
+        enc["labels"] = labels if any(x != -100 for x in labels) else enc["input_ids"].copy()
         return enc
 
-    tok = raw.map(tokenize, remove_columns=["messages"])
+    tok = raw.map(tokenize, remove_columns=raw["train"].column_names)
 
     # 5) 训练参数（来自 config.training）
     tcfg = dict(cfg["training"])

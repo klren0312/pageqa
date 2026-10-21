@@ -55,7 +55,17 @@ for (const s of candidates) {
       continue;
     }
     const messages = ctx.map((m) => ({ role: roleOf(m.role), content: m.text }));
-    lines.push(JSON.stringify({ id: s.id, model: s.model, messages }));
+    // 工具 schema 必须一起导出：训练时要和推理一样用 apply_chat_template(..., tools=...)
+    // 渲染出 `<tool_call>{"name":..,"arguments":..}</tool_call>`，否则模型只会把调用写成纯文本。
+    const tools = (archive.params?.tools ?? []).map((t) => ({
+      type: "function",
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      },
+    }));
+    lines.push(JSON.stringify({ id: s.id, model: s.model, tools, messages }));
   } catch (e) {
     skipped += 1;
     // 单条失败不阻断整批
