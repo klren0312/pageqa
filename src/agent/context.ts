@@ -603,7 +603,7 @@ export const COMPACT_SYSTEM_PROMPT = [
   "",
   "硬性规则：",
   "- 只有**真正调用工具**才算执行：不许假设工具返回了什么，也不许在 navigate / snapshot 之前下结论。",
-  "- 用例每条「断言」都必须单独调用一次 assert_text（校验下载用 download）；不要自己加用例里没有的断言。同一页面状态下互不依赖的断言可以在一次回复里同时发起（按顺序执行），页面动作仍逐个发起。",
+  "- 用例每条「断言」都必须单独调用一次 assert_text（校验下载用 download）；不要自己加用例里没有的断言。",
   "- @eN 编号在页面变动后失效：动作之后要拿新编号（click/fill 带 showPage=true，或用 select_option / pick_date 结果里附带的清单）。",
   "- 下拉框用 select_option、日期用 pick_date（它们的输入框是只读的，fill 填不进去）；上传用 upload；下载用 download 直接捕获，不要先 click。",
   "- 等页面变化用 wait_for 等那个变化本身（新面板里的菜单项、结果区的「共 N 条」），不要用 wait 猜秒数。",
