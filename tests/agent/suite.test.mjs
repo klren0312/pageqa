@@ -220,6 +220,7 @@ describe("子进程命令行契约（ADR-0013 决策二）", () => {
 describe("带盘符的临时脚本路径不会被当成用例输入", () => {
   test("--emit-script C:\\... 被识别为输出路径", () => {
     const args = parseArgs([
+      "run",
       "--emit-script",
       "C:\\tmp\\pageqa-suite-1\\scenario-1.replay.json",
       "case.md",
@@ -233,7 +234,7 @@ describe("带盘符的临时脚本路径不会被当成用例输入", () => {
   });
 
   test("--emit-script 用例.md 仍然留给输入位（不被当路径吞掉）", () => {
-    const args = parseArgs(["--emit-script", "examples/smoke.md"]);
+    const args = parseArgs(["run", "--emit-script", "examples/smoke.md"]);
     assert.equal(args.emitScriptPath, undefined);
     assert.equal(args.input, "examples/smoke.md");
     assert.equal(args.emitScript, true);
@@ -242,30 +243,30 @@ describe("带盘符的临时脚本路径不会被当成用例输入", () => {
 
 describe("--only / --no-side-outputs 的参数解析", () => {
   test("--only 收序号与标题两种写法", () => {
-    assert.equal(parseArgs(["--only", "2", "case.md"]).only, "2");
+    assert.equal(parseArgs(["run", "--only", "2", "case.md"]).only, "2");
     assert.equal(
-      parseArgs(["--only", "表单填写测试", "case.md"]).only,
+      parseArgs(["run", "--only", "表单填写测试", "case.md"]).only,
       "表单填写测试",
     );
   });
 
   test("--only 缺参时报缺参，不吞下一个 flag", () => {
-    const args = parseArgs(["--only", "--json", "case.md"]);
+    const args = parseArgs(["run", "--only", "--json", "case.md"]);
     assert.match(args.error ?? "", /--only 需要/);
   });
 
   test("--usage-stream 默认关，给了才是真", () => {
-    assert.equal(parseArgs(["case.md"]).usageStream, false);
-    assert.equal(parseArgs(["--usage-stream", "case.md"]).usageStream, true);
+    assert.equal(parseArgs(["run", "case.md"]).usageStream, false);
+    assert.equal(parseArgs(["run", "--usage-stream", "case.md"]).usageStream, true);
   });
 
   test("--no-side-outputs 默认关，给了才是真", () => {
-    assert.equal(parseArgs(["case.md"]).noSideOutputs, false);
-    assert.equal(parseArgs(["--no-side-outputs", "case.md"]).noSideOutputs, true);
+    assert.equal(parseArgs(["run", "case.md"]).noSideOutputs, false);
+    assert.equal(parseArgs(["run", "--no-side-outputs", "case.md"]).noSideOutputs, true);
   });
 
   test("--only 与 -- -- 之后的输入位互不干扰", () => {
-    const args = parseArgs(["--only", "1", "--", "-以减号开头的用例"]);
+    const args = parseArgs(["run", "--only", "1", "--", "-以减号开头的用例"]);
     assert.equal(args.error, undefined);
     assert.equal(args.only, "1");
     assert.equal(args.input, "-以减号开头的用例");
@@ -664,16 +665,16 @@ describe("并发上限的解析", () => {
   });
 
   test("--concurrency 收正整数，缺参/坏值当场报错", () => {
-    assert.equal(parseArgs(["--concurrency", "4", "case.md"]).concurrency, 4);
-    assert.equal(parseArgs(["--concurrency", "1", "case.md"]).concurrency, 1);
+    assert.equal(parseArgs(["run", "--concurrency", "4", "case.md"]).concurrency, 4);
+    assert.equal(parseArgs(["run", "--concurrency", "1", "case.md"]).concurrency, 1);
     assert.match(parseArgs(["--concurrency"]).error ?? "", /--concurrency 需要/);
     assert.match(
-      parseArgs(["--concurrency", "--json", "case.md"]).error ?? "",
+      parseArgs(["run", "--concurrency", "--json", "case.md"]).error ?? "",
       /--concurrency 需要/,
     );
     for (const bad of ["0", "2.5", "两个"]) {
       assert.match(
-        parseArgs(["--concurrency", bad, "case.md"]).error ?? "",
+        parseArgs(["run", "--concurrency", bad, "case.md"]).error ?? "",
         /只收正整数/,
         `坏值 ${bad} 应报错而不是静默回落`,
       );
@@ -681,7 +682,7 @@ describe("并发上限的解析", () => {
     // `-1` 走的是「以 - 开头的值当成下一个选项」那条：报缺参而不是当数字解析
     // （与 --session / --locale 同一套判据）。
     assert.match(
-      parseArgs(["--concurrency", "-1", "case.md"]).error ?? "",
+      parseArgs(["run", "--concurrency", "-1", "case.md"]).error ?? "",
       /--concurrency 需要/,
     );
   });

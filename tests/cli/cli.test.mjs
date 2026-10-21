@@ -121,30 +121,62 @@ describe("CLI 参数解析", () => {
   });
 
   test("-- 之后的 - 开头文本按用例输入处理", () => {
-    const args = parseArgs(["--json", "--", "-打开登录页并断言"]);
+    const args = parseArgs(["run", "--json", "--", "-打开登录页并断言"]);
     assert.equal(args.error, undefined);
     assert.equal(args.input, "-打开登录页并断言");
     assert.equal(args.json, true);
+    assert.equal(args.explicitRun, true);
   });
 
-  test("正常解析不受影响", () => {
-    const args = parseArgs(["--json", "examples/smoke.md"]);
+  test("正常解析：run 子命令收用例文件与选项", () => {
+    const args = parseArgs(["run", "--json", "examples/smoke.md"]);
     assert.equal(args.error, undefined);
     assert.equal(args.input, "examples/smoke.md");
     assert.equal(args.json, true);
+    assert.equal(args.explicitRun, true);
+  });
+
+  test("裸的 pageqa <用例> 被拒绝，必须显式 run", () => {
+    for (const argv of [["examples/smoke.md"], ["case.md"], ["sesions"]]) {
+      const args = parseArgs(argv);
+      assert.match(args.error ?? "", /已移除直接 `pageqa <用例>`/);
+      assert.equal(args.explicitRun, false);
+    }
+  });
+
+  test("显式 --tui 仍可预加载用例；run 不能与 --tui / --replay 同用", () => {
+    const tui = parseArgs(["--tui", "examples/smoke.md"]);
+    assert.equal(tui.error, undefined);
+    assert.equal(tui.input, "examples/smoke.md");
+
+    assert.match(
+      parseArgs(["run", "--tui", "examples/smoke.md"]).error ?? "",
+      /不能与 `--tui`/,
+    );
+    assert.match(
+      parseArgs(["run", "--replay", "a.json"]).error ?? "",
+      /不能与 `--replay`/,
+    );
+    assert.match(parseArgs(["run"]).error ?? "", /需要用例文件或内联文本/);
   });
 
   test("--quiet-side-outputs 默认关，显式给出才开（子进程专用：收尾不打产物清单）", () => {
-    assert.equal(parseArgs(["case.md"]).quietSideOutputs, false);
-    const on = parseArgs(["--quiet-side-outputs", "--json", "case.md"]);
+    assert.equal(parseArgs(["run", "case.md"]).quietSideOutputs, false);
+    const on = parseArgs(["run", "--quiet-side-outputs", "--json", "case.md"]);
     assert.equal(on.error, undefined);
     assert.equal(on.quietSideOutputs, true);
     assert.equal(on.json, true);
   });
 
+  test("--no-pager 是布尔开关", () => {
+    assert.equal(parseArgs(["--no-pager"]).noPager, true);
+    assert.equal(parseArgs(["-h", "--no-pager"]).noPager, true);
+    assert.equal(parseArgs(["-h"]).noPager, false);
+  });
+
   test("--prefer-replay 是布尔开关", () => {
-    assert.equal(parseArgs(["case.md"]).preferReplay, false);
-    const on = parseArgs(["--prefer-replay", "case.md"]);
+    assert.equal(parseArgs(["run", "case.md"]).preferReplay, false);
+    const on = parseArgs(["run", "--prefer-replay", "case.md"]);
     assert.equal(on.error, undefined);
     assert.equal(on.preferReplay, true);
     assert.equal(on.input, "case.md");
@@ -226,10 +258,38 @@ describe("sessions 子命令的参数解析", () => {
     assert.match(parseArgs(["sessions", "extra"]).error ?? "", /多余的位置参数/);
   });
 
-  test("普通用例输入不会被误判成子命令", () => {
-    const args = parseArgs(["sessions.md"]);
+  test("run 之后的名字不会被误判成子命令", () => {
+    const args = parseArgs(["run", "sessions.md"]);
+    assert.equal(args.error, undefined);
     assert.equal(args.sessions, undefined);
     assert.equal(args.input, "sessions.md");
+  });
+});
+
+describe("update 子命令参数解析", () => {
+  test("默认、--check、--json 与 locale", () => {
+    assert.equal(parseArgs(["update"]).error, undefined);
+    assert.deepEqual(parseArgs(["update"]).update, {
+      check: false,
+      json: false,
+      help: false,
+    });
+    assert.equal(parseArgs(["update", "--check"]).update?.check, true);
+    const json = parseArgs(["update", "--json"]);
+    assert.equal(json.update?.json, true);
+    assert.equal(json.update?.check, true, "JSON 只检查，不安装");
+    assert.equal(parseArgs(["update", "--locale", "en"]).locale, "en");
+  });
+
+  test("位置参数与未知选项都报错", () => {
+    assert.match(
+      parseArgs(["update", "extra"]).error ?? "",
+      /不接受位置参数|positional arguments/,
+    );
+    assert.match(
+      parseArgs(["update", "--nope"]).error ?? "",
+      /未知选项|unknown option/i,
+    );
   });
 });
 

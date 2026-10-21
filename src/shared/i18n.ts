@@ -247,6 +247,13 @@ const catalogs: Record<Locale, Catalog> = {
     // 「参数错误：参数错误：…」（曾经真实发生过：err.concurrencyInvalid / err.onlyWithTui）。
     // 直接写 stderr 的那些（如 err.concurrencyMax、err.onlyWithReplay）才自带前缀。
     "err.param": "参数错误：{msg}",
+    "err.bareInput":
+      "已移除直接 `pageqa <用例>` 的执行方式，防止把拼错的命令/文件名当成用例误跑。请用 `pageqa run <用例文件>` 执行；交互模式直接运行 `pageqa`，进去后用 /run 加载。",
+    "err.runNeedsInput": "`pageqa run` 需要用例文件或内联文本。",
+    "err.runWithReplay":
+      "`run` 不能与 `--replay` 同时使用；回放请直接用 `pageqa --replay <脚本>`。",
+    "err.runWithTui":
+      "`run` 是批处理执行，不能与 `--tui` 同时使用；交互模式请直接运行 `pageqa`。",
     "err.notFound":
       "找不到脚本文件：{path}\n  - 请确认路径存在且拼写正确\n  - 若路径含空格，请用引号包裹（如 \"C:\\dir\\my case.md\"）\n  - 若只想跑内联文本，请不要让文本以 .md/.txt 结尾",
     "err.replayWithInput": "参数错误：--replay 不能与用例输入同时使用",
@@ -947,10 +954,16 @@ const catalogs: Record<Locale, Catalog> = {
     "help.full": `pageqa - 自然语言驱动的页面测试工具（pi-agent-core + browserskill）
 
 用法:
-  pageqa [options] <input>
+  pageqa                        进入交互模式（TTY；无参启动）
+  pageqa --tui [<input>]        强制交互模式（可预选一个用例文件）
+  pageqa run [options] <input>  批处理执行用例（文件或内联文本）
+  pageqa --replay <file>        零模型回放已有脚本
   pageqa sessions [--port <n>] [--dir <path>]
                    起本地存档查询服务，浏览器打开即可回看每次运行交给了模型什么
+  pageqa lint <文件...>         静态校验用例格式
+  pageqa update [--check]       检查并更新 pageqa 自身
 
+  防误触：不再支持直接 \`pageqa <用例>\`；执行请显式使用 \`run\`。
   <input>          自然语言脚本文件(.md/.txt，路径含空格请用引号包裹)，
                    或用引号包裹的内联文本
                   只接受一个用例输入；多给一个会直接报错
@@ -982,6 +995,7 @@ const catalogs: Record<Locale, Catalog> = {
                   不能与 --suite / --tui / --replay 同时使用
   --tui            强制进入交互模式（默认在交互式终端下自动进入，见下方「交互模式」）
   --no-tui         不要交互模式（只想看滚动日志、或排障时用）
+  --no-pager       帮助过长时不分页，直接输出（默认内置分页：空格/Enter 下一页，q 退出；也可 PAGER=cat）
                   也可用环境变量关闭：PAGEQA_NO_TUI=1
   --emit-script [path]
                    把本次成功的操作序列固化成回放脚本（Replay Script）
@@ -1125,9 +1139,9 @@ const catalogs: Record<Locale, Catalog> = {
     可通过 ~/.pageqa/config.json 或 PAGEQA_LLM_* 环境变量覆盖）
 
 示例:
-  pageqa --session ulao "打开 https://example.com 并断言标题包含 Example"
-  pageqa examples/smoke.md --json
-  pageqa examples/smoke.md --debug
+  pageqa run --session ulao "打开 https://example.com 并断言标题包含 Example"
+  pageqa run examples/smoke.md --json
+  pageqa run examples/smoke.md --debug
   pageqa --tui examples/smoke.md        # 交互模式：跑用例的同时可以追加场景
   pageqa --tui examples/smoke.md --emit-script   # 顺手固化出回放脚本
   pageqa sessions                       # 回看历史运行的参数与工具调用（Ctrl+C 退出）
@@ -1189,6 +1203,42 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
 
 每次跑用例之前也会自动做一次同样的预检（只提示、不拦），加 --no-lint 可跳过。
 `,
+    "help.update": `pageqa update - 更新 pageqa
+
+用法:
+  pageqa update              检查并安装最新版本
+  pageqa update --check      只检查，不安装
+  pageqa update --json       只检查并以 JSON 输出（current / latest / updateAvailable）
+
+说明:
+  版本查询与安装都走 npm（沿用当前 registry 配置）：
+    npm view pageqa dist-tags --json
+    npm install -g pageqa@latest
+  pnpm 全局安装的用户如遇路径/权限问题，可手动执行：
+    pnpm add -g pageqa@latest
+
+退出码:
+  0  已是最新 / 检查成功 / 更新成功
+  1  查询或安装失败
+`,
+    "update.checking": "正在检查 pageqa 最新版本…",
+    "update.upToDate": "pageqa 已是最新版本（{current}）。",
+    "update.available":
+      "发现新版本：{current} → {latest}。\n手动更新：npm install -g pageqa@latest（或 pnpm add -g pageqa@latest）",
+    "update.installing": "正在更新 pageqa：{current} → {latest} …",
+    "update.done": "pageqa 已更新到 {version}。重新运行命令即可使用新版本。",
+    "update.failed":
+      "更新失败（npm 退出码 {code}）。请检查全局安装权限，或手动运行：npm install -g pageqa@latest（pnpm 用户：pnpm add -g pageqa@latest）",
+    "update.error": "检查最新版本失败：{msg}",
+    "update.installError":
+      "无法启动 npm 安装：{msg}。请手动运行：npm install -g pageqa@latest",
+    "update.unknown":
+      "无法确定当前 pageqa 版本；最新版本是 {latest}。请手动更新：npm install -g pageqa@latest",
+    "update.timeout": "npm 查询超过 {ms}ms 未返回",
+    "update.npmExit": "npm 退出码 {code}",
+    "update.badVersion": "无法解析 npm 返回的版本号：{value}",
+    "err.updateNoPositional": "pageqa update 不接受位置参数",
+    "pager.prompt": "── 更多 ── 空格/Enter 下一页 · q 退出 ",
     "err.lintNeedsFile": "lint 需要一个用例文件路径",
     "err.lintNotFound": "找不到文件：{path}",
     "err.lintDir": "lint 只接受用例文件，不接受目录：{path}",
@@ -1476,6 +1526,14 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     // really happened for err.concurrencyInvalid / err.onlyWithTui). Messages written straight to
     // stderr (err.concurrencyMax, err.onlyWithReplay, err.concurrencyWithSession, …) keep their own.
     "err.param": "argument error: {msg}",
+    "err.bareInput":
+      "direct `pageqa <case>` execution was removed so a mistyped command or filename cannot run as a case. Use `pageqa run <case file>`, or start `pageqa` and load the case with /run.",
+    "err.runNeedsInput":
+      "`pageqa run` needs a case file or inline text.",
+    "err.runWithReplay":
+      "`run` cannot be combined with `--replay`; use `pageqa --replay <script>` instead.",
+    "err.runWithTui":
+      "`run` is batch execution and cannot be combined with `--tui`; run `pageqa` directly for interactive mode.",
     "err.notFound":
       "script file not found: {path}\n  - confirm the path exists and is spelled correctly\n  - if the path has spaces, quote it (e.g. \"C:\\dir\\my case.md\")\n  - if you only want to run inline text, do not let the text end with .md/.txt",
     "err.replayWithInput":
@@ -2206,11 +2264,17 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "help.full": `pageqa - natural-language-driven page testing tool (pi-agent-core + browserskill)
 
 Usage:
-  pageqa [options] <input>
+  pageqa                        enter interactive mode (TTY; no arguments)
+  pageqa --tui [<input>]        force interactive mode (optionally preload a case file)
+  pageqa run [options] <input>  run a case in batch (file or inline text)
+  pageqa --replay <file>        replay an existing script with no model
   pageqa sessions [--port <n>] [--dir <path>]
                    start the local archive server; open it in a browser to review
                    what each run handed to the model
+  pageqa lint <files...>        statically validate case formatting
+  pageqa update [--check]       check for and install pageqa updates
 
+  Mistake guard: direct \`pageqa <case>\` is no longer supported; use \`run\` explicitly.
   <input>          a natural-language script file (.md/.txt, quote paths with spaces),
                    or inline text wrapped in quotes
                   only one case input is accepted; a second one errors out
@@ -2247,6 +2311,7 @@ Options:
                   cannot be used with --suite / --tui / --replay
   --tui            force interactive mode (auto-enters in an interactive terminal by default, see "Interactive mode" below)
   --no-tui         don't use interactive mode (when you only want the scrolling log, or for troubleshooting)
+  --no-pager       print long help without a pager (default pager: Space/Enter next, q quit; PAGER=cat also works)
                   also disablable via env: PAGEQA_NO_TUI=1
   --emit-script [path]
                   freeze the successful operations into a replay script (Replay Script)
@@ -2409,9 +2474,9 @@ Prerequisites:
      overridable via ~/.pageqa/config.json or PAGEQA_LLM_* env vars)
 
 Examples:
-  pageqa --session ulao "open https://example.com and assert the title contains Example"
-  pageqa examples/smoke.md --json
-  pageqa examples/smoke.md --debug
+  pageqa run --session ulao "open https://example.com and assert the title contains Example"
+  pageqa run examples/smoke.md --json
+  pageqa run examples/smoke.md --debug
   pageqa --tui examples/smoke.md        # interactive mode: append scenarios while running
   pageqa --tui examples/smoke.md --emit-script   # also freeze a replay script
   pageqa sessions                       # review archived parameters and tool calls (Ctrl+C to quit)
@@ -2483,6 +2548,42 @@ Exit code:
 Every run also performs the same check before executing a case (advisory only, it does
 not block); pass --no-lint to skip it.
 `,
+    "help.update": `pageqa update - update pageqa
+
+Usage:
+  pageqa update              check and install the latest version
+  pageqa update --check      check only, do not install
+  pageqa update --json       check only and print JSON (current / latest / updateAvailable)
+
+Notes:
+  Both the version lookup and the install go through npm (using your registry config):
+    npm view pageqa dist-tags --json
+    npm install -g pageqa@latest
+  If pageqa was installed globally with pnpm and npm hits a path/permission issue, run:
+    pnpm add -g pageqa@latest
+
+Exit code:
+  0  already up to date / check succeeded / update succeeded
+  1  lookup or install failed
+`,
+    "update.checking": "checking the latest pageqa version…",
+    "update.upToDate": "pageqa is already up to date ({current}).",
+    "update.available":
+      "new version available: {current} → {latest}.\nManual update: npm install -g pageqa@latest (or pnpm add -g pageqa@latest)",
+    "update.installing": "updating pageqa: {current} → {latest} …",
+    "update.done": "pageqa updated to {version}. Re-run the command to use the new version.",
+    "update.failed":
+      "update failed (npm exit code {code}). Check global-install permissions, or run: npm install -g pageqa@latest (pnpm: pnpm add -g pageqa@latest)",
+    "update.error": "failed to check the latest version: {msg}",
+    "update.installError":
+      "failed to start npm install: {msg}. Run: npm install -g pageqa@latest",
+    "update.unknown":
+      "could not determine the current pageqa version; latest is {latest}. Update manually: npm install -g pageqa@latest",
+    "update.timeout": "npm lookup did not return within {ms}ms",
+    "update.npmExit": "npm exited with code {code}",
+    "update.badVersion": "could not parse the version returned by npm: {value}",
+    "err.updateNoPositional": "pageqa update does not accept positional arguments",
+    "pager.prompt": "── more ── Space/Enter next · q quit ",
     "err.lintNeedsFile": "lint needs a case file path",
     "err.lintNotFound": "file not found: {path}",
     "err.lintDir": "lint accepts case files, not directories: {path}",

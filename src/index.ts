@@ -51,6 +51,13 @@ import {
   type ScenarioRecording,
 } from "./agent/replay.js";
 import { findFreshReplay } from "./agent/replay-preference.js";
+import { runUpdate, type UpdateOptions } from "./update.js";
+import {
+  pageInternally,
+  pageText,
+  pagerCandidates,
+  shouldPage,
+} from "./help-pager.js";
 // `agent/vars.js` 只做时间格式化与占位符展开（实测 ~2ms），且 `buildHelp` 是同步的、
 // `--help` 就要用——没有理由为它改成异步。
 import { captureRunVars, expandVars, VAR_HELP } from "./agent/vars.js";
@@ -146,8 +153,17 @@ interface CliArgs {
   tui: boolean;
   /** `--no-tui`：显式拒绝交互模式（本机只想看滚动日志时用）。 */
   noTui: boolean;
+  /** `--no-pager`：帮助过长时直接输出，不调用系统分页器。 */
+  noPager: boolean;
   /** `--locale <zh|en>`：界面/日志/报告的显示语种（默认 zh）。 */
   locale: string;
+  /**
+   * `pageqa run <input>`：显式批处理入口。
+   *
+   * 直接 `pageqa <input>` 已不再执行用例——防止把拼错的命令/文件名当成用例误触发；
+   * 交互模式仍用无参 `pageqa`（或显式 `--tui`）进入。
+   */
+  explicitRun: boolean;
   /** 参数解析错误（如带值选项缺少参数）；有值时 main 会提示并退出。 */
   error?: string;
   /**
@@ -161,6 +177,8 @@ interface CliArgs {
   sessions?: SessionsArgs;
   /** `lint` 子命令：静态校验用例格式（同样单独一条解析路径）。 */
   lint?: LintArgs;
+  /** `update` 子命令：检查/安装最新版本。 */
+  update?: UpdateOptions;
 }
 
 /** `pageqa lint` 的选项。 */
@@ -197,12 +215,14 @@ function emptyCliArgs(): CliArgs {
     version: false,
     debug: false,
     preferReplay: false,
+    explicitRun: false,
     emitScript: false,
     semantic: false,
     failFast: false,
     settleWaits: false,
     tui: false,
     noTui: false,
+    noPager: false,
     noSideOutputs: false,
     quietSideOutputs: false,
     usageStream: false,
@@ -212,15 +232,22 @@ function emptyCliArgs(): CliArgs {
 }
 
 export function parseArgs(argv: string[]): CliArgs {
+  // 显式执行入口：`pageqa run <input>`。裸的 `pageqa <input>` 一律拒绝（见函数末尾），
+  // 避免把拼错的命令/文件名当成用例直接跑起来。
+  const explicitRun = argv[0] === "run";
+  if (explicitRun) argv = argv.slice(1);
   // 子命令：`pageqa sessions [...options]`
   // 它起一个常驻服务，与「跑用例」是两种完全不同的模式，因此单独走一条解析路径：
   // 主选项循环里每个位置参数都是「用例输入」，混进去会让 `pageqa sessions` 看起来像
   // 「去跑一条叫 sessions 的用例」——那正是它以前的行为。
-  if (argv[0] === "sessions") return parseSessionsArgs(argv.slice(1));
+  if (!explicitRun && argv[0] === "sessions") return parseSessionsArgs(argv.slice(1));
   // 子命令：`pageqa lint <用例文件…>`。同理单独一条路径——它收**多个**位置参数，
   // 而主循环把第二个位置参数当「多余输入」直接报错。
-  if (argv[0] === "lint") return parseLintArgs(argv.slice(1));
+  if (!explicitRun && argv[0] === "lint") return parseLintArgs(argv.slice(1));
+  // 子命令：`pageqa update`。只更新自己，不碰用例/浏览器/模型。
+  if (!explicitRun && argv[0] === "update") return parseUpdateArgs(argv.slice(1));
   const args: CliArgs = emptyCliArgs();
+  args.explicitRun = explicitRun;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     // 兼容 `--locale=en` 写法（与 `--locale en` 等价）
@@ -375,6 +402,9 @@ export function parseArgs(argv: string[]): CliArgs {
       case "--no-tui":
         args.noTui = true;
         break;
+      case "--no-pager":
+        args.noPager = true;
+        break;
       case "--":
         // `--` 之后一律按位置参数处理：内联用例文本以 - 开头时用它兜底
         // （否则会被当成未知选项报错）。
@@ -403,6 +433,15 @@ export function parseArgs(argv: string[]): CliArgs {
         }
         args.input = a;
     }
+  }
+  const globalOnly = args.help || args.version || args.initConfig;
+  if (explicitRun) {
+    if (args.replay) args.error = t("err.runWithReplay");
+    else if (args.tui) args.error = t("err.runWithTui");
+    else if (!args.input && !globalOnly) args.error = t("err.runNeedsInput");
+  } else if (args.input !== undefined && !args.tui && !args.replay && !globalOnly) {
+    // 裸的 `pageqa <input>`：以前会直接开跑；现在一律拒绝，引导到显式 run / TUI。
+    args.error = t("err.bareInput");
   }
   return args;
 }
@@ -526,6 +565,54 @@ function parseLintArgs(rest: string[]): CliArgs {
   return args;
 }
 
+/** 解析 `pageqa update` 的选项；它没有位置参数。 */
+function parseUpdateArgs(rest: string[]): CliArgs {
+  const args = emptyCliArgs();
+  const update: UpdateOptions = { check: false, json: false, help: false };
+  args.update = update;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a.startsWith("--locale=")) {
+      const v = a.slice("--locale=".length);
+      args.locale = v;
+      setLocale(parseLocale(v));
+      continue;
+    }
+    switch (a) {
+      case "-h":
+      case "--help":
+        update.help = true;
+        break;
+      case "--check":
+        update.check = true;
+        break;
+      case "--json":
+        // JSON 是机器消费的检查结果，绝不在这里偷偷执行安装。
+        update.json = true;
+        update.check = true;
+        break;
+      case "--locale": {
+        const v = rest[++i];
+        if (v === undefined || v.startsWith("-")) {
+          args.error = t("err.localeRequired", { arg: "--locale" });
+          return args;
+        }
+        args.locale = v;
+        setLocale(parseLocale(v));
+        break;
+      }
+      default:
+        if (a.startsWith("-")) {
+          args.error = t("err.unknownOption", { a });
+          return args;
+        }
+        args.error = t("err.updateNoPositional");
+        return args;
+    }
+  }
+  return args;
+}
+
 /**
  * `pageqa lint`：静态校验用例格式，**不开浏览器、不调模型**。
  *
@@ -619,6 +706,26 @@ function looksLikeScriptPath(token: string): boolean {
  */
 function buildHelp(): string {
   return t("help.full").replace("{VAR_HELP}", VAR_HELP);
+}
+
+/**
+ * 主帮助在 TTY 下分页。
+ *
+ * 默认用内置分页器（直接写 stdout，Windows 下不会像 more.com 那样把 UTF-8 按
+ * 代码页解释成乱码）；只有用户显式设置 `PAGER` 时才交给外部程序。
+ */
+async function printMainHelp(noPager: boolean): Promise<void> {
+  const text = buildHelp() + "\n";
+  if (
+    !shouldPage(Boolean(process.stdout.isTTY), noPager) ||
+    !process.stdin.isTTY
+  ) {
+    process.stdout.write(text);
+    return;
+  }
+  const external = pagerCandidates();
+  if (external.length > 0 && (await pageText(text, external))) return;
+  await pageInternally(text);
 }
 
 /**
@@ -750,7 +857,7 @@ function exitCodeFor(report: TestReport): number {
  * 是否进入交互模式。
  *
  * 判据必须**同时**看 stdin 与 stdout：TUI 要 raw stdin，只看 stdout 会让
- * `pageqa case.md < /dev/null`、IDE 内嵌终端、CI 子 shell 进去一个收不到键的空壳。
+ * `pageqa --tui case.md < /dev/null`、IDE 内嵌终端、CI 子 shell 进去一个收不到键的空壳。
  *
  * `--json` 阻止（机器消费方要纯 stdout）；`--replay` 阻止（秒级零模型，全屏只是噪音）；
  * `--out` **不阻止**（它只是「报告另存一份」，与要不要看 TUI 无关）。
@@ -764,6 +871,8 @@ function detectInteractive(
   _concurrency: number,
 ): { run: boolean; error?: string } {
   const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  // `pageqa run` 是显式批处理入口：即使终端是 TTY 也不自动进交互模式。
+  if (args.explicitRun) return { run: false };
   if (args.tui) {
     if (args.noTui)
       return { run: false, error: t("err.tuiConflict") };
@@ -794,10 +903,9 @@ function detectInteractive(
   // `--prefer-replay` 也是批处理选项：命中回放时已经在上面返回；未命中也不该
   // 因为终端是 TTY 就突然转进交互模式。
   if (args.preferReplay) return { run: false };
-  // 自动识别：两个流都是 TTY、未给 --json，且「给了源用例文件」或「什么都没给」。
-  // 前者是「跑这条用例」，后者是「先开个会话再决定跑什么」（ADR-0005 决策一）。
-  // 内联文本仍不进——批处理与交互的差别只该是「人看不看这个终端」。
-  return { run: Boolean(tty && !args.json && (isFile || !hasInput)) };
+  // 自动进入只留给「无参 pageqa」：带用例的 TUI 必须显式 --tui（裸输入已被拒绝），
+  // 带用例的批处理必须显式 run。这里 hasInput 为真只可能来自 `--tui`（上面已返回）。
+  return { run: Boolean(tty && !args.json && !hasInput) };
 }
 
 /**
@@ -1062,13 +1170,14 @@ async function main(): Promise<number> {
   }
   // ── `lint` 子命令：静态校验用例格式（只读文本，不碰浏览器与模型，可直接接 CI）──
   if (args.lint) return runLint(args.lint);
+  if (args.update) return await runUpdate(args.update);
   if (args.version) {
     // 只打「pageqa <版本>」：脚本要的是版本号本身，不需要帮助文本那套排版。
     process.stdout.write(`pageqa ${packageVersion()}\n`);
     return 0;
   }
   if (args.help) {
-    process.stdout.write(buildHelp() + "\n");
+    await printMainHelp(args.noPager);
     return 0;
   }
   if (args.initConfig) {

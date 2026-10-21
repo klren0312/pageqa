@@ -131,13 +131,13 @@ pageqa 把每个非空行编号成 `### 步骤 k：<原文>` 交给模型。因�
 ## 运行与回放
 
 ```bash
-pageqa examples/mycases.md                      # 整套跑（文本报告）
-pageqa --json examples/mycases.md               # JSON 报告（stdout 只有报告）
-pageqa --only 2 examples/mycases.md             # 只跑第 2 个场景（边写边调最快）
-pageqa --only "表单填写测试" examples/mycases.md  # 按标题精确选中
-pageqa --concurrency 4 examples/mycases.md      # 场景互不依赖时才用（上限 8）
-pageqa --emit-script examples/mycases.md        # 显式固化回放脚本（默认已开）
-pageqa --replay examples/mycases.replay.json    # 零模型回归重跑
+pageqa run examples/mycases.md                      # 整套跑（文本报告）
+pageqa run --json examples/mycases.md               # JSON 报告（stdout 只有报告）
+pageqa run --only 2 examples/mycases.md             # 只跑第 2 个场景（边写边调最快）
+pageqa run --only "表单填写测试" examples/mycases.md  # 按标题精确选中
+pageqa run --concurrency 4 examples/mycases.md      # 场景互不依赖时才用（上限 8）
+pageqa run --emit-script examples/mycases.md        # 显式固化回放脚本（默认已开）
+pageqa --replay examples/mycases.replay.json        # 零模型回归重跑
 ```
 
 退出码：`0` 全部断言通过；`1` 任一失败/报错/无法执行（可直接作 CI 门槛）。整体结论看报告末行，逐场景明细与失败卡点（卡在第几步 + 下一步原文）在报告正文里。终端里直接跑（TTY）会进交互模式，可边跑边追加场景并写回落点文件；非交互或加 `--no-tui` 即批处理。

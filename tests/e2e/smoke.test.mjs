@@ -118,6 +118,7 @@ describe("A5 套件：每个场景一个子进程", () => {
     const scriptPath = join(dir, "merged.replay.json");
 
     const { status, stdout, stderr } = await runCli([
+      "run",
       "--json",
       "--no-side-outputs",
       "--emit-script",
@@ -194,6 +195,7 @@ describe("A7 套件：并行跑场景", () => {
 
     const started = Date.now();
     const { status, stdout, stderr } = await runCli([
+      "run",
       "--json",
       "--no-side-outputs",
       "--concurrency",

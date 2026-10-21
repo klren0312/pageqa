@@ -17,6 +17,7 @@
 ```bash
 npm install -g pageqa      # 或 pnpm add -g pageqa
 pageqa --init-config       # 在用户目录创建 ~/.pageqa/config.json
+pageqa update              # 以后检查并更新到最新版（--check 只检查）
 ```
 
 **2. 安装并连接 browserskill（`bsk`）**（驱动真实浏览器的插件，[项目主页](https://github.com/Tencent/BrowserSkill)）：
@@ -38,15 +39,14 @@ bsk session start          # 可选：手动建 session（不传 --session 时 p
 
 ## 交互模式（TUI）—— 核心用法
 
-在交互终端里直接运行就进入 TUI（stdin/stdout 都是 TTY 时自动进入）：
+在交互终端里直接运行无参 `pageqa` 就进入 TUI（stdin/stdout 都是 TTY 时自动进入）：
 
 ```bash
-pageqa                       # 空会话：队列为空、无落点，随时 /run 加载用例
-pageqa examples/smoke.md     # 打开一个用例文件并交互式运行
-pageqa --tui examples/smoke.md   # 显式强制进入（非 TTY 下会直接报错）
+pageqa                           # 空会话：队列为空、无落点，随时 /run 加载用例
+pageqa --tui examples/smoke.md   # 显式进入并预加载一个用例文件（非 TTY 下会报错）
 ```
 
-进入条件（自动）：终端是 TTY 且未给 `--json`，且满足「给了用例文件」或「什么都没给」。**内联文本不会进入 TUI**（走批处理）；`--json` / `--replay` / `--prefer-replay` / `--session` / `--only` 会阻止进入（`--tui` 与 `--only` 同给则直接报错）。想关掉交互：`pageqa --no-tui` 或 `PAGEQA_NO_TUI=1`。
+进入条件：终端是 TTY 且未给 `--json` 时，**无参 `pageqa`** 直接进入 TUI。带用例执行请用 `pageqa run <用例>`（批处理，不会进 TUI），或用 `pageqa --tui <用例>` 显式预加载。**内联文本只走 `run`**；`--json` / `--replay` / `--prefer-replay` / `--session` / `--only` / `run` 不会进入 TUI（`--tui` 与 `--only` 同给直接报错）。想关掉交互：`pageqa --no-tui` 或 `PAGEQA_NO_TUI=1`。
 
 ### 界面布局
 
@@ -120,18 +120,20 @@ pageqa --tui examples/smoke.md   # 显式强制进入（非 TTY 下会直接报�
 不适合边跑边交互时用，或直接接 CI：
 
 ```bash
-pageqa "打开 https://example.com 并断言标题包含 Example"   # 内联自然语言
-pageqa examples/smoke.md        # 读用例文件（自动识别 ## 分隔的多场景）
-pageqa --json examples/smoke.md # 输出 JSON 报告
-pageqa --suite "..."            # 强制多场景套件模式
-pageqa --concurrency 4 examples/smoke-test.md   # 同时跑最多 4 个场景（默认 1 = 逐个跑）
-pageqa --only 2 examples/smoke.md    # 只跑第 2 个场景
-pageqa --only "表单填写测试" ...      # 按标题只跑一个（精确匹配）
-pageqa --no-side-outputs ...    # 不写 HTML 报告与默认回放脚本，只给 stdout
-pageqa --out report.txt ...     # 报告另存文件
+pageqa run "打开 https://example.com 并断言标题包含 Example"   # 内联自然语言
+pageqa run examples/smoke.md        # 读用例文件（自动识别 ## 分隔的多场景）
+pageqa run --json examples/smoke.md # 输出 JSON 报告
+pageqa run --suite "..."            # 强制多场景套件模式
+pageqa run --concurrency 4 examples/smoke-test.md   # 同时跑最多 4 个场景（默认 1 = 逐个跑）
+pageqa run --only 2 examples/smoke.md    # 只跑第 2 个场景
+pageqa run --only "表单填写测试" ...      # 按标题只跑一个（精确匹配）
+pageqa run --no-side-outputs ...    # 不写 HTML 报告与默认回放脚本，只给 stdout
+pageqa run --out report.txt ...     # 报告另存文件
 ```
 
-- stdout 只放最终报告，日志走 stderr（互不干扰，方便 `pageqa --json … > report.json`）。
+> 直接 `pageqa <用例>` 已移除（防止拼错的命令/文件名被当成用例误跑）。执行必须显式加 `run`；交互模式直接运行 `pageqa`，进去后用 `/run` 加载用例。
+
+- stdout 只放最终报告，日志走 stderr（互不干扰，方便 `pageqa run --json … > report.json`）。
 - 退出码：`0` 全部断言通过；`1` 任一断言失败/报错/无法执行——可直接作 CI 门槛。
 - 每个场景开跑前先探一次模型连通性；不通则如实记该场景失败并取消后续待办，不浪费浏览器窗口。
 
@@ -150,11 +152,11 @@ pageqa --out report.txt ...     # 报告另存文件
 首次带模型跑通后，操作序列默认固化成回放脚本（`*.replay.json`，贴着源用例；可在 `/setting` 关掉，`--emit-script` 显式开关优先）。之后用回放脚本零模型重跑，秒级完成、不依赖 LLM，适合「跑一次建模、日后每天回归」接 CI：
 
 ```bash
-pageqa --emit-script examples/smoke.md              # 显式生成脚本（默认已自动生成）
+pageqa run --emit-script examples/smoke.md           # 显式生成脚本（默认已自动生成）
 pageqa --replay examples/smoke.replay.json          # 零模型回放
 pageqa --replay examples/smoke.replay.json --json   # 机器可读报告
 pageqa --replay examples/smoke.replay.json --semantic  # 断言改用 Jev 语义判断
-pageqa --prefer-replay examples/smoke.md             # 脚本仍匹配当前用例就零模型回放，否则现场运行
+pageqa run --prefer-replay examples/smoke.md          # 脚本仍匹配当前用例就零模型回放，否则现场运行
 ```
 
 `--prefer-replay` 只在「同名 `.replay.json` 结构合法 + 源路径一致 + 源哈希未变」时自动回放；否则打印原因并回退现场运行。它不改变默认行为，与 `--only` / `--emit-script` / `--tui` / 显式并发互斥。
@@ -292,7 +294,7 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 | `*` | 全部 |
 
 - **默认行为**：完全没有 `proxy.json` 时也会路由——本机与内网 `direct`，其余 `fallback`。因此本机端点不受影响，墙外的模型端点自动改走代理；唯一的行为变化是「直连失败的请求会多一次经 `http://127.0.0.1:7890` 的尝试」。想彻底关掉：`"enabled": false`（或 `PAGEQA_PROXY_ENABLED=false`）。
-- **环境变量覆盖**（CI 里常用）：`PAGEQA_PROXY_URL`、`PAGEQA_PROXY_ENABLED`、`PAGEQA_PROXY_MODE`。想沿用 shell 里的 `HTTPS_PROXY` 就显式传：`PAGEQA_PROXY_URL=$HTTPS_PROXY pageqa 用例.md`。
+- **环境变量覆盖**（CI 里常用）：`PAGEQA_PROXY_URL`、`PAGEQA_PROXY_ENABLED`、`PAGEQA_PROXY_MODE`。想沿用 shell 里的 `HTTPS_PROXY` 就显式传：`PAGEQA_PROXY_URL=$HTTPS_PROXY pageqa run 用例.md`。
 - **交互模式**：`/proxy` 面板可开关（写回文件）、仅本次会话直连（不写盘）、重新加载文件、查看统计与规则。`--debug` 启动时会打一行当前状态。
 - Jev 语义复核（`--semantic`）的对外请求走同一套路由。
 
@@ -309,6 +311,7 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 | `--only <序号\|标题>` | 只跑其中一个场景（序号 1 起，或标题精确匹配）；输出仍是套件形态。与 `--suite`/`--tui`/`--replay` 互斥 |
 | `--concurrency <n>` | 同时跑最多 n 个场景（**上限**，默认 1 = 逐个跑；`PAGEQA_CONCURRENCY` / 配置项 `concurrency` 同效）。上限 8，超过报错；交互模式也认它（进去后用 `/setting` 的「并发量」随时改），`--replay` 不用 |
 | `--tui` / `--no-tui` | 强制开/关交互模式（`PAGEQA_NO_TUI=1` 同效） |
+| `--no-pager` | 帮助过长时直接输出（默认内置分页：空格/Enter 下一页、q 退出；也可 `PAGER=cat`） |
 | `--emit-script [path]` | 固化回放脚本（默认已开，路径贴源用例） |
 | `--no-side-outputs` | 不写旁路产物（HTML 报告、默认回放脚本）；显式 `--emit-script <path>` 仍然生效 |
 | `--quiet-side-outputs` | 落盘照旧，但**收尾不打「本次产物」清单**——清单由你关闭的那个进程在退出时打一次。场景在子进程里跑时父进程自动带上：子进程那份清单里的回放脚本是临时运输文件，父进程收尾就删 |
@@ -325,6 +328,7 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 | `--out <file>` | 报告另存文件 |
 | `--debug` | 调试日志（bsk 命令与耗时、快照瘦身、Jev 请求等） |
 | `sessions`（子命令） | `pageqa sessions`：起本地存档查询服务，回看每次运行交给模型的参数与完整交互（`--port <n>` / `--dir <path>` / `--no-open`） |
+| `update`（子命令） | `pageqa update`：检查并安装最新版（`--check` 只检查、`--json` 机器可读）；使用 `npm install -g pageqa@latest`，pnpm 用户见失败提示 |
 | `-v, --version` · `-h, --help` | 版本 / 帮助 |
 
 ---
@@ -431,4 +435,4 @@ pnpm run test:unit     # 单测：无浏览器/LLM/TTY 依赖
 pnpm test              # 端到端冒烟：需 bsk 已连浏览器 + 可用 LLM 端点
 ```
 
-`examples/smoke.md` 可直接当端到端样例跑（`pageqa examples/smoke.md --json`）。CI 注入 LLM 端点即可把本工具当质量门槛（`node dist/index.js --json examples/smoke.md`）。
+`examples/smoke.md` 可直接当端到端样例跑（`pageqa run examples/smoke.md --json`）。CI 注入 LLM 端点即可把本工具当质量门槛（`node dist/index.js run --json examples/smoke.md`）。
