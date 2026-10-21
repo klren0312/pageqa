@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildFormatPrompt,
   FORMAT_SYSTEM_PROMPT,
+  missingPlaceholders,
   parseFormattedCase,
 } from "../../dist/tui/format-case.js";
 
@@ -52,6 +53,60 @@ describe("追加输入的模型格式化", () => {
     assert.equal(
       parseFormattedCase("打开 https://example.com\n断言页面包含 Example"),
       "打开 https://example.com\n断言页面包含 Example",
+    );
+  });
+
+  test("围栏语言标记可以是任意文本，残留围栏行会被清掉", () => {
+    assert.equal(
+      parseFormattedCase("``` md\n## A\n打开 x\n断言 y\n```"),
+      "## A\n打开 x\n断言 y",
+    );
+    assert.equal(
+      parseFormattedCase("```text-md\n## A\n打开 x\n断言 y\n```"),
+      "## A\n打开 x\n断言 y",
+    );
+    assert.equal(
+      parseFormattedCase("## A\n打开 x\n```\n断言 y"),
+      "## A\n打开 x\n断言 y",
+    );
+  });
+
+  test("未闭合围栏取到文末；只有围栏则不可用", () => {
+    assert.equal(
+      parseFormattedCase("```markdown\n## A\n打开 x\n断言 y"),
+      "## A\n打开 x\n断言 y",
+    );
+    assert.equal(parseFormattedCase("```markdown\n```"), undefined);
+  });
+
+  test("只有一级标题时把它转成场景名", () => {
+    assert.equal(
+      parseFormattedCase("# 登录\n打开 x\n断言 y"),
+      "## 登录\n打开 x\n断言 y",
+    );
+    assert.equal(
+      parseFormattedCase("以下是整理后的用例：\n\n# 登录\n打开 x\n断言 y"),
+      "## 登录\n打开 x\n断言 y",
+    );
+    // 已有 ## 时，H1 仍按开场白丢弃。
+    assert.equal(
+      parseFormattedCase("# 用例标题\n## 登录\n打开 x"),
+      "## 登录\n打开 x",
+    );
+  });
+
+  test("占位符缺失检测：保留、缺失与去重", () => {
+    assert.deepEqual(
+      missingPlaceholders("打开 ${url}，填写 ${name}", "打开 ${url}，填写 ${name}"),
+      [],
+    );
+    assert.deepEqual(
+      missingPlaceholders("用 ${a} 和 ${a}", "用 ${a}"),
+      [],
+    );
+    assert.deepEqual(
+      missingPlaceholders("用 ${a} 和 ${b}", "用 ${a} 和固定值"),
+      ["${b}"],
     );
   });
 });

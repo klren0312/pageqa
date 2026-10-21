@@ -68,16 +68,43 @@ export function buildFormatPrompt(raw: string): string {
 export function parseFormattedCase(reply: string): string | undefined {
   let text = reply.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").trim();
   if (!text) return undefined;
-  // 代码围栏：取第一个围栏里的内容（模型偶尔会把整份用例包起来）。
-  const fenced = /```[a-zA-Z]*[ \t]*\n([\s\S]*?)```/.exec(text);
-  if (fenced) text = fenced[1].trim();
+  // 整份用例被代码围栏包住时（模型常见跑偏），只取围栏内的内容。
+  // 只有开头的围栏才算“包裹”，避免把正文里一个孤立的闭合围栏当成新的开头。
+  // 语言标记可以是任意文本（` ``` md ` 也算），未闭合时取到文末。
+  if (text.startsWith("```")) {
+    const fenced = /^```[^\n]*\n([\s\S]*?)(?:```|$)/.exec(text);
+    if (fenced) text = fenced[1].trim();
+  }
+  // 其余位置残留的围栏行不是用例内容（例如多出来的闭合围栏）。
+  text = text
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("```"))
+    .join("\n")
+    .trim();
+  if (!text) return undefined;
   // 第一个 `## 场景名` 之前的开场白不是用例：splitScenarios 本来也会丢弃它，
   // 这里先切掉，免得「模型没写标题」时开场白被当成第一个步骤。
   const firstHeading = text.search(/^##\s+/m);
   if (firstHeading > 0) text = text.slice(firstHeading).trim();
+  // 只给了一级标题时把它当作场景名，避免写回成 `## # 标题`。
+  if (firstHeading < 0) {
+    const firstH1 = text.search(/^#\s+/m);
+    if (firstH1 >= 0) text = text.slice(firstH1).replace(/^#\s+/, "## ");
+  }
   const hasStep = text.split("\n").some((line) => {
     const trimmed = line.trim();
     return trimmed.length > 0 && !trimmed.startsWith("#") && !trimmed.startsWith(">");
   });
   return hasStep ? text : undefined;
+}
+
+/**
+ * 原文里的 `${...}` 占位符必须在整理结果中原样出现。
+ *
+ * 这些占位符会在执行时展开；格式化若把它替换成具体值，写回的用例下次运行就会撞名。
+ * 返回缺失的占位符（去重），空数组表示全部保留。
+ */
+export function missingPlaceholders(raw: string, formatted: string): string[] {
+  const placeholders = raw.match(/\$\{[^}]+\}/g) ?? [];
+  return [...new Set(placeholders)].filter((p) => !formatted.includes(p));
 }

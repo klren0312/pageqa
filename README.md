@@ -80,7 +80,7 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 ### Submitting scenarios
 
 - Type natural language in the input box and press **Enter**: the current model first formats the text into a pageqa case (`## scenario name`, one step per line, one assertion per line). The formatted text is printed in full to the log — **that is what gets written back and executed**, not your raw input.
-- If the model is unavailable, takes longer than 60 seconds, or returns no executable steps, submission falls back to the original text (exactly the pre-formatting behavior) and says why in the log. Pressing `Esc` while formatting discards inputs that have not been queued yet.
+- If the model is unavailable, takes longer than 60 seconds, returns no executable steps, or drops a `${...}` placeholder from the original text, submission falls back to the original text (exactly the pre-formatting behavior) and says why in the log. Pressing `Esc` while formatting discards inputs that have not been queued yet.
 - Submitting means "write-back + enqueue": with a target it appends to the target file first, then enqueues (so "what you type is what you keep"); if a scenario is already running, the new one queues and runs automatically after. **Shift+Enter** inserts a newline (for multi-scenario cases).
 
 ### Commands (start a line with `/`; typing `/` pops up a fuzzy command list)
@@ -91,7 +91,7 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 | `/replay <script or keyword>` | Load the scenarios of a replay script (`.json`) into the queue and rerun them step by step with **no model**: one queue item per script scenario, each timed and reported separately; the write-back target stays put (a replay script is not a case file). They can share a batch with model-driven scenarios |
 | `/status` | View the run queue (one line per scenario with state and origin) |
 | `/cancel <n>` | Cancel the not-yet-started queued scenario #n |
-| `/new` | New session: clears viewport and queue, resets token counter, but **archives the previous batch** (still in the exit report and replay script). Refuses while something is running/pending |
+| `/new` | New session: clears viewport and queue, resets token counter, but **archives the previous batch** (still in the exit report and replay script). Refuses while something is running/pending or inputs are still being formatted |
 | `/model` | Switch this session's model — `Enter` applies it now **and** saves it as the startup default. The list ships with a set of **free gateways** carrying a `free` badge — see [Free model gateways](#free-model-gateways) |
 | `/login` · `/logout` | Sign in / remove a provider's local credentials (`~/.pageqa/auth.json`) |
 | `/setting` | Persistent prefs: test report (HTML) / replay script toggles, language, **concurrency** (1/2/3/4/6/8) |
@@ -104,7 +104,7 @@ Auto-entry condition: a TTY with no `--json`, and either **a case file is given*
 | --- | --- |
 | `Enter` | Submit input |
 | `Shift+Enter` | Newline |
-| `Esc` | Abort the running scenario (recorded as "cancelled", not counted in exit code, not written to replay); cancels a pending prompt |
+| `Esc` | Abort the running scenario (recorded as "cancelled", not counted in exit code, not written to replay); discard inputs not yet queued by formatting; cancels a pending prompt |
 | `Ctrl+C` | Finish: abort current + cancel all pending → restore terminal → print summary report (normal exit, never a hard kill; a second press during wind-down means "stop waiting") |
 | `PageUp`/`PageDown` | Scroll the log a page |
 | `↑`/`↓` | Scroll the log when the input box is empty (some terminals report the wheel as these) |
