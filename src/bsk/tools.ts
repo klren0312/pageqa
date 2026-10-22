@@ -2954,6 +2954,54 @@ export interface BskToolOptions {
   snapshotBudgetChars?: number | (() => number | undefined);
 }
 
+/**
+ * 快照是否只有根节点。
+ *
+ * 页面还没渲染、或渲染失败时，bsk 的 aria 快照可能只剩 `RootWebArea`。
+ * 这时模型若继续按猜的 CSS 选择器操作，只会得到一串「did not match any element」，
+ * 把整条流程烧完才发现页面根本没起来——在快照结果里当场说清楚。
+ */
+export function snapshotOnlyHasRoot(text: string): boolean {
+  const body = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line &&
+        !/^@(?:vom|view|layers)\b/.test(line) &&
+        !/^L\d+\s+page\b/.test(line),
+    );
+  return body.length > 0 && body.every((line) => /^RootWebArea\b/.test(line));
+}
+
+/**
+ * bsk 的「选择器没匹配到元素」错误。
+ *
+ * bsk 会给一条通用 hint（「session / tab / browser 可能停了」），小模型容易顺着它
+ * 去怀疑浏览器环境；真正该做的是重新 snapshot 拿当前页面的 @eN。
+ */
+export function isSelectorMiss(message: string): boolean {
+  return /did not match any element|no such element|selector .*not found/i.test(
+    message,
+  );
+}
+
+/**
+ * 快照是否像一个 404 / 页面不存在页。
+ *
+ * 目标路由不存在（或当前账号没有该菜单权限）时，前端会渲染 404 兜底页。此时
+ * 页面有内容、快照也不空，模型容易继续去猜筛选控件；当场指出「这是 404」，
+ * 让它按用例要求判失败，而不是把整条流程空跑完。
+ */
+export function snapshotLooksLikeNotFound(text: string): boolean {
+  return (
+    /RootWebArea\s+"[^"]*\b404\b/i.test(text) ||
+    /页面不存在|page not found|404 not found|this page could not be found/i.test(
+      text,
+    )
+  );
+}
+
 /** 构造一组浏览器操作工具，供 page-test agent 调用。 */
 export function createBskTools(opts: BskToolOptions): AgentTool[] {
   const ops = createBskOps(opts.session, opts.jevClient, opts.snapshotBudgetChars);
@@ -3058,6 +3106,12 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
             )),
         );
       }
+      const message = err instanceof Error ? err.message : String(err);
+      if (isSelectorMiss(message)) {
+        throw new Error(
+          message + "\n\n" + t("bsk.selectorMiss", { action: name }),
+        );
+      }
       throw err;
     }
   };
@@ -3087,8 +3141,17 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     description:
       "读取当前页面的 aria 语义树与可见文本（标题、段落、链接、按钮等）。用于读取内容、标题、文本并定位元素。",
     parameters: paramsOf({}),
-    execute: async (_id: string, _params: unknown, signal?: AbortSignal) =>
-      exec("snapshot", {}, (s) => ops.snapshot(s), signal),
+    execute: async (_id: string, _params: unknown, signal?: AbortSignal) => {
+      const result = await exec("snapshot", {}, (s) => ops.snapshot(s), signal);
+      const first = result.content[0] as { text?: string } | undefined;
+      const text = first?.text ?? "";
+      const hint = snapshotOnlyHasRoot(text)
+        ? t("bsk.snapshot.rootOnly")
+        : snapshotLooksLikeNotFound(text)
+          ? t("bsk.snapshot.notFound")
+          : "";
+      return hint ? ok(text + "\n\n" + hint) : result;
+    },
   };
 
   const click: AgentTool = {

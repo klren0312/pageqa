@@ -52,10 +52,12 @@ import {
   statusTag,
   summarizeSuite,
   attachCost,
+  unrecoveredToolFailures,
   type AssertionResult,
   type RawUsage,
   type TestReport,
   type TokenUsage,
+  type UnrecoveredToolFailure,
 } from "../report/report.js";
 import { Recorder } from "./record.js";
 import type { ScenarioRecording } from "./replay.js";
@@ -263,10 +265,12 @@ const MAX_OVERFLOW_RECOVERIES = 1;
 export type ContinuationProgress = { done: number; total: number } | null;
 
 /**
- * 是否该续跑：两条证据彼此独立，任一条成立就要再 prompt 一次。
+ * 是否该续跑：三条证据彼此独立，任一条成立就要再 prompt 一次。
  * - 步骤：agent 自报「步骤完成：k/n」且 k < n；
  * - 断言：用例声明了 expected 条断言，工具只记录了 parsed 条。
  *   断言必须由 assert_text / download 落成结构化结果，仅凭 snapshot 肉眼确认不算。
+ * - 工具：存在最后一次调用仍是失败的操作（没有同名工具的成功重试）。
+ *   失败的操作没有改动页面，后续断言很可能是在旧页面上成立的。
  *
  * 早期实现写成 `progress ? 步骤校验 : 断言校验`：agent 自报「步骤完成：5/5」就短路掉断言检查，
  * 于是「步骤跑满、断言却只记录了 2/3」的场景一路跑到报告才判 FAIL，agent 连补一次断言的机会都没有
@@ -277,9 +281,11 @@ export function needsContinuation(
   progress: ContinuationProgress,
   parsed: number,
   expected: number,
+  unrecoveredTools = 0,
 ): boolean {
   if (progress && progress.done < progress.total) return true;
-  return expected > 0 && parsed < expected;
+  if (expected > 0 && parsed < expected) return true;
+  return unrecoveredTools > 0;
 }
 
 /** 构造续跑提示：只要求接着做，不重复已完成步骤，并再次强调进度声明格式。 */
@@ -287,9 +293,26 @@ export function continuePrompt(
   progress: ContinuationProgress,
   parsed = 0,
   expected = 0,
+  toolFailures: UnrecoveredToolFailure[] = [],
 ): string {
   const tail =
     "不要重复已完成的步骤；每完成一步记「第 k 步完成：<结果>」，全部步骤执行完后必须单独输出一行「步骤完成：<已完成数>/<总数>」。";
+  // 工具失败优先于「缺断言/缺进度」：操作没走成时补出来的断言没有意义。
+  if (toolFailures.length > 0) {
+    const detail = toolFailures
+      .map((f) => f.tool + (f.reason ? `（${f.reason}）` : ""))
+      .join("；");
+    const assertsShort = expected > 0 && parsed < expected;
+    return (
+      `工具调用失败未恢复：${detail}。` +
+      "这些操作没有成功，不能当作步骤完成。先重新 snapshot 取新的 @eN 编号（或改用 CSS 选择器），再重试对应步骤；" +
+      "重试成功后必须重新执行受影响的断言，不要拿失败前的页面状态交差。" +
+      (assertsShort
+        ? `用例声明的 ${expected} 条断言目前只记录了 ${parsed} 条，重试后一并补齐。`
+        : "") +
+      tail
+    );
+  }
   const assertsShort = expected > 0 && parsed < expected;
   // 步骤已自报跑满、缺的只是断言时绝不能说「从第 k+1 步继续」：那会逼模型去编一个不存在的步骤。
   // 真正该做的是补跑漏掉的断言工具调用。
@@ -1230,11 +1253,22 @@ async function executeWithContinuations(
       session.assertions.length > 0
         ? session.assertions.length
         : parseAssertions(transcriptSoFar).length;
-    const incomplete = needsContinuation(progress, parsed, expectedAssertions);
+    // 只看「最后一次仍是失败」的工具：失败后同名工具成功重试就是正常恢复。
+    const toolFailures = unrecoveredToolFailures(transcriptSoFar);
+    const incomplete = needsContinuation(
+      progress,
+      parsed,
+      expectedAssertions,
+      toolFailures.length,
+    );
     if (!incomplete) break;
 
     const signature =
-      (progress ? `${progress.done}/${progress.total}` : "-") + "|" + parsed;
+      (progress ? `${progress.done}/${progress.total}` : "-") +
+      "|" +
+      parsed +
+      "|" +
+      toolFailures.map((f) => f.tool).sort().join(",");
     if (round > 0 && signature === lastSignature) {
       log("[runAgent] 续跑后进度未推进（" + signature + "），停止续跑");
       break;
@@ -1249,6 +1283,9 @@ async function executeWithContinuations(
       parsed +
       "/" +
       expectedAssertions +
+      (toolFailures.length > 0
+        ? "，未恢复工具失败 " + toolFailures.map((f) => f.tool).join("、")
+        : "") +
       "）\n";
     events.push(note);
     log("[runAgent] " + note.trim());
@@ -1262,7 +1299,9 @@ async function executeWithContinuations(
         b: expectedAssertions,
       }),
     );
-    await agent.prompt(continuePrompt(progress, parsed, expectedAssertions));
+    await agent.prompt(
+      continuePrompt(progress, parsed, expectedAssertions, toolFailures),
+    );
     await agent.waitForIdle();
     round += 1;
   }

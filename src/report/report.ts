@@ -448,6 +448,30 @@ export function buildReport(
     });
   }
 
+  // 工具失败是「操作没走成」的确定性证据：同名工具最后一次仍是失败时，
+  // 即使断言条数齐了也不能给 PASS——那次断言很可能命中的是操作失败前的旧页面。
+  const toolFailures = unrecoveredToolFailures(transcript);
+  if (toolFailures.length > 0) {
+    status = "fail";
+    assertions.push({
+      expectation: t("report.toolFailures", {
+        tools: toolFailures.map((f) => f.tool).join("、"),
+      }),
+      verdict: "fail",
+      evidence: [
+        t("report.toolFailuresEvidence1", {
+          detail: toolFailures
+            .map((f) => (f.reason ? `${f.tool}：${f.reason}` : f.tool))
+            .join("；"),
+        }),
+        lastNote ? t("report.stepsIncompleteEvidence2", { note: lastNote }) : null,
+        tailTextOf(trace, 3),
+      ]
+        .filter(Boolean)
+        .join("；"),
+    });
+  }
+
   const summary = extractSummary(transcript);
   return { status, assertions, summary, transcript, trace, steps };
 }
@@ -536,6 +560,67 @@ export function extractTrace(transcript: string): string[] {
 export function lastStepNote(trace: string[]): string | null {
   const notes = trace.filter((l) => /第\s*\d+\s*步/.test(l));
   return notes.at(-1) ?? null;
+}
+
+/** 一次最终仍未恢复的工具调用失败（同名工具最后一次调用是失败）。 */
+export interface UnrecoveredToolFailure {
+  tool: string;
+  /** 失败原因（工具返回的错误文本，可能为空）。 */
+  reason?: string;
+}
+
+const TOOL_OUTCOME_LINE =
+  /^\[tool-(ok|error)\]\s+([A-Za-z0-9_]+)(?:\s*[：:]\s*(.*))?$/;
+
+/**
+ * 选择类控件的「快捷路径不适用」报错：工具已经明确让模型退回
+ * 「click 展开 → snapshot → click」的通用路径（见系统提示与工具描述），
+ * 不是页面操作失败，不能因为之后没有同名工具成功就判失败。
+ */
+const PICKER_SHORTCUT_MISS =
+  /没有等到可见的下拉浮层|浮层里没有可见文本为|没有等到日期面板|日期面板里没能点到|无法理解日期|打开的是[\s\S]*?(日期范围|单日期)|结束日期早于开始日期|no visible dropdown overlay|the overlay has no option|cannot understand the date|no date panel appeared|could not click[\s\S]*?in the date panel|opened a[\s\S]*?(date range|single-date)|end date is earlier than the start date/i;
+
+function isPickerShortcutMiss(tool: string, reason: string): boolean {
+  return (
+    (tool === "select_option" || tool === "pick_date") &&
+    PICKER_SHORTCUT_MISS.test(reason)
+  );
+}
+
+/**
+ * 找出「最后一次调用仍是失败」的工具。
+ *
+ * 工具失败是「这个操作没走成」的确定性证据：同名工具后来成功即视为已重试恢复；
+ * 只看最后一次，避免把「失败 → 重试成功」的正常过程误判成失败。
+ * 选择类工具的「快捷路径不适用」是已知的回退信号，不计入失败。
+ *
+ * 报告不能只数断言：实测一次筛选用例的 select_option 连续 6 次、click 1 次全部
+ * CDP 失败，页面仍是未筛选的旧数据，但两条文本断言照样命中旧内容，报告给出了 PASS。
+ */
+export function unrecoveredToolFailures(
+  transcript: string,
+): UnrecoveredToolFailure[] {
+  const last = new Map<string, UnrecoveredToolFailure | null>();
+  for (const raw of transcript.split(/\r?\n/)) {
+    const m = TOOL_OUTCOME_LINE.exec(raw.trim());
+    if (!m) continue;
+    const [, status, tool, reason] = m;
+    if (status === "error" && isPickerShortcutMiss(tool, reason ?? "")) {
+      // 快捷路径不适用：模型接下来应走通用路径。不要用它覆盖更早的硬失败
+      // （硬失败仍需同名工具成功才算恢复）。
+      if (!last.has(tool)) last.set(tool, null);
+      continue;
+    }
+    last.set(
+      tool,
+      status === "error"
+        ? { tool, ...(reason ? { reason } : {}) }
+        : null,
+    );
+  }
+  return [...last.values()].filter(
+    (f): f is UnrecoveredToolFailure => f !== null,
+  );
 }
 
 /** 轨迹末尾若干条，拼成「轨迹末尾：…」的说明文本。 */

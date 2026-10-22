@@ -632,6 +632,11 @@ describe("小窗口前缀压缩：默认前缀装不进 8k，压缩后才装得�
     }
     // 「写进正文的工具调用不算执行」这类硬约束必须留下（默认提示里最主要的事故防线）
     assert.match(COMPACT_SYSTEM_PROMPT, /只有\*\*真正调用工具\*\*才算执行/);
+    // 小模型实测：空快照后猜 CSS 选择器、下拉/日期控件 target 指到内部 input。
+    assert.match(COMPACT_SYSTEM_PROMPT, /只有根节点/);
+    assert.match(COMPACT_SYSTEM_PROMPT, /不要凭控件名字编 CSS 选择器/);
+    assert.match(COMPACT_SYSTEM_PROMPT, /重新 snapshot 再重试/);
+    assert.match(COMPACT_SYSTEM_PROMPT, /endDate/);
   });
 
   test("工具声明压缩：说明变短、类型与枚举不变、execute 原样保留", () => {

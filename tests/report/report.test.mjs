@@ -14,6 +14,7 @@ import {
   mergeUsage,
   numberSteps,
   summarizeSuite,
+  unrecoveredToolFailures,
 } from "../../dist/report/report.js";
 
 // 纯单元测试：只依赖 dist/report.js，不需要 bsk / LLM。
@@ -167,6 +168,79 @@ describe("断言以 assert_text 工具结果为准", () => {
       "断言标题包含 Example：成立。页面中标题为「Example Domain」",
     );
     assert.equal(r.status, "pass");
+  });
+});
+
+// 实测事故：筛选控件的 select_option 连续 6 次、click 1 次全部 CDP 失败，
+// 页面仍是未筛选的旧数据；两条文本断言命中旧内容后，报告给了 PASS。
+describe("未恢复的工具失败不能给 PASS", () => {
+  const script = [
+    "在「发送渠道」下拉框中选择「机器人」",
+    "断言表格的「接收人」列中出现 任志伟",
+  ].join("\n");
+
+  test("最后一次调用仍失败时判 fail，并点名工具与原因", () => {
+    const transcript = [
+      "[tool] select_option",
+      "[tool-error] select_option：error: browser rejected the underlying CDP call；details: DOM Error while querying",
+      "[tool] assert_text",
+      "[tool-ok] assert_text",
+      "步骤完成：2/2",
+    ].join("\n");
+    const r = buildReport(script, transcript, [
+      { expectation: "任志伟", verdict: "pass", evidence: "页面中包含「任志伟」" },
+    ]);
+    assert.equal(r.status, "fail");
+    const a = r.assertions.find((x) => x.expectation.includes("select_option"));
+    assert.ok(a, "应追加一条点名工具失败的失败断言");
+    assert.equal(a.verdict, "fail");
+    assert.match(a.evidence, /DOM Error while querying/);
+  });
+
+  test("失败后同名工具成功重试 → 视为已恢复，不因此判 fail", () => {
+    const r = buildReport(
+      script,
+      [
+        "[tool-error] select_option：DOM Error while querying",
+        "[tool-ok] select_option",
+        "[tool-ok] assert_text",
+        "步骤完成：2/2",
+      ].join("\n"),
+      [{ expectation: "任志伟", verdict: "pass", evidence: "页面中包含「任志伟」" }],
+    );
+    assert.equal(r.status, "pass");
+  });
+
+  test("只保留最后一次仍失败的工具；其它工具成功不能替它翻案", () => {
+    const failures = unrecoveredToolFailures(
+      [
+        "[tool-error] click：boom",
+        "[tool-ok] click",
+        "[tool-error] select_option：still broken",
+        "[tool-ok] snapshot",
+        "[tool-error] click：again",
+      ].join("\n"),
+    );
+    assert.deepEqual(
+      failures.map((f) => f.tool).sort(),
+      ["click", "select_option"],
+    );
+    assert.equal(
+      failures.find((f) => f.tool === "click")?.reason,
+      "again",
+    );
+  });
+
+  test("选择类工具的「快捷路径不适用」不算未恢复失败（模型会退回 click 通用路径）", () => {
+    assert.deepEqual(
+      unrecoveredToolFailures(
+        [
+          "[tool-error] select_option：点开 @e30 combobox 之后没有等到可见的下拉浮层。",
+          "[tool-error] pick_date：日期面板里没能点到 2026-10-01。",
+        ].join("\n"),
+      ),
+      [],
+    );
   });
 });
 

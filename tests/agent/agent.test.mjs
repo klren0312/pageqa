@@ -217,4 +217,21 @@ describe("续跑判定：步骤与断言都要检查", () => {
     const p = continuePrompt({ done: 3, total: 5 }, 1, 3);
     assert.match(p, /第 4 步/);
   });
+
+  test("有未恢复的工具失败时，步骤与断言都齐了也要续跑", () => {
+    assert.equal(needsContinuation({ done: 5, total: 5 }, 3, 3, 1), true);
+    assert.equal(needsContinuation({ done: 5, total: 5 }, 3, 3, 0), false);
+  });
+
+  test("工具失败的续跑提示要求重新 snapshot 后重试，而不是继续下一步", () => {
+    const p = continuePrompt({ done: 5, total: 5 }, 3, 3, [
+      { tool: "select_option", reason: "DOM Error while querying" },
+      { tool: "click" },
+    ]);
+    assert.match(p, /select_option/);
+    assert.match(p, /DOM Error while querying/);
+    assert.match(p, /snapshot/);
+    assert.match(p, /重试/);
+    assert.ok(!/第 6 步/.test(p), "失败的是已完成步骤的操作，不能让它从第 6 步继续");
+  });
 });

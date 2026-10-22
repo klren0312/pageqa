@@ -486,6 +486,12 @@ const catalogs: Record<Locale, Catalog> = {
       "{target} 打开的是**单日期**面板（只有一张日历表），不需要 endDate。如果页面上确实是「开始~结束」两个输入框，请把 target 指向范围控件的输入框，而不是其中某一个。",
     "bsk.picker.rangeOrder":
       "结束日期早于开始日期（{start} ~ {end}）：请检查用例里的顺序，这不是页面问题。",
+    "bsk.snapshot.rootOnly":
+      "（快照只有根节点：页面可能仍在加载或渲染失败。先 wait_for 页面内真实地标，或重新 navigate 后 snapshot；不要凭猜测的 CSS 选择器操作。）",
+    "bsk.snapshot.notFound":
+      "（当前页面是 404 / 页面不存在。若用例不是专门验证 404，直接判定该步骤失败并停止后续操作；不要继续猜筛选控件或选择器。）",
+    "bsk.selectorMiss":
+      "选择器没有匹配到任何元素（{action} 没有执行）。先用 snapshot 取当前页面的 @eN 编号，或从快照里确认存在的 CSS 选择器，再重试；不要继续凭控件名字猜选择器。",
     // 下载断言（src/bsk/tools.ts 的 download 工具 + src/report/downloads.ts）
     "bsk.download.expectation": "导出的文件已下载到本地",
     "bsk.download.expectationNamed": "下载的文件名匹配 {pattern}",
@@ -817,6 +823,9 @@ const catalogs: Record<Locale, Catalog> = {
     "report.stepsIncompleteEvidence2": "最后进展：{note}",
     "report.stepsIncompleteEvidence3":
       "未执行到的步骤（第 {next}/{total} 步）：{step}",
+    "report.toolFailures": "工具调用失败后已成功重试（未恢复：{tools}）",
+    "report.toolFailuresEvidence1":
+      "以下工具最后一次调用失败，之后没有同名工具成功返回：{detail}",
     "report.traceTail": "轨迹末尾：{tail}",
     "report.cancelWithProgress":
       "用户中止了该场景（已完成 {done}/{total} 步），剩余步骤未执行",
@@ -1772,6 +1781,12 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "{target} opened a **single-date** panel (only one calendar table), so endDate is not expected. If the page really has a \"start ~ end\" pair of inputs, point target at the range control rather than one of its inputs.",
     "bsk.picker.rangeOrder":
       "the end date is earlier than the start date ({start} ~ {end}): check the order used in the case; this is not a page problem.",
+    "bsk.snapshot.rootOnly":
+      "(snapshot contains only the root node: the page may still be loading or failed to render. wait_for a real landmark, or navigate again and snapshot; do not operate with guessed CSS selectors.)",
+    "bsk.snapshot.notFound":
+      "(the current page is a 404 / not-found page. Unless the case explicitly tests 404, fail this step and stop; do not keep guessing filter controls or selectors.)",
+    "bsk.selectorMiss":
+      "the selector matched no element ({action} did not run). Call snapshot for the current @eN refs, or use a CSS selector confirmed by the snapshot, then retry; do not keep guessing from control names.",
     // download assertion (the `download` tool in src/bsk/tools.ts + src/report/downloads.ts)
     "bsk.download.expectation": "the exported file has been downloaded locally",
     "bsk.download.expectationNamed":
@@ -2115,6 +2130,10 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "report.stepsIncompleteEvidence2": "last progress: {note}",
     "report.stepsIncompleteEvidence3":
       "unexecuted step (step {next}/{total}): {step}",
+    "report.toolFailures":
+      "failed tool calls recovered by a successful retry (unrecovered: {tools})",
+    "report.toolFailuresEvidence1":
+      "these tools' last call failed and no later call of the same tool succeeded: {detail}",
     "report.traceTail": "trace tail: {tail}",
     "report.cancelWithProgress":
       "user aborted this scenario (completed {done}/{total} steps), remaining steps not executed",
