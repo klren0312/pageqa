@@ -43,7 +43,7 @@ import {
  * 内有效，跨进程并行会直接击穿这条不变量；且每个场景要独占一个浏览器窗口。
  *
  * 父进程只做三件事：建 session、fork、收结果。子进程就是普通的
- * `pageqa --only <k> --json <用例>`（见 ADR-0013 决策二），这里不发明第二套协议。
+ * `pageqa run --only <k> --json <用例>`（见 ADR-0013 决策二），这里不发明第二套协议。
  */
 
 /** 子进程日志的落点（默认写父进程 stderr）。交互模式注入它把日志接进界面视口。 */
@@ -464,6 +464,8 @@ export interface ChildInvocation {
  */
 export function buildChildArgs(inv: ChildInvocation): string[] {
   return [
+    // 显式子命令：裸 `pageqa <用例>` 已被拒绝，少了它子进程会当场报参数错误。
+    "run",
     "--only",
     String(inv.scenarioIndex + 1),
     "--json",
@@ -492,7 +494,7 @@ export function buildChildArgs(inv: ChildInvocation): string[] {
  * 而场景搬进子进程之后，没有别的东西能把它**实时**带回来（报告只在收工时才有一份）。
  *
  * 刻意做成**明文可读的一行**、由公开的 `--usage-stream` 打开：谁都能自己跑一次子进程
- * 命令看到它（`pageqa --only 2 --usage-stream …`），而不是只有内部人知道的暗规则。
+ * 命令看到它（`pageqa run --only 2 --usage-stream …`），而不是只有内部人知道的暗规则。
  * 父进程读到这类行会吞掉——状态栏自己会渲染，不需要它再进一遍日志视口。
  */
 export const USAGE_LINE_PREFIX = "[pageqa:usage] ";
@@ -578,7 +580,7 @@ export function scenarioLogTag(index: number, name: string): string {
  * 与「父进程内部隔离」是同一条代码路径：
  *
  * ```
- * pageqa --only <k> --json --no-tui --no-side-outputs --quiet-side-outputs --session <id> -- <用例>
+ * pageqa run --only <k> --json --no-tui --no-side-outputs --quiet-side-outputs --session <id> -- <用例>
  * ```
  *
  * - `--json`：stdout 只放最终报告，父进程只认这一份 JSON；

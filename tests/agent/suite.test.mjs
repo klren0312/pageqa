@@ -148,9 +148,10 @@ describe("--only 的场景选择", () => {
 });
 
 describe("子进程命令行契约（ADR-0013 决策二）", () => {
-  test("恒定带上 --only / --json / --no-tui / --no-side-outputs，输入永远在最后", () => {
+  test("恒定带上 run / --only / --json / --no-tui / --no-side-outputs，输入永远在最后", () => {
     const args = buildChildArgs({ scenarioIndex: 1, input: "case.md" });
-    assert.deepEqual(args.slice(0, 5), [
+    assert.equal(args[0], "run");
+    assert.deepEqual(args.slice(1, 6), [
       "--only",
       "2",
       "--json",
@@ -160,6 +161,22 @@ describe("子进程命令行契约（ADR-0013 决策二）", () => {
     // `--` 必须紧挨着输入，且 `--only` 的序号是「序号 + 1」
     assert.deepEqual(args.slice(-2), ["--", "case.md"]);
     assert.equal(args[args.length - 2], "--");
+  });
+
+  test("子进程命令行能被公开 CLI 重新解析（裸输入已被拒绝，缺 run 会当场报错）", () => {
+    const parsed = parseArgs(
+      buildChildArgs({
+        scenarioIndex: 1,
+        input: "case.md",
+        session: "abc",
+        scriptPath: "C:\\tmp\\s.replay.json",
+        usageStream: true,
+      }),
+    );
+    assert.equal(parsed.error, undefined);
+    assert.equal(parsed.explicitRun, true);
+    assert.equal(parsed.input, "case.md");
+    assert.equal(parsed.only, "2");
   });
 
   test("--quiet-side-outputs 恒带：子进程不打「本次产物」清单（打出来的是临时脚本路径，父进程收尾就删）", () => {
