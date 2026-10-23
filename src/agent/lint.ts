@@ -277,10 +277,10 @@ export function lintCase(input: string): LintResult {
       // 快照编号：只在产生它的那一次快照里有效，下一个动作就失效
       if (/@e\d+/.test(line)) push("snapshotRef", "error", seg.name, e.no, line);
 
-      // 导航地址必须完整
+      // 导航地址必须完整（小程序模式允许 mp:// 页面路由）
       if (NAV_INTENT.test(p)) {
         const target = p.replace(NAV_INTENT, "").split(" ")[0] ?? "";
-        if (!/^https?:\/\//i.test(target)) {
+        if (!/^https?:\/\//i.test(target) && !/^mp:\/\//i.test(target)) {
           push("urlScheme", "error", seg.name, e.no, line);
         }
       }

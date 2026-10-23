@@ -248,7 +248,9 @@ const catalogs: Record<Locale, Catalog> = {
     // 直接写 stderr 的那些（如 err.concurrencyMax、err.onlyWithReplay）才自带前缀。
     "err.param": "参数错误：{msg}",
     "err.bareInput":
-      "已移除直接 `pageqa <用例>` 的执行方式，防止把拼错的命令/文件名当成用例误跑。请用 `pageqa run <用例文件>` 执行；交互模式直接运行 `pageqa`，进去后用 /run 加载。",
+      "已移除直接 `pageqa <用例>` 的执行方式，防止把拼错的命令/文件名当成用例误跑。请启动交互模式（直接运行 `pageqa`），进去后用 /run 加载用例。",
+    "err.useTuiOnly":
+      "「{flag}」属于「从命令行直接跑用例」的入口，已收进交互模式：直接运行 `pageqa`（或 `pageqa --tui`），进去后用 /run 加载用例、/replay 回放脚本、/driver 切换测试驱动。",
     "err.runNeedsInput": "`pageqa run` 需要用例文件或内联文本。",
     "err.runWithReplay":
       "`run` 不能与 `--replay` 同时使用；回放请直接用 `pageqa --replay <脚本>`。",
@@ -525,7 +527,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.hint":
       "Enter 提交 · Shift+Enter 换行 · Esc 中止场景（空闲时丢弃未落地输入） · ↑↓/PgUp/PgDn 滚日志 · Ctrl+P 历史 · Ctrl+C 收工 · /help",
     "tui.help":
-      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /replay <脚本> 加载一个回放脚本（.json）的场景，零模型重跑\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本；有在跑/待办或格式化中的输入时拒绝）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model         选择模型（Enter 即切换并设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /proxy         查看/开关模型请求的代理路由（配置 ~/.pageqa/proxy.json）\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入：先用当前模型整理成用例（## 场景名 / 一行一步 / 断言单独成行），再写回并入队\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景；没有场景在跑时丢弃格式化中的输入，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
+      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /replay <脚本> 加载一个回放脚本（.json）的场景，零模型重跑\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本；有在跑/待办或格式化中的输入时拒绝）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model\n  /driver            切换测试驱动后端（浏览器 / 微信小程序）         选择模型（Enter 即切换并设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /proxy         查看/开关模型请求的代理路由（配置 ~/.pageqa/proxy.json）\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入：先用当前模型整理成用例（## 场景名 / 一行一步 / 断言单独成行），再写回并入队\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景；没有场景在跑时丢弃格式化中的输入，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
     "tui.scroll.paused": "↓ 已暂停跟随 · End 回到底部",
     "tui.appended": "（追加）",
     "tui.replayTag": "（回放）",
@@ -577,7 +579,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cancelNotFound":
       "没有找到可取消的待办 #{arg}（已开始执行的场景请用 Esc 中止）",
     "tui.unknownCmd":
-      "未知命令：/{cmd}（可用：/help /status /run <文件> /new /cancel <n> /model /login /logout /setting /proxy /exit）",
+      "未知命令：/{cmd}（可用：/help /status /run <文件> /new /cancel <n> /model /driver /login /logout /setting /proxy /exit）",
     "tui.languageSwitched": "界面语种已切换为 {locale}（已保存到配置）",
     "tui.languageSwitchFailed":
       "界面语种已切换为 {locale}（写入配置失败：{msg}）",
@@ -629,6 +631,21 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cmd.setting": "修改设置（测试报告 / 回放脚本 / 语言）",
     "tui.cmd.proxy": "查看/开关模型请求的代理路由",
     "tui.cmd.exit": "收工（等同于 Ctrl+C）",
+    "tui.cmd.driver": "切换测试驱动后端（浏览器 / 微信小程序）",
+    // ── /driver 面板 ──
+    "tui.driver.title": "测试驱动后端 · 当前 {current}",
+    "tui.driver.bsk": "桌面浏览器（browserskill）",
+    "tui.driver.miniprogram": "微信小程序（微信开发者工具）",
+    "tui.driver.hint": "切换只对之后排队的场景生效 · ↑↓ 选择 · Enter 确认 · Esc 关闭",
+    "tui.driver.applied": "已切到 {driver}：之后排队的场景用这个驱动",
+    "tui.driver.status": "驱动: {driver}",
+    "tui.driver.shortBsk": "浏览器",
+    "tui.driver.shortMiniprogram": "小程序",
+    "tui.driver.autoSwitched":
+      "用例里有 mp:// 路由，已自动切到 {driver}（/driver 可切回桌面浏览器）",
+    "tui.driver.unchanged": "当前已经是 {driver}，没改动",
+    "tui.driver.saveFailed":
+      "已切到 {driver}，但写回配置失败：{msg}（下次启动可能回到旧值）",
 
     // ── /proxy 面板 ──
     "tui.proxy.title": "模型请求代理 v{version} · {state}",
@@ -958,202 +975,34 @@ const catalogs: Record<Locale, Catalog> = {
     "nav.ERR_SSL_.next": "确认目标是否支持 https、证书是否已信任",
 
     // ── 帮助文本（整段作为单键，{VAR_HELP} 由调用方替换）──
-    "help.full": `pageqa - 自然语言驱动的页面测试工具（pi-agent-core + browserskill）
-
-用法:
-  pageqa                        进入交互模式（TTY；无参启动）
-  pageqa --tui                  强制交互模式（进入后用 /run 加载用例）
-  pageqa run [options] <input>  批处理执行用例（文件或内联文本）
-  pageqa --replay <file>        零模型回放已有脚本
-  pageqa sessions [--port <n>] [--dir <path>]
-                   起本地存档查询服务，浏览器打开即可回看每次运行交给了模型什么
-  pageqa lint <文件...>         静态校验用例格式
-  pageqa update [--check]       检查并更新 pageqa 自身
-
-  防误触：不再支持直接 \`pageqa <用例>\`；执行请显式使用 \`run\`。
-  <input>          自然语言脚本文件(.md/.txt，路径含空格请用引号包裹)，
-                   或用引号包裹的内联文本
-                  只接受一个用例输入；多给一个会直接报错
-                  脚本中可用『## 场景名』分隔多个测试场景，自动批量运行
-                  路径中粘贴带来的不可见字符（Bidi/零宽）会被自动清理；
-                  若路径以 .md/.txt 结尾但文件不存在，会直接报错而非当作内联文本
-
-选项:
-  --session <id>   指定已存在的 bsk session（默认自动创建）
-                  无论新建还是复用，用例跑完后都会自动关闭该 session
-                  并关掉它对应的浏览器窗口（Agent Window）
-  --locale <zh|en> 界面/日志/报告的显示语种（默认 zh；可用 PAGEQA_LOCALE 环境变量）
-  --json           输出 JSON 报告
-  --suite          强制按多场景套件运行（即使只有一个场景）
-  --concurrency <n>
-                   同时跑几个场景（**上限**，默认 1 = 逐个跑；也可用 PAGEQA_CONCURRENCY）
-                   并行等于声明「这些场景互不依赖」，所以默认不开：串行是
-                   「创建 → 编辑 → 删除」这类隐含顺序依赖的保护
-                   代价是同时开着 n 个浏览器窗口（一个场景一个 session 一个窗口）
-                   最大 8，超过直接报错（不静默截断）
-                   交互模式也认它：这个值只是本次会话的起点，进去之后用
-                   /setting 里的「并发量」随时改（改完立刻生效并写回配置）
-                   --replay 不走场景调度器，并发对回放没有意义
-  --only <序号|标题>
-                   只跑其中一个场景（被「## 场景名」分隔出来的那一个）
-                  序号从 1 起；不是纯数字时按场景标题**精确**匹配（大小写不敏感）
-                  匹配不到会报错并列出全部场景标题；刻意不做模糊匹配
-                  输出仍是一份套件形态的报告（只有一个场景），便于 CI 统一解析
-                  不能与 --suite / --tui / --replay 同时使用
-  --tui            强制进入交互模式（默认在交互式终端下自动进入，见下方「交互模式」）
-  --no-tui         不要交互模式（只想看滚动日志、或排障时用）
-  --no-pager       帮助过长时不分页，直接输出（默认内置分页：空格/Enter 下一页，q 退出；也可 PAGER=cat）
-                  也可用环境变量关闭：PAGEQA_NO_TUI=1
-  --emit-script [path]
-                   把本次成功的操作序列固化成回放脚本（Replay Script）
-                  这一项**默认就会生成**（可在交互模式 /setting 里关掉；显式给出本选项永远优先）
-                  不给 path 时贴着源用例写：examples/smoke.md → examples/smoke.replay.json
-                  没有源文件（内联文本、无落点的追加场景）则不生成，收尾的产物清单会说明原因
-                  path 建议写成路径形式（如 ./replay、reports/run1.json），
-                  含空白请用引号包裹；紧跟其后的若是 .md/.txt 或含空白的文本，
-                  会被当作用例输入而不是输出路径
-                  无论 PASS/FAIL 都会生成，便于排查与续写
-  --replay <file>  零模型回放已有的回放脚本（详见下方「回放脚本」）
-  --prefer-replay  若同名 .replay.json 结构合法、源路径一致且源哈希未变，则零模型回放；
-                   否则现场运行。与 --only / --emit-script / --tui / 显式并发互斥
-  --semantic       回放时断言改用 Jev 语义判断（默认字符串包含）
-  --init-config    在用户目录创建/重置配置文件
-  --out <file>     将报告写入文件
-  --no-side-outputs
-                   不写旁路产物：既不生成 HTML 测试报告，也不默认生成回放脚本
-                   stdout 上的报告与退出码不受影响（CI 只取 stdout 时用）
-                   显式给出的 --emit-script <path> 仍然生效（显式请求优先）
-  --quiet-side-outputs
-                   落盘照旧，但收尾不打「本次产物」清单——清单由关闭工具的那个进程打一次
-                   场景在独立子进程里执行时父进程会带上它：子进程那份清单里的回放脚本是
-                   临时运输文件，父进程收尾就删，打出来就是一个当场失效的路径
-  --usage-stream   把 LLM 用量的结构化记录逐次打到 stderr（一行一次，前缀 [pageqa:usage]）
-                   场景在独立子进程里执行时，父进程靠它把「已经烧了多少」实时带回来
-  --no-lint        跳过「跑用例前的格式预检」（默认开；预检只在 stderr 提示、不拦执行）
-                   想把它设成门槛：pageqa lint <用例文件>
-  --debug          显示调试日志（bsk 命令、快照体积、上下文裁剪、Jev 请求详情）
-  -v, --version    显示版本号
-  -h, --help       显示帮助
-
-交互模式（跑用例的同时可以追加场景）:
-  在交互式终端（stdin 与 stdout 都是 TTY）里直接运行、且未给 --json 时自动进入；
-  用 --tui / --no-tui 可显式开关，也可用环境变量 PAGEQA_NO_TUI=1 关闭。
-  要求必须传入源用例文件——追加场景要写回它，内联文本没有落点。
-
-  Enter         提交（输入里写了「## 标题」就用它作场景名，否则取首行摘要）
-  Shift+Enter   换行（写多场景用例时用）
-  Esc           中止当前场景：记为「已取消」，不计入退出码、不写入回放脚本
-  Ctrl+C        收工：中止当前 + 取消全部待办，然后输出汇总报告
-  /status       查看运行队列；/cancel <n> 取消一个尚未开始的待办
-  /model        选择模型（Enter 即切换并写回 config.json，作为下次启动的默认）
-  /login        登录一个 provider（API Key 或订阅登录），凭据存到 ~/.pageqa/auth.json
-  /logout       移除某个 provider 的本地凭据
-  /setting      修改设置（测试报告 / 回放脚本 / 语言），写回 ~/.pageqa/config.json
-  /proxy        查看/开关模型请求的代理路由（配置在 ~/.pageqa/proxy.json）
-  /help /exit
-
-模型请求的代理:
-  - 模型端点直连不通时，按 ~/.pageqa/proxy.json 的规则决定走哪条路：direct（直连）、
-    proxy（走代理）、fallback（先直连、网络层失败再走代理，默认）。
-  - 默认规则是「本机与内网直连 + 其余先直连后代理」，因此本机端点（127.0.0.1 上的
-    兼容端点、bsk daemon）不受影响，墙外的模型端点自动改走代理。
-  - 改地址与开关：编辑 ~/.pageqa/proxy.json（pageqa --init-config 可生成一份），
-    或用环境变量 PAGEQA_PROXY_URL / PAGEQA_PROXY_ENABLED / PAGEQA_PROXY_MODE 临时覆盖
-    （环境变量优先）；交互模式里 /proxy 面板可随时开关并查看统计与规则。
-  - --debug 会在启动时打一行当前代理状态。
-
-模型切换与登录:
-  - /model 列出「已配好鉴权」的模型：自定义端点（config.json 的 baseUrl/apiKey/model）
-    总是可用；内置 provider（anthropic / openai / deepseek / github-copilot …）只有
-    在 /login 过、或设置了对应环境变量（如 ANTHROPIC_API_KEY）之后才会出现。
-  - /model 按 Enter 选中即写回 config.json 的 modelProvider/model：既切换本次会话，
-    也成为下次启动的默认。两者是同一个动作，不再分开（ADR-0015）。
-  - 切换模型不会打断正在执行的场景：当前场景沿用开跑时的模型，下一个场景才用新模型。
-
-  - 提交的场景会**立即追加写回源用例文件**（原文原样保留，含运行时占位符），
-    因此在 TUI 里 \`/run examples/smoke.md\` 加载该文件后，追加场景会改动它。
-  - 场景串行执行，且**每个场景跑在自己的子进程里**（见 docs/adr/0013）：
-    某个场景把浏览器或 bsk daemon 搞崩时只影响它自己，后面的场景照跑。
-    父进程持有 session 与浏览器窗口的生命周期，轮到某个场景时才为它创建。
-  - 不能与 --json / --replay / --session 同时使用（前两个要独占 stdout 或无需等待，
-    第三个与「场景各有独立 session」冲突）。
-  - 回放脚本默认生成：退出时把跑过的场景按来源写成脚本，已取消的场景不含在内；
-    可在 /setting 里关掉，或用显式 --emit-script（可带路径）强制生成。
-  - 测试报告与回放脚本都是「旁路产物」：只落盘、不进 stdout，路径在收尾的产物清单里。
-
-回放脚本（零模型重跑同一用例）:
-  pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast] [--settle-waits] [--locate-timeout <ms>]
-                  按脚本逐步驱动浏览器，**不调用任何大模型**，断言默认走字符串包含
-                  --semantic 可改用 Jev 语义判断（需已在配置里启用 Jev）
-                  元素定位用录制时的语义定位符在当次快照里重新解析，
-                  因此页面小幅调整后脚本仍可命中；源用例变更会在 stderr 提示
-                  --fail-fast 任一失败即停止该场景；默认会跑完剩余步骤，
-                  以便一次拿到整条用例的完整健康报告（失败仍会让退出码非零）
-                  --locate-timeout <ms> 定位符**所在区域整体缺失**（页面还没渲染到那一步）时，
-                  等页面就绪的上限，默认 8000ms，0 = 不等。只在区域一起缺失时等：区域在、
-                  或区域是没打开的浮层时立刻判定，所以「元素真的不存在」不会被拖慢
-                   --settle-waits 把 wait 步骤执行成「等页面稳定，上限为脚本记下的毫秒数」：
-                   录制时的固定等待（如 wait 2000）只是模型当时的猜测，回放里却每次都照付；
-                   打开后页面一稳定就继续，通常在跳转/弹窗类等待上明显更快。默认关闭，
-                   因为「为页面之外的事情留的等待」（服务端正在生成导出文件等）会被提前放行，
-                   紧随其后的断言/下载可能因此失败——轨迹里的 wait 行会写出实际等待时长
-
-进度日志:
-  - 运行进度会带时间戳实时输出到 stderr（bsk daemon 启动、session、每一步工具调用、
-    续跑与最终结论等），stdout 只输出最终报告，两者互不干扰；长流程可据此判断进行到哪一步。
-  - 加 --debug 可看到更细的 bsk 命令与耗时明细。
-
-脚本占位符:
-\${VAR_HELP}
-
-配置:
-  - 首次运行会在用户目录自动创建配置文件：~/.pageqa/config.json
-    （Windows: %USERPROFILE%\\.pageqa\\config.json）
-  - 可编辑该文件设置 baseUrl / apiKey / model / modelProvider
-  - 也可用环境变量覆盖（优先级高于配置文件）：
-      PAGEQA_LLM_BASE_URL / PAGEQA_LLM_API_KEY / PAGEQA_LLM_MODEL / PAGEQA_LLM_PROVIDER
-  - 交互模式 /login 登录内置 provider 得到的凭据存在 ~/.pageqa/auth.json，
-    /model 的选择会自动写回 config.json 作为启动默认（也可直接编辑上述字段）
-  - 关闭端点思考：混元/DeepSeek/Qwen 这类混合推理模型默认开着思考，模型会先吐一大段
-    思考内容（慢、烧 token、还搅乱步骤编号）。**默认就关**：按模型 id 自动判断该端点认哪个
-    关闭字段，每次请求都带上；不要这个行为就设 thinkingFormat=none。
-      PAGEQA_LLM_THINKING_FORMAT=deepseek   发送 thinking: {"type": "disabled"}
-      PAGEQA_LLM_THINKING_FORMAT=qwen       发送 enable_thinking: false
-      PAGEQA_LLM_THINKING_FORMAT=zai|together|openrouter|string-thinking|qwen-chat-template
-                                            同样可用，取值见 README
-      PAGEQA_LLM_THINKING_FORMAT=none       不发任何思考开关（端点用它自己的默认）
-      （openai / ant-ling / baseten 发不出关闭开关，配了等于没配；端点若不认某个字段，
-        探活会自动去掉它并降级，不会把本来能用的端点弄坏）
-  - 小窗口 / 本地模型（可选）：自配端点拿不到窗口元数据，而本地推理引擎的窗口由加载设置
-    决定（同一个模型可以是 8192 也可 131072）。**不声明时 pageqa 会问一次引擎自己**
-    （LM Studio /api/v0/models、llama.cpp /props），问不到才退回保守的 32k。
-      PAGEQA_LLM_CONTEXT_WINDOW=8192   端点真实的上下文窗口（token），也可写进 config.json 的 contextWindow
-    声明优先于探测。之后 pageqa 按窗口算预算、按需裁剪历史、按窗口钳制 max_tokens，
-    并用端点回报的真实用量自校准估算。
-      PAGEQA_COMPACT_PROMPT=true|false  是否压缩「固定前缀」（系统提示 + 工具说明）
-    不配 = 自动：预算装不下默认前缀、或**模型名像小模型**（≤9B / mini / nano / tiny）时压缩
-    （12.4k → 约 3.5k token；4B 模型即便窗口开到 128k 也照样压，否则每轮白读 9k token）。
-  - Jev 语义判断（可选，用于增强断言精度；仅在字面匹配未命中时调用）：
-      PAGEQA_JEV_ENABLED=true   启用 Jev 辅助断言
-      PAGEQA_JEV_API_KEY=<key>  TypeSafe API 密钥
-      PAGEQA_JEV_MODEL=<model>  Jev 模型（默认 jev-latest）
-      PAGEQA_JEV_THRESHOLD=<n>  判定阈值 0-1（默认 0.5）
-  - 运行 pageqa --init-config 可显式创建/重置配置文件
-
-前置:
-  - 已安装并启动 bsk daemon，且连接了一个浏览器（bsk session start）
-  - 有一个可用的 OpenAI 兼容 LLM 端点（默认 http://127.0.0.1:3000/v1，模型 hunyuan-2.0-instruct，
-    可通过 ~/.pageqa/config.json 或 PAGEQA_LLM_* 环境变量覆盖）
-
-示例:
-  pageqa run --session ulao "打开 https://example.com 并断言标题包含 Example"
-  pageqa run examples/smoke.md --json
-  pageqa run examples/smoke.md --debug
-  pageqa --tui                         # 交互模式：进入后用 /run <用例文件> 加载
-  pageqa run --emit-script examples/smoke.md    # 批处理并顺手固化出回放脚本
-  pageqa sessions                       # 回看历史运行的参数与工具调用（Ctrl+C 退出）
-  pageqa lint examples/smoke-test.md    # 静态校验用例格式（不开浏览器、不调模型）
-`,
+    "help.full":
+    "用法:\n" +
+    "  pageqa                    进入交互模式：唯一入口，用例在界面里用 /run 加载\n" +
+    "  pageqa --tui              同上（显式写法）\n" +
+    "  pageqa lint <用例文件…>   只做格式静态检查（不跑用例、不连浏览器、不调模型）\n" +
+    "  pageqa sessions           起本地服务，回看历史运行交给模型的参数与全过程\n" +
+    "  pageqa update             检查 / 安装新版本\n" +
+    "\n" +
+    "选项:\n" +
+    "  --locale <zh|en>          界面 / 日志 / 报告语种（默认 zh）\n" +
+    "  --debug                   调试日志（工具调用与耗时、快照裁剪、Jev 请求…）\n" +
+    "  --no-pager                帮助过长时不分页\n" +
+    "  --init-config             创建用户级配置文件（不重置已有配置）\n" +
+    "  -v, --version             版本号\n" +
+    "  -h, --help                本帮助\n" +
+    "\n" +
+    "交互模式里:\n" +
+    "  /run <用例文件>           加载用例并开始跑（导航写成 mp:// 或 http://）\n" +
+    "  /replay <脚本>            零模型回放一个已录制的脚本\n" +
+    "  /driver                   切换测试驱动后端：桌面浏览器 / 微信小程序\n" +
+    "  /model                    选择本次会话使用的模型\n" +
+    "  /setting                  旁路产物开关、语言、并发量\n" +
+    "  /help                     全部命令与键位\n" +
+    "\n" +
+    "跑用例只在交互模式里：命令行的 run / --replay / --only / --driver 等入口已收进\n" +
+    "界面（/run、/replay、/driver），命令行只负责启动交互模式。\n" +
+    "\n" +
+    "更多（模型代理路由、占位符、报告与回放脚本、配置项）见 README。",
     "help.sessions": `pageqa sessions - 本地存档查询服务
 
 用法:
@@ -1534,7 +1383,9 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     // stderr (err.concurrencyMax, err.onlyWithReplay, err.concurrencyWithSession, …) keep their own.
     "err.param": "argument error: {msg}",
     "err.bareInput":
-      "direct `pageqa <case>` execution was removed so a mistyped command or filename cannot run as a case. Use `pageqa run <case file>`, or start `pageqa` and load the case with /run.",
+      "direct `pageqa <case>` execution was removed so a mistyped command or filename cannot run as a case. Start the interactive session (`pageqa`) and load the case with /run.",
+    "err.useTuiOnly":
+      "`{flag}` belongs to the command-line way of running cases, which now lives in the interactive session: start `pageqa` (or `pageqa --tui`), then use /run to load a case, /replay for a script, /driver to switch the test driver.",
     "err.runNeedsInput":
       "`pageqa run` needs a case file or inline text.",
     "err.runWithReplay":
@@ -1822,7 +1673,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.hint":
       "Enter submit · Shift+Enter newline · Esc abort scenario (discard unqueued input when idle) · ↑↓/PgUp/PgDn scroll log · Ctrl+P history · Ctrl+C finish · /help",
     "tui.help":
-      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /replay <f>    load the scenarios of a replay script (.json) and rerun them with no model\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script; refuses while something is running/pending or inputs are still being formatted)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model         choose the model (Enter switches and sets it as the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /proxy         inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input: the current model first formats it into a case (## scenario name / one line per step / one assertion per line), then it is written back and queued\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario; when idle, discard inputs still being formatted, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
+      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /replay <f>    load the scenarios of a replay script (.json) and rerun them with no model\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script; refuses while something is running/pending or inputs are still being formatted)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model\n  /driver            switch the test driver backend (browser / mini program)         choose the model (Enter switches and sets it as the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /proxy         inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input: the current model first formats it into a case (## scenario name / one line per step / one assertion per line), then it is written back and queued\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario; when idle, discard inputs still being formatted, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
     "tui.scroll.paused": "↓ follow paused · End to jump to bottom",
     "tui.appended": " (appended)",
     "tui.replayTag": " (replay)",
@@ -1875,7 +1726,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.cancelNotFound":
       "no cancellable pending item #{arg} (for an already-running scenario use Esc to abort)",
     "tui.unknownCmd":
-      "unknown command: /{cmd} (available: /help /status /run <file> /new /cancel <n> /model /login /logout /setting /proxy /exit)",
+      "unknown command: /{cmd} (available: /help /status /run <file> /new /cancel <n> /model /driver /login /logout /setting /proxy /exit)",
     "tui.languageSwitched": "UI language switched to {locale} (saved to config)",
     "tui.languageSwitchFailed":
       "UI language switched to {locale} (failed to write config: {msg})",
@@ -1933,6 +1784,23 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "change settings (test report / replay script / language)",
     "tui.cmd.proxy": "inspect / toggle the proxy routing for model requests",
     "tui.cmd.exit": "finish (same as Ctrl+C)",
+    "tui.cmd.driver":
+      "switch the test driver backend (browser / WeChat mini program)",
+    // ── /driver panel ──
+    "tui.driver.title": "test driver backend · now {current}",
+    "tui.driver.bsk": "desktop browser (browserskill)",
+    "tui.driver.miniprogram": "WeChat mini program (WeChat DevTools)",
+    "tui.driver.hint":
+      "applies to scenarios queued after this switch · ↑↓ choose · Enter confirm · Esc close",
+    "tui.driver.applied": "switched to {driver}: scenarios queued after this use it",
+    "tui.driver.status": "driver: {driver}",
+    "tui.driver.shortBsk": "browser",
+    "tui.driver.shortMiniprogram": "mini program",
+    "tui.driver.autoSwitched":
+      "the case uses mp:// routes, so the driver switched to {driver} (/driver switches back to the browser)",
+    "tui.driver.unchanged": "already on {driver}, nothing changed",
+    "tui.driver.saveFailed":
+      "switched to {driver}, but saving the config failed: {msg} (next start may revert)",
 
     // ── /proxy panel ──
     "tui.proxy.title": "model request proxy v{version} · {state}",
@@ -2276,227 +2144,35 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "confirm the target supports https and the certificate is trusted",
 
     // ── help (entire block as one key; {VAR_HELP} replaced by caller) ──
-    "help.full": `pageqa - natural-language-driven page testing tool (pi-agent-core + browserskill)
-
-Usage:
-  pageqa                        enter interactive mode (TTY; no arguments)
-  pageqa --tui                  force interactive mode (load a case with /run inside)
-  pageqa run [options] <input>  run a case in batch (file or inline text)
-  pageqa --replay <file>        replay an existing script with no model
-  pageqa sessions [--port <n>] [--dir <path>]
-                   start the local archive server; open it in a browser to review
-                   what each run handed to the model
-  pageqa lint <files...>        statically validate case formatting
-  pageqa update [--check]       check for and install pageqa updates
-
-  Mistake guard: direct \`pageqa <case>\` is no longer supported; use \`run\` explicitly.
-  <input>          a natural-language script file (.md/.txt, quote paths with spaces),
-                   or inline text wrapped in quotes
-                  only one case input is accepted; a second one errors out
-                  use '## scenario name' in a script to split multiple scenarios, run in batch
-                  invisible characters pasted from a path (Bidi/zero-width) are auto-cleaned;
-                  if a path ends with .md/.txt but the file doesn't exist, it errors out instead of being treated as inline text
-
-Options:
-  --session <id>   use an existing bsk session (auto-created by default)
-                  whether new or reused, the session is auto-closed after the run,
-                  closing its browser window (Agent Window)
-  --locale <zh|en> display language for the UI / logs / report (default zh; PAGEQA_LOCALE env also works)
-  --json           output a JSON report
-  --suite          force multi-scenario suite mode (even for a single scenario)
-  --concurrency <n>
-                  how many scenarios run at once (**a limit**, default 1 = one at a time;
-                  PAGEQA_CONCURRENCY also works)
-                  parallelism is a claim that "these scenarios do not depend on each other",
-                  so it is off by default: running in order is what protects implicit
-                  sequences such as create -> edit -> delete
-                  the cost is n simultaneously open browser windows (one scenario, one
-                  session, one window)
-                  capped at 8, and exceeding it is an error rather than a silent clamp
-                  interactive mode honours it too: this value is just the starting point
-                  for the session; once inside, /setting > concurrency changes it live
-                  (and writes it back to the config)
-                  --replay never uses the scenario scheduler, so concurrency is inert there
-  --only <index|title>
-                   run just one of the scenarios (one of the "## title" units)
-                  index starts at 1; a non-numeric value is matched **exactly** against
-                  the scenario title (case-insensitive). No fuzzy matching: a miss errors
-                  out and lists every scenario title
-                  the output is still suite-shaped (one scenario) so CI parses one structure
-                  cannot be used with --suite / --tui / --replay
-  --tui            force interactive mode (auto-enters in an interactive terminal by default, see "Interactive mode" below)
-  --no-tui         don't use interactive mode (when you only want the scrolling log, or for troubleshooting)
-  --no-pager       print long help without a pager (default pager: Space/Enter next, q quit; PAGER=cat also works)
-                  also disablable via env: PAGEQA_NO_TUI=1
-  --emit-script [path]
-                  freeze the successful operations into a replay script (Replay Script)
-                  this is **generated by default** (turn it off in interactive /setting; an explicit
-                  flag always wins)
-                  without path, written next to the source case: examples/smoke.md -> examples/smoke.replay.json
-                  without a source file (inline text, appended scenarios with no target) nothing is
-                  generated, and the exit side-outputs summary says why
-                  path is best given as a path form (e.g. ./replay, reports/run1.json),
-                  quote if it contains spaces; if what follows is .md/.txt or whitespace text,
-                  it is treated as case input rather than an output path
-                  generated for both PASS/FAIL, convenient for debugging and continuation
-  --replay <file>  replay an existing script with zero models (see "Replay script" below)
-  --prefer-replay  replay with zero models when the sibling .replay.json is valid, from the
-                   same source path, and its source hash still matches; otherwise run live.
-                   Ignored with --only / --emit-script / --tui / explicit concurrency
-  --semantic       at replay, assertions use Jev semantic judgment (default string contains)
-  --init-config    create/reset the config file in the user directory
-  --out <file>     write the report to a file
-  --no-side-outputs
-                  write no side outputs: no HTML report, and no default replay script
-                  the stdout report and the exit code are unaffected (for CI that only wants stdout)
-                  an explicit --emit-script <path> still wins (explicit request first)
-  --quiet-side-outputs
-                  still write side outputs, but print no closing "outputs" list — the list is
-                  printed once by the process you actually close. The parent sets it for child
-                  processes: the replay script in a child's list is a temp transport file that
-                  the parent deletes right after, i.e. a path that is already gone.
-  --usage-stream   print one structured LLM-usage record per call to stderr (prefix [pageqa:usage] )
-                  when a scenario runs in its own child process, this is how the parent gets
-                  "how much has been burned so far" in real time
-  --no-lint        skip the case-format pre-check before a run (on by default; it only
-                  advises on stderr and never blocks). To gate on it: pageqa lint <case file>
-  --debug          show debug logs (bsk commands, snapshot size, context trimming, Jev request details)
-  -v, --version    show the version
-  -h, --help       show help
-
-Interactive mode (append scenarios while a run is in progress):
-  auto-enters when run in an interactive terminal (both stdin and stdout are TTY) and --json is not given;
-  use --tui / --no-tui to force it on/off, or env PAGEQA_NO_TUI=1 to disable.
-  requires a source case file — appended scenarios are written back to it; inline text has no destination.
-
-  Enter         submit (if the input contains "## title" it becomes the scenario name, otherwise the first-line summary is used)
-  Shift+Enter   newline (for writing multi-scenario cases)
-  Esc           abort current scenario: recorded as "cancelled", not counted in exit code, not written to replay script
-  Ctrl+C        finish: abort current + cancel all pending, then output the summary report
-  /status       view the run queue; /cancel <n> cancel a not-yet-started pending item
-  /model        choose the model (Enter switches and writes it back to config.json as the next startup default)
-  /login        sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json
-  /logout       remove locally stored credentials for a provider
-  /setting      change settings (test report / replay script / language), saved to ~/.pageqa/config.json
-  /proxy        inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)
-  /help /exit
-
-Proxy for model requests:
-  - When a model endpoint is unreachable directly, the rules in ~/.pageqa/proxy.json
-    decide per domain: direct, proxy, or fallback (try direct, retry via the proxy on a
-    network error — the default).
-  - Default rules are "localhost and the intranet go direct, everything else tries direct
-    first", so local endpoints (an OpenAI-compatible server on 127.0.0.1, the bsk daemon)
-    are untouched while an off-network model endpoint automatically goes through the proxy.
-  - Change the address or the switch: edit ~/.pageqa/proxy.json (pageqa --init-config
-    writes one), or override per run with PAGEQA_PROXY_URL / PAGEQA_PROXY_ENABLED /
-    PAGEQA_PROXY_MODE (env wins). The interactive /proxy panel toggles it and shows
-    counters and rules.
-  - --debug prints the current proxy state at startup.
-
-Model switching & login:
-  - /model lists models whose provider has complete auth: the custom endpoint
-    (baseUrl/apiKey/model in config.json) is always available; built-in providers
-    (anthropic / openai / deepseek / github-copilot …) appear only after /login, or
-    when the matching env var (e.g. ANTHROPIC_API_KEY) is set.
-  - picking a model with Enter writes modelProvider/model back to config.json: it
-    switches this session and becomes the startup default in one action (ADR-0015).
-  - switching never interrupts a running scenario: the current one keeps the model
-    it started with, the next one uses the new one.
-
-  - submitted scenarios are **immediately appended back to the source case file** (original text preserved verbatim, including runtime placeholders),
-    so loading it with "/run examples/smoke.md" in the TUI means appended scenarios modify that file.
-  - scenarios run serially, and **each runs in its own child process** (see docs/adr/0013):
-    a scenario that takes the browser or the bsk daemon down only affects itself.
-    The parent owns session and browser-window lifetimes, creating one when a scenario's turn comes.
-  - cannot be combined with --json / --replay / --session (the first two need exclusive stdout or no waiting,
-    the third conflicts with "each scenario has its own session").
-  - replay scripts are generated by default: on exit the run scenarios are written per source, cancelled
-    scenarios excluded; turn it off in /setting, or force it with an explicit --emit-script (path optional).
-  - the test report and the replay script are "side outputs": written to disk only, never into stdout, and
-    their paths appear in the exit side-outputs summary.
-
-Replay script (rerun the same case with zero models):
-  pageqa --replay <file.replay.json> [--session <id>] [--json] [--semantic] [--fail-fast] [--settle-waits] [--locate-timeout <ms>]
-                   drives the browser step by step per the script, **calling no LLM**, assertions default to string contains
-                   --semantic switches to Jev semantic judgment (Jev must be enabled in config)
-                   element location re-parses the recorded semantic locator in the current snapshot,
-                   so the script still hits after small page changes; source-case drift is warned on stderr
-                   --fail-fast stops the scenario on any failure; by default it runs remaining steps,
-                   to get a complete health report of the whole case in one go (failure still yields a non-zero exit code)
-                   --settle-waits runs wait steps as "wait until the page settles, capped at the recorded ms":
-                   a recorded fixed wait (e.g. wait 2000) was the model's guess and is paid in full on every replay;
-                   with this flag a step proceeds as soon as the page is stable, usually much faster after
-                   navigation/dialog waits. Off by default, because a wait that was there for something outside
-                   the page (a server-side export, a background queue) is then released early and the assertion/
-                   download right after it can fail — the wait line in the trace reports the actual wait
-                   --locate-timeout <ms> caps how long a step waits for the page to become ready when the
-                   locator's whole region is missing (the page has not rendered that far yet): default 8000ms,
-                   0 = no wait at all. It waits only in that case — if the region is present, or is an overlay
-                   that is simply not open, the miss is judged immediately, so genuinely missing elements are
-                   not slowed down
-
-Progress log:
-  - run progress is output to stderr in real time with timestamps (bsk daemon start, session, every tool call,
-    retries and final conclusion), while stdout only carries the final report; long runs can tell which step they're on.
-  - add --debug for finer bsk command and timing details.
-
-Script placeholders:
-\${VAR_HELP}
-
-Config:
-  - on first run a config file is auto-created in the user directory: ~/.pageqa/config.json
-    (Windows: %USERPROFILE%\\.pageqa\\config.json)
-  - edit it to set baseUrl / apiKey / model / modelProvider
-  - env overrides also work (higher precedence than the config file):
-      PAGEQA_LLM_BASE_URL / PAGEQA_LLM_API_KEY / PAGEQA_LLM_MODEL / PAGEQA_LLM_PROVIDER
-  - credentials obtained via /login are stored in ~/.pageqa/auth.json; a /model choice
-    is persisted to config.json automatically (or by editing the fields above)
-  - turning the endpoint's thinking off: hybrid reasoning models (Hunyuan / DeepSeek / Qwen) default to
-    thinking on, and the model then emits a long reasoning passage first (slow, token-hungry, and it
-    muddles step numbering). **Off by default**: pageqa picks the off-switch the endpoint understands
-    from the model id and sends it on every request; set thinkingFormat=none to stop doing that.
-      PAGEQA_LLM_THINKING_FORMAT=deepseek   sends thinking: {"type": "disabled"}
-      PAGEQA_LLM_THINKING_FORMAT=qwen       sends enable_thinking: false
-      PAGEQA_LLM_THINKING_FORMAT=zai|together|openrouter|string-thinking|qwen-chat-template
-                                            also work; see the README for the table
-      PAGEQA_LLM_THINKING_FORMAT=none       send no thinking switch (endpoint keeps its default)
-      (openai / ant-ling / baseten cannot send an off-switch. If an endpoint rejects the field, the
-        probe drops it and downgrades, so a working endpoint is never broken by the default.)
-  - Small-window / local models (optional): custom endpoints expose no window metadata, and a local
-    engine's window follows its load setting (the same model can be 8192 or 131072). **When you do
-    not declare one, pageqa asks the engine once** (LM Studio /api/v0/models, llama.cpp /props) and
-    only falls back to a conservative 32k if that fails.
-      PAGEQA_LLM_CONTEXT_WINDOW=8192   the endpoint's real context window (tokens); or set
-                                       "contextWindow" in config.json
-    A declared value wins over detection. pageqa then budgets against the window, trims history as
-    needed, clamps max_tokens to the window, and re-calibrates its estimate against the real usage
-    the endpoint reports.
-      PAGEQA_COMPACT_PROMPT=true|false  compact the "fixed prefix" (system prompt + tool docs)
-    Unset = auto: compacted when the budget cannot fit the default prefix, or when **the model name
-    looks small** (<=9B / mini / nano / tiny) — a 4B model gets compacted even with a 128k window,
-    otherwise it reads a 9k-token rule book every turn for nothing (12.4k -> ~3.5k tokens).
-  - Jev semantic judgment (optional, for higher assertion precision; only called when literal match misses):
-      PAGEQA_JEV_ENABLED=true    enable Jev-assisted assertion
-      PAGEQA_JEV_API_KEY=<key>  TypeSafe API key
-      PAGEQA_JEV_MODEL=<model>  Jev model (default jev-latest)
-      PAGEQA_JEV_THRESHOLD=<n>  judgment threshold 0-1 (default 0.5)
-  - run pageqa --init-config to explicitly create/reset the config file
-
-Prerequisites:
-  - bsk daemon installed and started, with a browser connected (bsk session start)
-  - an available OpenAI-compatible LLM endpoint (default http://127.0.0.1:3000/v1, model hunyuan-2.0-instruct,
-     overridable via ~/.pageqa/config.json or PAGEQA_LLM_* env vars)
-
-Examples:
-  pageqa run --session ulao "open https://example.com and assert the title contains Example"
-  pageqa run examples/smoke.md --json
-  pageqa run examples/smoke.md --debug
-  pageqa --tui                         # interactive mode: load a case with /run <file>
-  pageqa run --emit-script examples/smoke.md    # batch run + freeze a replay script
-  pageqa sessions                       # review archived parameters and tool calls (Ctrl+C to quit)
-  pageqa lint examples/smoke-test.md    # static case-format check (no browser, no model)
-`,
+    "help.full":
+    "Usage:\n" +
+    "  pageqa                    start the interactive session: the only entry point;\n" +
+    "                            load cases inside it with /run\n" +
+    "  pageqa --tui              same thing (explicit form)\n" +
+    "  pageqa lint <case files…> static format check only (no case run, no browser, no model)\n" +
+    "  pageqa sessions           local service to review past runs (what the model was given)\n" +
+    "  pageqa update             check / install a new version\n" +
+    "\n" +
+    "Options:\n" +
+    "  --locale <zh|en>          UI / log / report language (default zh)\n" +
+    "  --debug                   debug logs (tool calls and timings, snapshot slimming, Jev…)\n" +
+    "  --no-pager                print long help without a pager\n" +
+    "  --init-config             create the config file if missing (never resets it)\n" +
+    "  -v, --version             version\n" +
+    "  -h, --help                this help\n" +
+    "\n" +
+    "Inside the session:\n" +
+    "  /run <case file>          load a case and start it (navigate with mp:// or http://)\n" +
+    "  /replay <script>          zero-model replay of a recorded script\n" +
+    "  /driver                   switch the test driver: desktop browser / WeChat mini program\n" +
+    "  /model                    choose the model used by this session\n" +
+    "  /setting                  side-output switches, language, concurrency\n" +
+    "  /help                     all commands and key bindings\n" +
+    "\n" +
+    "Cases run inside the session only: the command-line run / --replay / --only / --driver\n" +
+    "entries now live in the UI (/run, /replay, /driver); the CLI just starts the session.\n" +
+    "\n" +
+    "More (model proxy routing, placeholders, reports and replay scripts, config) in the README.",
     "help.sessions": `pageqa sessions - local archive query server
 
 Usage:

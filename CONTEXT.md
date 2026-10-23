@@ -119,3 +119,27 @@ _Avoid_：状态栏、日志视口、运行队列
 **场景日志前缀（Scenario Log Tag）**：
 并发跑多个场景时，每行日志行首的 `[#k 场景名]`——`k` 是用例原文里的次序，与报告、`--only k`、看板编号同一个数，名字只作辨认且过长截断。串行时不加（顺序已能分辨，加了只会挤掉日志正文）。没有它，多条场景的日志交错在一起就分不清哪行属于谁。
 _Avoid_：日志分组、日志 tab、场景过滤
+
+**驱动后端（Driver Backend）**：
+pageqa 用来真正驱动被测目标的执行层。当前有两种：`bsk`（BrowserSkill 驱动的桌面浏览器，默认）与 `miniprogram`（微信小程序，经 `miniprogram-automator` 驱动微信开发者工具）。两者对 agent / replay / locator 层暴露同形状的 `BskOps` 操作接口（`navigate` / `snapshot` / `click` / `fill` / `assertText` …），由 `--driver` 开关切换。
+_Avoid_：驱动、适配器、插件、provider
+
+**小程序驱动后端（Miniprogram Driver Backend）**：
+`src/miniprogram/` 下的后端实现：经微信官方 `miniprogram-automator` 拉起微信开发者工具并载入项目，把小程序的 WXML 视图树合成成与桌面浏览器同形的 `role "name"` + `@eN` 快照文本，从而复用现有 locator / 录制 / 回放链。
+_Avoid_：微信后端、mp 后端、小程序适配器
+
+**视图树快照（View-Tree Snapshot）**：
+小程序场景下 `snapshot` 的产物：递归枚举 WXML 视图树、按已知组件标签遍历，把每个节点渲染成 `role（组件类型） "name（文本 / placeholder / id 回退）"` + `@eN` 的文本，再经 `slimSnapshot` 瘦身。格式与桌面浏览器的 aria 快照同形，故 locator 模型零改动。
+_Avoid_：小程序快照、组件树、DOM 快照
+
+**路由导航（Route Navigation）**：
+小程序场景下 `navigate` 的语义：打开一个小程序**页面路由**（如 `/pages/index/index`），而非桌面浏览器的 http(s) URL。用例里写作 `mp://页面路由` 伪协议（如 `mp://pages/index/index?id=1`），由小程序后端剥前缀后交给 `reLaunch` / `navigateTo`。
+_Avoid_：页面跳转、打开页面、URL 导航
+
+**`mp://` 伪协议（`mp://` Pseudo-Protocol）**：
+小程序用例里表示「导航到某个小程序页面路由」的写法，前缀 `mp://` 后跟页面路由路径（可带 query）。是 `http(s)://` 在小程序世界里的对应物；`lint` 的导航动词校验在小程序模式下对它豁免。
+_Avoid_：小程序 URL、页面地址、路由协议
+
+**原生弹窗（Native Overlay）**：
+小程序里由微信客户端绘制的 UI（`wx.showModal` / `showToast` / `authorize` / `getUserProfile` 等），**不在 WXML 视图树内**，element API 读不到文本也点不了其按钮。MVP 不覆盖，二期借 `callWxMethod` 注入 mock 或主动调用拿 Promise 结果。
+_Avoid_：系统弹窗、客户端弹窗、微信弹窗

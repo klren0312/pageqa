@@ -22,6 +22,7 @@
     "test:free-providers": "npm run build && node --test --test-timeout=60000 tests/llm/free-providers.test.mjs",
     "test:model-catalog": "npm run build && node --test --test-timeout=60000 tests/config/model-catalog.test.mjs tests/tui/model-default-persistence.test.mjs",
     "prepublishOnly": "npm run build",
+    "postinstall": "patch-package || exit 0",
     "serve:smoke": "serve -l 18888 examples"
   },
   "files": [
@@ -52,6 +53,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
+    "miniprogram-automator": "0.13.0",
+    "patch-package": "^8.0.0",
     "serve": "^14.2.6",
     "typescript": "^7.0.2"
   }

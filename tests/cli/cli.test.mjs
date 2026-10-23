@@ -3,7 +3,54 @@ import assert from "node:assert/strict";
 import { parseArgs } from "../../dist/index.js";
 import { getLocale, parseLocale, setLocale, t } from "../../dist/shared/i18n.js";
 
+// 这些断言测的是**参数协议层**（父子进程之间怎么说、每个开关怎么解析）。
+// 用户面已把「从命令行跑用例」的入口收进交互模式，parseArgs 会把那些 flag 判为
+// 误用——所以这里按「内部子进程」身份解析；用户面拦截另有专门用例守卫。
+process.env.PAGEQA_INTERNAL_CHILD = "1";
+
 // 纯单元测试：parseArgs / parseLocale 都是纯函数（import index.js 不会启动 CLI，有入口守卫）。
+
+describe("用户面不再有「从命令行跑用例」的入口", () => {
+  // 这些 flag 属于父子协议（父进程 fork 场景进程时要用），但**用户**不该再能从
+  // 命令行直接跑用例——那条路已经收进交互模式（/run、/replay、/driver）。
+  const USER_FACING = [
+    ["run", "case.md"],
+    ["--replay", "case.replay.json"],
+    ["--only", "2"],
+    ["--suite"],
+    ["--emit-script"],
+    ["--json"],
+    ["--out", "report.json"],
+    ["--driver", "miniprogram"],
+    ["--concurrency", "3"],
+    ["--prefer-replay"],
+    ["--semantic"],
+    ["--fail-fast"],
+    ["--settle-waits"],
+    ["--locate-timeout", "1000"],
+    ["--no-lint"],
+    ["--no-tui"],
+  ];
+  for (const argv of USER_FACING) {
+    test(`用户敲 ${argv[0]} 会被引导到交互模式`, () => {
+      const saved = process.env.PAGEQA_INTERNAL_CHILD;
+      delete process.env.PAGEQA_INTERNAL_CHILD;
+      try {
+        const args = parseArgs(argv);
+        assert.ok(args.error, "应当报「已收进交互模式」");
+        assert.match(args.error, /useTuiOnly|交互模式/);
+      } finally {
+        if (saved !== undefined) process.env.PAGEQA_INTERNAL_CHILD = saved;
+      }
+    });
+  }
+  test("内部子进程身份下同样的参数照常解析（父子协议不受影响）", () => {
+    const args = parseArgs(["--only", "2", "--json"]);
+    assert.equal(args.error, undefined);
+    assert.equal(args.only, "2");
+    assert.equal(args.json, true);
+  });
+});
 
 /**
  * 并发量相关文案必须两种语种都有。

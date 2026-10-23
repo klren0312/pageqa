@@ -120,6 +120,10 @@ Auto-entry: with no `--json`, bare **`pageqa`** enters the TUI on a TTY. Run a c
 
 ## Batch mode — one-shot runs / CI
 
+> **Moved into the TUI.** Running cases from the command line is gone — start
+> `pageqa` and load the case with `/run` (re-run a recorded script with
+> `/replay`). The notes below still describe how a run behaves.
+
 Use when you don't need to interact mid-run, or to feed CI:
 
 ```bash
@@ -151,6 +155,9 @@ A crash or a timeout is recorded as a failure and does not drag anyone else down
 ---
 
 ## Replay — zero-model re-run
+
+> **Moved into the TUI.** Replay from the command line is gone — inside the
+> session, use `/replay <script>`.
 
 After a model-driven pass, operations are frozen into a replay script (`*.replay.json` next to the source case, on by default; toggle in `/setting`, `--emit-script` always wins). Re-run it with zero model calls — sub-second, no LLM endpoint needed — ideal for "model once, regress daily" in CI:
 
@@ -307,32 +314,116 @@ Rules are matched top-down, first match wins; anything unmatched falls back to `
 
 | Option | Description |
 | --- | --- |
-| `--session <id>` | Use an existing bsk session (auto-created by default) |
+| `--tui` | Start the interactive session explicitly (this is the default with no arguments) |
 | `--locale <zh\|en>` | UI / log / report language (default zh) |
-| `--json` | Output JSON report (excludes the TUI) |
-| `--suite` | Force multi-scenario suite mode |
-| `--only <index\|title>` | Run just one scenario (index from 1, or an exact title match); output stays suite-shaped. Mutually exclusive with `--suite`/`--tui`/`--replay` |
-| `--concurrency <n>` | Run up to n scenarios at once (**a limit**, default 1; `PAGEQA_CONCURRENCY` / the `concurrency` config field also work). Capped at 8, exceeding it errors; interactive mode honours it too (`/setting` > concurrency changes it live), `--replay` does not |
-| `--tui` / `--no-tui` | Force interactive on/off (`PAGEQA_NO_TUI=1` also works); `--tui` takes no case — load it with `/run` inside |
 | `--no-pager` | Print long help without a pager (default pager: Space/Enter next, q quit; `PAGER=cat` also works) |
-| `--emit-script [path]` | Freeze a replay script (on by default, next to the source case) |
-| `--no-side-outputs` | Write no side outputs (HTML report, default replay script); an explicit `--emit-script <path>` still wins |
-| `--quiet-side-outputs` | Still write side outputs, but print **no closing "outputs" list** — the list is printed once by the process you actually close. The parent sets it for child processes: the replay script in a child's list is a temp transport file that the parent deletes right after |
-| `--usage-stream` | Print one structured LLM-usage record per call to stderr (prefix `[pageqa:usage]`); how the parent gets live usage from a child process |
-| `--no-lint` | Skip the case-format pre-check before a run (on by default; it only advises on stderr and never blocks). To gate on it use `pageqa lint` |
-| `lint` (subcommand) | `pageqa lint <case file...>`: static case-format check, no browser and no model (`--json` / `--strict`); exit code `1` means there is an `error` |
-| `--replay <file>` | Replay an existing script with zero models |
-| `--prefer-replay` | Replay with zero models when the sibling script still matches the current case; otherwise run live |
-| `--semantic` | At replay, assertions use Jev semantic judgment |
-| `--fail-fast` | At replay, stop a scenario on first failure |
-| `--settle-waits` | At replay, run `wait` steps as "wait until the page settles, capped at the recorded milliseconds" instead of sleeping the full time. Faster, but a wait that existed for something outside the page (a server-side export, a background queue) can be released early |
-| `--locate-timeout <ms>` | At replay, how long a step waits for the page to become ready when the locator's whole region is missing (default 8000; `0` = judge "element not found" at once) |
 | `--init-config` | Create the config file if it is missing (it does not reset an existing one) |
-| `--out <file>` | Write the report to a file |
 | `--debug` | Debug logs (bsk commands & timings, snapshot slimming, Jev requests…) |
+| `lint` (subcommand) | `pageqa lint <case file...>`: static case-format check, no browser and no model (`--json` / `--strict`); exit code `1` means there is an `error` |
 | `sessions` (subcommand) | `pageqa sessions`: start the local archive server to review the parameters handed to the model and the full interaction (`--port <n>` / `--dir <path>` / `--no-open`) |
 | `update` (subcommand) | `pageqa update`: check for and install the latest version (`--check` for check-only, `--json` for machine-readable output); uses `npm install -g pageqa@latest`, with a pnpm hint on failure |
 | `-v, --version` · `-h, --help` | Version / help |
+
+Running cases is a **TUI-only** job now — the command-line way of running them is
+gone. Inside the session: `/run <case file>` loads and runs a case, `/replay
+<script>` re-runs a recorded script with zero models, and `/driver` switches the
+test driver (desktop browser / WeChat mini program).
+
+---
+
+## Miniprogram driver (WeChat mini programs)
+
+> **The driver is picked inside the TUI** with `/driver` (desktop browser /
+> WeChat mini program). The `--driver` command-line flag is gone.
+
+The mini-program driver swaps the browser backend for the WeChat mini-program
+backend (`src/miniprogram/`): the same agent / locator / replay machinery, but the
+steps run against a real project opened in **WeChat DevTools** (微信开发者工具)
+through `miniprogram-automator`.
+
+**Before you run it** — two switches in WeChat DevTools decide whether automation
+can work at all. Open **设置 → 安全设置**:
+
+| Setting | Why it matters |
+| --- | --- |
+| **服务端口 / Service port** — on | The CLI talks to the IDE over this local HTTP server. With it off, `cli auto` can never open an automation channel. |
+| **自动化接口打开工具时默认信任项目 / Trust project when opened via the automation API** — on | Otherwise the IDE shows a *「是否信任该项目」* confirmation when the automation API opens the project. Nobody clicks it ⇒ the channel never comes up and the first scenario just hangs. |
+| **CLI 访问令牌 / CLI access token** — leave empty | Empty means "no token required", which is what pageqa uses. |
+
+> Do **not** work around the trust prompt with `cli auto --trust-project`: on current
+> DevTools builds that flag makes the CLI hang (`Maximum setlocal recursion level
+> reached`) instead of trusting the project. The switch above is the supported way.
+
+Also needed: WeChat DevTools **logged in**; `miniprogram-automator` (a devDependency
+of this repo — the upstream fix listed below is applied automatically by
+`patch-package` on `postinstall`); and a mini-program project root (the folder
+holding `app.json` / `project.config.json`).
+
+**Configuration** — `~/.pageqa/config.json`:
+
+```json
+{
+  "miniprogram": {
+    "cliPath": "D:\\Apps\\微信web开发者工具\\cli.bat",
+    "projectPath": "D:\\path\\to\\your\\miniprogram"
+  }
+}
+```
+
+or via env vars `PAGEQA_MINIPROGRAM_CLI_PATH` / `PAGEQA_MINIPROGRAM_PROJECT_PATH`.
+
+**In the TUI**
+
+```bash
+pageqa        # start the interactive session
+```
+
+Pick the driver with `/driver` (desktop browser / WeChat mini program) — the status
+line always shows the current one. Load the case with `/run <file>`, or re-run a
+recorded script with `/replay <script>`. A case navigates with a mini-program
+route: `打开 mp://pages/index/index`. A case that mentions `mp://` switches the
+driver to the mini program by itself, so a mini-program case cannot accidentally
+run in the browser.
+
+**Gotchas worth knowing**
+
+- **One automation channel per project, one client at a time.** The DevTools keeps
+  a single automation channel per project and that channel serves **one** client.
+  So the pageqa parent process deliberately does *not* open a channel — each
+  scenario's child process opens its own, reusing the same port so a channel left
+  behind by an earlier run gets revived. Two pageqa sessions on the same project
+  at once do not coexist: the second one closes the first one's project window
+  (`cli close --project`) to take the channel over.
+- **A closed channel leaves a "zombie" port.** After the client disconnects, the
+  port keeps listening but no longer accepts new connections. pageqa re-runs
+  `cli auto` on the *same* port, which makes the IDE take the channel back. A port
+  staying occupied after a run is normal, not a leak.
+- **The mini-program driver runs serially.** Concurrency is fixed to 1 — otherwise
+  every scenario would launch its own DevTools instance on the same project and
+  they would fight over it. `/setting` hides the concurrency knob in this mode.
+- **Tourist appids are fine.** `cli auto` works with `touristappid`; note that
+  `cli open` (as opposed to `auto`) rejects it with `code 10`, which is why the
+  driver uses `auto`.
+- **Failures show the CLI's own output.** If a channel cannot be opened, the error
+  carries what the DevTools CLI said — read it before guessing.
+
+**What this backend supports**
+
+- Steps available: `navigate`, `snapshot`, `click`, `fill`, `assert_text`, `screenshot`, `get_html`.
+- Not available (fail fast with a clear error): `upload`, `download`, `wheel`, `hover`, `scroll`, `press`, `focus`, `blur`, `select_option`, `pick_date`, `assert_network`.
+- Snapshots are a **flat** list of the known WXML tags (no nesting) in the same
+  `@e1 view "…"` shape the browser backend emits — so locator and replay work unchanged.
+- `assert_text` is a **literal** match in this backend (no Jev semantic re-check).
+- Native popups (`showModal` and friends) are not covered yet.
+
+**Upstream fix we carry** (`patches/miniprogram-automator+0.13.0.patch`, applied
+by `patch-package`): `checkVersion` is skipped — current DevTools return a version
+string the SDK cannot parse (`undefined.split`), even though the connection itself
+is fine. pageqa spawns the CLI itself (with `shell: true`, which Windows needs
+for a `.bat`), so the SDK's own `launch` path is not used.
+
+The patch is version-pinned: upgrading `miniprogram-automator` means regenerating
+it (`npx patch-package miniprogram-automator`).
 
 ---
 

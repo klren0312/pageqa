@@ -5,6 +5,8 @@ dist/
 *.zip
 *.7z
 pageqa-report/
+# 运行产物：失败步骤截图（勿入库）
+step_*.png
 # 回放脚本产物：每次跑 pageqa 用例都会重写，属于运行结果而非用例定义
 *.replay.json
 .superpowers

@@ -28,6 +28,11 @@ import {
   ensureSession,
   ensureBskReady,
 } from "../bsk/tools.js";
+import {
+  closeMiniprogram,
+  createMiniprogramTools,
+  ensureMiniprogramReady,
+} from "../miniprogram/index.js";
 import { flushDownloadCleanup } from "../report/downloads.js";
 import { resetScreenshots, screenshotsTaken } from "../report/screenshots.js";
 import { JevClient } from "../llm/jev.js";
@@ -35,6 +40,8 @@ import {
   loadConfig,
   readAutoScreenshot,
   readCompactPrompt,
+  readDriver,
+  type Driver,
 } from "../config/config.js";
 import { debugLog, info, setDebug } from "../shared/log.js";
 import {
@@ -98,6 +105,8 @@ import { t } from "../shared/i18n.js";
 
 export interface AgentOptions {
   session?: string;
+  /** 测试驱动后端：bsk（默认）或 miniprogram（微信小程序）。 */
+  driver?: Driver;
   systemPrompt?: string;
   debug?: boolean;
   /**
@@ -434,7 +443,10 @@ export async function runAgent(
   try {
     return await runAgentCore(input, opts, holder);
   } finally {
-    if (holder.id) await closeSession(holder.id);
+    if (holder.id) {
+      if (holder.id === "miniprogram") await closeMiniprogram();
+      else await closeSession(holder.id);
+    }
     // 异常路径（工具抛错、模型报错打断了编排）不会走到 finalizeResult：
     // 那正是最需要现场的时刻，所以在这里兜底写一次。
     await saveSessionArchive(holder);
@@ -687,13 +699,24 @@ async function initializeAgent(
   }
   info(t("log.llmReady", { model: model.id }));
 
-  info(t("log.checkDaemon"));
-  await ensureBskReady();
-  info(t("log.createSession"));
-  const session = await ensureSession(opts.session);
-  holder.id = session;
-  log("[runAgent] bsk session=" + session);
-  info(t("log.session", { id: session }));
+  const driver = opts.driver ?? readDriver();
+  let session: string;
+  if (driver === "miniprogram") {
+    info("检查小程序驱动…");
+    await ensureMiniprogramReady(loadConfig().miniprogram);
+    session = "miniprogram";
+    holder.id = session;
+    log("[runAgent] miniprogram driver");
+    info(t("log.session", { id: session }));
+  } else {
+    info(t("log.checkDaemon"));
+    await ensureBskReady();
+    info(t("log.createSession"));
+    session = await ensureSession(opts.session);
+    holder.id = session;
+    log("[runAgent] bsk session=" + session);
+    info(t("log.session", { id: session }));
+  }
 
   const jevClient = new JevClient(cfg.jev, debug);
   log("[runAgent] Jev enabled=" + jevClient.enabled);
@@ -735,22 +758,39 @@ async function initializeAgent(
   // 不存在「用旧值」的问题。
   const snapshotBudgetRef: { chars?: number } = {};
   const tools = [
-    ...createBskTools({
-      session,
-      jevClient,
-      // 快照也跟着窗口缩：一次快照上万字符，小窗口下它比用例本身还大。
-      snapshotBudgetChars: () => snapshotBudgetRef.chars,
-      onExec: (event) => {
-        recorder.noteTool(event);
-        if (event.assert) {
-          assertions.push({
-            expectation: event.assert.expectation,
-            verdict: event.assert.pass ? "pass" : "fail",
-            evidence: event.assert.evidence,
-          });
-        }
-      },
-    }),
+    ...(driver === "miniprogram"
+      ? createMiniprogramTools({
+          session,
+          jevClient,
+          // 快照也跟着窗口缩：一次快照上万字符，小窗口下它比用例本身还大。
+          snapshotBudgetChars: () => snapshotBudgetRef.chars,
+          onExec: (event) => {
+            recorder.noteTool(event);
+            if (event.assert) {
+              assertions.push({
+                expectation: event.assert.expectation,
+                verdict: event.assert.pass ? "pass" : "fail",
+                evidence: event.assert.evidence,
+              });
+            }
+          },
+        })
+      : createBskTools({
+          session,
+          jevClient,
+          // 快照也跟着窗口缩：一次快照上万字符，小窗口下它比用例本身还大。
+          snapshotBudgetChars: () => snapshotBudgetRef.chars,
+          onExec: (event) => {
+            recorder.noteTool(event);
+            if (event.assert) {
+              assertions.push({
+                expectation: event.assert.expectation,
+                verdict: event.assert.pass ? "pass" : "fail",
+                evidence: event.assert.evidence,
+              });
+            }
+          },
+        })),
     // Zen 的免费层要求请求里带五个工具名，否则 403（见 free-providers.ts）。
     // 只在这一条车道上补桩：别的 provider 不该为一次「过门禁」多背五个无用声明。
     ...(choice.provider === OPENCODE_FREE_PROVIDER_ID

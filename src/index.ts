@@ -15,6 +15,7 @@ import {
   loadConfig,
   MAX_CONCURRENCY,
   readConcurrency,
+  readDriver,
   readSavedLocale,
   readScenarioTimeoutMs,
   readSideOutputPrefs,
@@ -80,6 +81,8 @@ import type {
 interface CliArgs {
   input?: string;
   session?: string;
+  /** `--driver <bsk|miniprogram>`：测试驱动后端（默认 bsk）。 */
+  driver?: "bsk" | "miniprogram";
   json: boolean;
   out?: string;
   suite: boolean;
@@ -231,7 +234,69 @@ function emptyCliArgs(): CliArgs {
   };
 }
 
+/**
+ * 内部子进程标记：父进程 fork 场景进程时设置（见 agent/suite.ts）。
+ *
+ * 父子协议要用同一批命令行参数（--only / --json / --emit-script…），而用户面
+ * 已经把这些入口收进交互模式——靠这个标记把两者区分开。
+ */
+function isInternalChild(): boolean {
+  return process.env.PAGEQA_INTERNAL_CHILD === "1";
+}
+
 export function parseArgs(argv: string[]): CliArgs {
+  // 内部子进程标记见模块级 isInternalChild：父子协议仍要用同一批 flag
+  //（--only / --json / --emit-script…），所以「用户面禁用」这条检查只对用户进程生效。
+  /**
+   * 面向用户的「直接从命令行跑用例」入口：它们已经搬进交互模式
+   * （/run、/replay、/driver…）。命令行直接执行会绕过界面里那些前置
+   * （格式预检、产物开关、并发口径、驱动选择），两套入口迟早打架。
+   */
+  const TUI_ONLY_FLAGS = new Set([
+    "run",
+    "--replay",
+    "--prefer-replay",
+    "--suite",
+    "--only",
+    "--session",
+    "--json",
+    "--out",
+    "--emit-script",
+    "--semantic",
+    "--fail-fast",
+    "--settle-waits",
+    "--locate-timeout",
+    "--no-side-outputs",
+    "--quiet-side-outputs",
+    "--usage-stream",
+    "--no-lint",
+    "--concurrency",
+    "--driver",
+    "--no-tui",
+  ]);
+  /** 带值的 flag：扫描时要把它的值跳过去，免得把值误当成另一个 flag。 */
+  const VALUE_FLAGS = new Set([
+    "--session",
+    "--only",
+    "--out",
+    "--emit-script",
+    "--locate-timeout",
+    "--concurrency",
+    "--driver",
+    "--locale",
+  ]);
+  let misused: string | undefined;
+  if (!isInternalChild()) {
+    for (let i = 0; i < argv.length; i++) {
+      const a = argv[i];
+      const name = a.includes("=") ? a.slice(0, a.indexOf("=")) : a;
+      if (TUI_ONLY_FLAGS.has(name)) {
+        misused = name;
+        break;
+      }
+      if (VALUE_FLAGS.has(name)) i++;
+    }
+  }
   // 显式执行入口：`pageqa run <input>`。裸的 `pageqa <input>` 一律拒绝（见函数末尾），
   // 避免把拼错的命令/文件名当成用例直接跑起来。
   const explicitRun = argv[0] === "run";
@@ -247,6 +312,10 @@ export function parseArgs(argv: string[]): CliArgs {
   // 子命令：`pageqa update`。只更新自己，不碰用例/浏览器/模型。
   if (!explicitRun && argv[0] === "update") return parseUpdateArgs(argv.slice(1));
   const args: CliArgs = emptyCliArgs();
+  if (misused) {
+    args.error = t("err.useTuiOnly", { flag: misused });
+    return args;
+  }
   args.explicitRun = explicitRun;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -348,6 +417,15 @@ export function parseArgs(argv: string[]): CliArgs {
       case "--debug":
         args.debug = true;
         break;
+      case "--driver": {
+        const v = argv[++i];
+        if (v !== "bsk" && v !== "miniprogram") {
+          process.stderr.write("错误：--driver 只能是 bsk 或 miniprogram\n");
+          process.exit(1);
+        }
+        args.driver = v;
+        break;
+      }
       case "--replay": {
         const v = argv[++i];
         if (v === undefined || v.startsWith("-")) {
@@ -1034,6 +1112,7 @@ async function replayMode(args: CliArgs): Promise<number> {
   try {
     const result = await runReplayScript(script, {
       session: args.session,
+      driver: args.driver,
       semantic: args.semantic,
       debug: args.debug,
       scriptPath: path,
@@ -1121,6 +1200,9 @@ function printProxyConfig(): void {
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
+  // 驱动是**会话级**选择：把生效的驱动写进环境变量，场景子进程继承它
+  // （交互模式里的 /driver 切换走同一条路，见 config.setDriver）。
+  process.env.PAGEQA_DRIVER = readDriver();
   // 语种优先级：CLI `--locale` > 环境变量 `PAGEQA_LOCALE` > 配置文件里保存的 > 默认 zh。
   // parseArgs 已按 `--locale` 切过一次；这里补上「配置文件」这一档（只读，不建文件）。
   setLocale(
@@ -1197,6 +1279,24 @@ async function main(): Promise<number> {
     process.stderr.write(
       t("err.concurrencyMax", { n: concurrency, max: MAX_CONCURRENCY }) + "\n\n",
     );
+    return 1;
+  }
+
+  // ── 用户面只保留「启动交互模式」这一条执行入口 ──
+  // 跑用例、回放、切驱动都搬进了 TUI（/run、/replay、/driver）：命令行直接执行
+  // 会绕过界面里那些前置（格式预检、产物开关、并发口径、驱动选择），两套入口
+  // 迟早打架。父子进程协议不受影响——那条路由 PAGEQA_INTERNAL_CHILD 标记。
+  if (!isInternalChild()) {
+    const interactive = detectInteractive(args, false, concurrency);
+    if (interactive.error) {
+      process.stderr.write(t("err.param", { msg: interactive.error }) + "\n\n");
+      return 1;
+    }
+    if (interactive.run) {
+      setDebug(args.debug);
+      return await runInteractiveSafely({}, args, concurrency);
+    }
+    process.stdout.write(buildHelp() + "\n");
     return 1;
   }
 
@@ -1435,6 +1535,7 @@ async function main(): Promise<number> {
       const { runSuite, renderScenarios } = agentMod;
       result = await runSuite(renderScenarios([onlyPick.scenario]), {
         session: args.session,
+        driver: args.driver,
         debug: args.debug,
         vars,
         scriptPath: reportedScriptPath,
@@ -1473,6 +1574,7 @@ async function main(): Promise<number> {
       const { runAgent } = agentMod;
       result = await runAgent(input, {
         session: args.session,
+        driver: args.driver,
         debug: args.debug,
         vars,
         scriptPath: reportedScriptPath,

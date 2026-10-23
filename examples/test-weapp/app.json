@@ -1,0 +1,7 @@
+{
+  "pages": ["pages/index/index"],
+  "window": {
+    "navigationBarTitleText": "Test Weapp"
+  },
+  "style": "v2"
+}

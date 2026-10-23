@@ -11,6 +11,7 @@ import {
   type Scenario,
 } from "./agent.js";
 import { closeSession, ensureBskReady, ensureSession } from "../bsk/tools.js";
+import { effectiveConcurrency, readDriver } from "../config/config.js";
 import { createProbeCache } from "./model-probe-cache.js";
 import { debugLog, info } from "../shared/log.js";
 import { getLocale, t } from "../shared/i18n.js";
@@ -220,7 +221,11 @@ export async function runSuiteInChildren(
   const scenarios = splitScenarios(opts.script);
   const startedAt = Date.now();
   // 并发是**上限**：不给就是 1（逐个跑），给了也不超过 MAX_CONCURRENCY。
-  const concurrency = Math.max(1, Math.min(opts.concurrency ?? 1, MAX_CONCURRENCY));
+  // 小程序驱动固定串行：每个场景子进程各自拉起一个微信开发者工具实例，
+  // 多个实例连同一个项目会互相抢占（实测 3 并发时三个场景的 launch 全部超时）。
+  const concurrency = effectiveConcurrency(
+    Math.max(1, Math.min(opts.concurrency ?? 1, MAX_CONCURRENCY)),
+  );
   const parallel = concurrency > 1 && scenarios.length > 1;
   // 并发与共享 session 是**语义冲突**，不是「不支持」：见 ConcurrencySessionConflictError。
   if (isConcurrencySessionConflict(concurrency, scenarios.length, opts.session)) {
@@ -295,17 +300,26 @@ export async function runSuiteInChildren(
       // 让子进程上报 session id 在最需要它的时候（崩溃、被强杀）恰好不可靠；
       // 由父进程建、父进程收，子进程只是拿去用。
       let sessionId = opts.session;
-      try {
-        await ensureBskReady();
-        if (!sessionId) sessionId = await ensureSession();
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
-        const error = err instanceof Error ? err : new Error(detail);
-        failures.set(i, { reason: "infrastructure", detail });
-        fatal = { kind: "infrastructure", error, detail };
-        stopped = true;
-        info(t("log.suiteInfraGone", { msg: detail, done: reports.size }));
-        return;
+      if (readDriver() === "miniprogram") {
+        // 小程序驱动：父进程**不建立**自动化连接。
+        //
+        // automator 的 ws 通道只允许一个客户端：父进程一连上就把唯一的名额占了，
+        // 场景子进程再连就会被拒（表现为「一直卡在第一个场景」）。所以让每个
+        // 子进程自己去开通道——上一个子进程退出后留下的僵尸通道，可以用同一个
+        // 端口重跑 `cli auto` 复活（见 miniprogram/connection.ts）。
+      } else {
+        try {
+          await ensureBskReady();
+          if (!sessionId) sessionId = await ensureSession();
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          const error = err instanceof Error ? err : new Error(detail);
+          failures.set(i, { reason: "infrastructure", detail });
+          fatal = { kind: "infrastructure", error, detail };
+          stopped = true;
+          info(t("log.suiteInfraGone", { msg: detail, done: reports.size }));
+          return;
+        }
       }
 
       const scriptPath = tmpDir
@@ -601,6 +615,9 @@ export async function runScenarioChild(opts: RunChildOptions): Promise<ChildRunR
   debugLog(`[suite] fork 场景 ${opts.scenarioIndex + 1}/${opts.total}`);
 
   const env: NodeJS.ProcessEnv = { ...process.env };
+  // 内部子进程标记：用户面已把「从命令行跑用例」的入口收进交互模式，父子协议
+  // 仍要用同一批参数（--only / --json / --emit-script…），靠这个标记把两者区分开。
+  env.PAGEQA_INTERNAL_CHILD = "1";
   if (opts.model) {
     env.PAGEQA_LLM_MODEL = opts.model.model;
     env.PAGEQA_LLM_PROVIDER = opts.model.provider;
@@ -754,13 +771,17 @@ async function classifyReportless(outcome: ChildRunResult): Promise<FailureClass
       error: err instanceof Error ? err : undefined,
     };
   }
-  try {
-    await ensureBskReady();
-  } catch (err) {
-    return {
-      kind: "infrastructure",
-      detail: err instanceof Error ? err.message : String(err),
-    };
+  // 小程序驱动没有浏览器可探：只有 bsk 驱动才用「浏览器还在不在」来区分
+  // 「环境故障」与「这个子进程自己崩了」。
+  if (readDriver() !== "miniprogram") {
+    try {
+      await ensureBskReady();
+    } catch (err) {
+      return {
+        kind: "infrastructure",
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
   return { kind: null, detail: outcome.how };
 }
@@ -935,14 +956,19 @@ export async function runScenarioInChild(
   // 轮到它了才建 session，且由父进程持有（ADR-0013 决策四）。
   // 这一步失败是**环境级**故障（daemon 不可用、浏览器没连）：包装成专用类型，
   // 交互模式据此停掉整条队列，而不是把它摊成一条普通失败继续跑（决策七）。
-  let session: string;
-  try {
-    await ensureBskReady();
-    session = await ensureSession();
-  } catch (err) {
-    throw new EnvironmentUnavailableError(
-      err instanceof Error ? err.message : String(err),
-    );
+  // 小程序驱动是例外：没有浏览器 session 这回事，父进程也**不建立**自动化连接
+  // （那条 ws 通道只允许一个客户端，父进程占着，子进程就连不上——表现为卡在
+  // 第一个场景）。通道由场景子进程自己开。
+  let session: string | undefined;
+  if (readDriver() !== "miniprogram") {
+    try {
+      await ensureBskReady();
+      session = await ensureSession();
+    } catch (err) {
+      throw new EnvironmentUnavailableError(
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   const dir = mkdtempSync(join(tmpdir(), "pageqa-scene-"));

@@ -1,0 +1,5 @@
+<view class="container">
+  <text class="welcome">欢迎使用测试小程序</text>
+  <button bindtap="onStart">开始</button>
+  <text wx:if="{{started}}" class="started">已开启</text>
+</view>

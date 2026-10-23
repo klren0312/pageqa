@@ -1,4 +1,12 @@
 import { test, describe } from "node:test";
+
+// 父进程拼出的子进程命令行要用**同一套**参数解析（--only / --json / --emit-script…），
+// 而用户面已把这些入口收进交互模式——所以这里按「内部子进程」身份解析。
+process.env.PAGEQA_INTERNAL_CHILD = "1";
+// 这个文件测的是 bsk 侧的编排语义：并发上限会按**当前驱动**钳制（小程序驱动固定
+// 串行），而驱动来自用户配置——不钉死成 bsk 的话，用户在配置里选了小程序驱动，
+// 这里的并发判定就会跟着变。
+process.env.PAGEQA_DRIVER = "bsk";
 import assert from "node:assert/strict";
 import { parseArgs } from "../../dist/index.js";
 import {

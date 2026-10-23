@@ -157,12 +157,17 @@ import { FormatSubmitter } from "./format-submitter.js";
 import { getLocale, setLocale, t } from "../shared/i18n.js";
 import {
   CONFIG_PATH,
+  effectiveConcurrency,
+  readDriver,
   readModelPricing,
   readSideOutputPrefs,
   saveConcurrency,
+  saveDriver,
   saveLocale,
   saveModelSelection,
   saveSideOutputPref,
+  setDriver,
+  type Driver,
   type SideOutputPrefs,
 } from "../config/config.js";
 import { AUTH_PATH } from "../config/auth.js";
@@ -690,7 +695,9 @@ export async function runInteractive(
    * 同时写回配置，下次启动还是这个值。启动时的初始值来自 `--concurrency` /
    * `PAGEQA_CONCURRENCY` / 配置文件，由 CLI 解析好传进来。
    */
-  let concurrency = opts.concurrency;
+  // 小程序驱动固定串行：并发在这里调了也不生效（每个场景子进程各拉起一个
+  // 开发者工具实例，并发会互相抢占），所以启动时就钳到 1。
+  let concurrency = effectiveConcurrency(opts.concurrency);
   /** 文本/密钥提问的等待态（同一时刻最多一个）。 */
   let pendingAsk: {
     resolve: (value: string) => void;
@@ -1188,12 +1195,16 @@ export async function runInteractive(
           label: t("tui.setting.locale"),
           description: localeLabel(),
         },
-        {
+      ];
+      // 小程序驱动固定串行：这里调并发不生效（每个场景子进程各拉起一个开发者
+      // 工具实例，并发会互相抢占），所以不提供这个选项。
+      if (readDriver() !== "miniprogram") {
+        items.push({
           value: "concurrency",
           label: t("tui.setting.concurrency"),
           description: concurrencyLabel(concurrency),
-        },
-      ];
+        });
+      }
       const pick = await openSelector(
         t("tui.setting.title", { version: packageVersion() }),
         items,
@@ -1658,6 +1669,10 @@ export async function runInteractive(
     }
     // 当前模型常驻状态栏：切换过模型之后，这一栏是「这一条场景到底用哪个模型」的唯一凭据。
     bits.push(dim(t("tui.model.status", { model: modelLabel(currentChoice) })));
+    // 当前驱动同样常驻：它决定「这个场景跑在桌面浏览器还是微信开发者工具里」。
+    // 选错驱动时报错会指向完全不相干的方向（小程序用例在浏览器驱动下会以
+    // 「浏览器环境跑不起来」收场），所以必须一眼可见。
+    bits.push(dim(t("tui.driver.status", { driver: driverShortLabel() })));
     if (writtenBack > 0) bits.push(dim(t("tui.writtenBack", { n: writtenBack })));
     // 落点常驻状态栏：无落点是「正常但会丢数据」的状态，必须一直看得见。
     bits.push(
@@ -1955,7 +1970,12 @@ export async function runInteractive(
    * 当前这一批的运行队列。`/new` 会把它换成一条新队列（上一批先快照进 `batches`），
    * 因此是 `let`：所有引用点读到的都必须是最新那条。
    */
-  let queue = new ScenarioQueue(runScenario, updateStatus, () => concurrency);
+  let queue = new ScenarioQueue(
+    runScenario,
+    updateStatus,
+    // 并发上限按**当前驱动**实时取：小程序驱动固定串行，切换驱动后立刻生效。
+    () => effectiveConcurrency(concurrency),
+  );
 
   /** `/new` 归档下来的历史批次：退出报告与回放脚本要覆盖整个进程跑过的全部场景。 */
   const batches: SessionBatch[] = [];
@@ -1992,6 +2012,7 @@ export async function runInteractive(
         },
       },
       { name: "model", description: t("tui.cmd.model") },
+      { name: "driver", description: t("tui.cmd.driver") },
       { name: "login", description: t("tui.cmd.login") },
       { name: "logout", description: t("tui.cmd.logout") },
       { name: "setting", description: t("tui.cmd.setting") },
@@ -2421,6 +2442,10 @@ export async function runInteractive(
       append(warn(t("tui.run.empty", { path: displayPath(casePath) })));
       return;
     }
+    // 用例里写了 mp:// 路由 → 自动切到小程序驱动。选错驱动的代价太大：
+    // 桌面浏览器驱动会把 mp:// 当成普通 URL，最后以「浏览器环境跑不起来」收场
+    // （还要先等满 daemon 探活超时），而用户真正要的是微信开发者工具。
+    autoSwitchDriverForCase(scenarios.map((sc) => sc.body).join("\n"));
     // 落点跟着这次加载走：刚打开的文件就是用户此刻在编辑/补用例的那个（决策四）。
     writeBackTarget = casePath;
     for (const sc of scenarios) {
@@ -2563,6 +2588,9 @@ export async function runInteractive(
       case "model":
         void openModelSelector();
         break;
+      case "driver":
+        void openDriverPanel();
+        break;
       case "login":
         void openLoginSelector();
         break;
@@ -2579,6 +2607,92 @@ export async function runInteractive(
       default:
         append(t("tui.unknownCmd", { cmd: cmd ?? "" }));
     }
+  }
+
+  /** 驱动后端的显示名（面板标题与提示里用）。 */
+  function driverLabel(d: Driver): string {
+    return d === "miniprogram"
+      ? t("tui.driver.miniprogram")
+      : t("tui.driver.bsk");
+  }
+
+  /** 状态栏用的驱动短标签（状态栏空间有限）。 */
+  function driverShortLabel(): string {
+    return readDriver() === "miniprogram"
+      ? t("tui.driver.shortMiniprogram")
+      : t("tui.driver.shortBsk");
+  }
+
+  /**
+   * 用例里出现 `mp://` 路由时，自动切到小程序驱动。
+   *
+   * 选错驱动的失败路径太长也太像别的问题：桌面浏览器驱动会把 `mp://` 当成普通
+   * URL，最后以「浏览器环境跑不起来」收场——用户看到的是浏览器坏了，而不是
+   * 「这条用例该走微信开发者工具」。所以这里按用例内容纠正一次，并说清是自动切的
+   * （`/driver` 随时能改回去）。
+   */
+  function autoSwitchDriverForCase(text: string): void {
+    if (readDriver() === "miniprogram") return;
+    if (!/\bmp:\/\//i.test(text)) return;
+    setDriver("miniprogram");
+    try {
+      saveDriver("miniprogram");
+    } catch {
+      /* 写盘失败不致命：本次会话已经生效 */
+    }
+    append(t("tui.driver.autoSwitched", { driver: driverLabel("miniprogram") }));
+    updateStatus();
+  }
+
+  /**
+   * `/driver`：切换测试驱动后端（桌面浏览器 / 微信小程序）。
+   *
+   * 切换对**之后排队的场景**生效，已经跑起来的不受影响：驱动既决定本进程用哪
+   * 套工具集，也通过 `PAGEQA_DRIVER` 传给场景子进程（ADR-0013）。小程序驱动
+   * 固定串行（多个开发者工具实例会互相抢占），所以切过去之后并发上限实际是 1。
+   */
+  async function openDriverPanel(): Promise<void> {
+    const current = readDriver();
+    const items: SelectItem[] = [
+      {
+        value: "bsk",
+        label: t("tui.driver.bsk"),
+        description:
+          current === "bsk" ? t("tui.setting.on") : t("tui.setting.off"),
+      },
+      {
+        value: "miniprogram",
+        label: t("tui.driver.miniprogram"),
+        description:
+          current === "miniprogram"
+            ? t("tui.setting.on")
+            : t("tui.setting.off"),
+      },
+    ];
+    const pick = await openSelector(
+      t("tui.driver.title", { current: driverLabel(current) }),
+      items,
+      { hint: t("tui.driver.hint") },
+    );
+    if (!pick) return;
+    const next = pick.value as Driver;
+    if (next === current) {
+      append(t("tui.driver.unchanged", { driver: driverLabel(current) }));
+      return;
+    }
+    setDriver(next);
+    try {
+      saveDriver(next);
+      append(t("tui.driver.applied", { driver: driverLabel(next) }));
+    } catch (err2) {
+      append(
+        t("tui.driver.saveFailed", {
+          driver: driverLabel(next),
+          msg: msgOf(err2),
+        }),
+      );
+    }
+    updateStatus();
   }
 
   /**

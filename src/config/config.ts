@@ -36,6 +36,19 @@ import type { JevConfig } from "../llm/jev.js";
  */
 export const PAGEQA_PROVIDER_ID = "pageqa";
 
+/** 测试驱动后端：bsk=桌面浏览器（默认），miniprogram=微信小程序。 */
+export type Driver = "bsk" | "miniprogram";
+
+/** 小程序驱动配置（微信开发者工具 + 项目）。 */
+export interface MiniProgramConfig {
+  cliPath?: string;
+  projectPath?: string;
+  platform?: "android" | "ios";
+  timeout?: number;
+  port?: number;
+  account?: string;
+}
+
 export interface PageQaConfig {
   baseUrl: string;
   apiKey: string;
@@ -134,6 +147,10 @@ export interface PageQaConfig {
   modelPricing?: ModelPricing;
   /** USD → CNY 的显示汇率。只影响报告里并列的人民币数，价目本身仍是美元。 */
   usdToCny?: number;
+  /** 小程序驱动配置（仅当 driver=miniprogram 时生效）。 */
+  miniprogram?: MiniProgramConfig;
+  /** 测试驱动后端：bsk（默认，桌面浏览器）/ miniprogram（微信小程序）。 */
+  driver?: Driver;
 }
 
 const DEFAULTS: PageQaConfig = {
@@ -177,6 +194,74 @@ export function readContextWindow(): number | undefined {
   return Number.isFinite(n) && n >= 512 ? Math.round(n) : undefined;
 }
 
+/**
+ * 进程内的驱动覆盖（交互模式的 /driver 切换会写这里）。
+ *
+ * 单独放一个进程级状态，是因为驱动是**会话级**选择：CLI 不再暴露 --driver，
+ * 切换发生在界面里，必须对「本进程」和「之后 fork 出去的场景子进程」同时生效。
+ */
+let driverOverride: Driver | undefined;
+
+/**
+ * 当前测试驱动后端。
+ *
+ * 优先级：进程内覆盖（/driver）> 环境变量 `PAGEQA_DRIVER`（父子进程之间的通道）
+ * > 配置文件里的 `driver` > 默认 bsk。
+ */
+export function readDriver(): Driver {
+  if (driverOverride) return driverOverride;
+  const raw = (process.env.PAGEQA_DRIVER ?? "").trim().toLowerCase();
+  if (raw === "miniprogram" || raw === "bsk") return raw;
+  const rawFile = readRawConfig().driver;
+  const fromFile = typeof rawFile === "string" ? rawFile.trim().toLowerCase() : "";
+  return fromFile === "miniprogram" ? "miniprogram" : "bsk";
+}
+
+/**
+ * 切换当前会话的驱动后端。
+ *
+ * 同时写环境变量：场景跑在子进程里（ADR-0013），子进程靠 `PAGEQA_DRIVER` 知道
+ * 自己该用哪个驱动——不写的话，切换只对本进程生效，fork 出去的场景还用旧驱动。
+ */
+export function setDriver(d: Driver): void {
+  driverOverride = d;
+  process.env.PAGEQA_DRIVER = d;
+}
+
+/** 把驱动后端持久化（保留其它字段）；供交互模式 /driver 使用。 */
+export function saveDriver(d: Driver): void {
+  updateUserConfig({ driver: d });
+}
+
+/**
+ * 按驱动修正并发上限。
+ *
+ * 小程序驱动固定**串行**：每个场景子进程各自拉起一个微信开发者工具实例，
+ * 多个实例连同一个项目会互相抢占（实测 3 并发时三个场景的 launch 全部超时）。
+ * bsk 驱动不受影响，原样返回。
+ */
+export function effectiveConcurrency(n: number): number {
+  return readDriver() === "miniprogram" ? 1 : n;
+}
+
+/** 读取小程序驱动配置：环境变量优先于配置文件（仅 driver=miniprogram 时生效）。 */
+export function readMiniprogramConfig(
+  file?: Partial<MiniProgramConfig>,
+): MiniProgramConfig {
+  const env = process.env;
+  const num = (v: string | undefined) => (v != null ? Number(v) : undefined);
+  return {
+    cliPath: env.PAGEQA_MINIPROGRAM_CLI_PATH ?? file?.cliPath,
+    projectPath: env.PAGEQA_MINIPROGRAM_PROJECT_PATH ?? file?.projectPath,
+    platform:
+      (env.PAGEQA_MINIPROGRAM_PLATFORM as "android" | "ios" | undefined) ??
+      file?.platform,
+    timeout: num(env.PAGEQA_MINIPROGRAM_TIMEOUT) ?? file?.timeout,
+    port: num(env.PAGEQA_MINIPROGRAM_PORT) ?? file?.port,
+    account: env.PAGEQA_MINIPROGRAM_ACCOUNT ?? file?.account,
+  };
+}
+
 /** 读取配置：合并 默认值 < 用户文件 < 环境变量。返回最终生效配置。 */
 export function loadConfig(): PageQaConfig {
   const fromFile = readConfigFile();
@@ -218,6 +303,7 @@ export function loadConfig(): PageQaConfig {
       })(),
     },
     locale: process.env.PAGEQA_LOCALE ?? fromFile.locale ?? DEFAULTS.locale,
+    miniprogram: readMiniprogramConfig(fromFile.miniprogram),
   };
 }
 
@@ -652,6 +738,10 @@ function readConfigFile(): Partial<PageQaConfig> {
         : {}),
       jev: parsed.jev ?? DEFAULTS.jev,
       locale: parsed.locale ?? DEFAULTS.locale,
+      // 小程序驱动配置（仅 driver=miniprogram 时生效）：这里是白名单式挑选，
+      // 不显式带上就会把用户写在配置文件里的 miniprogram 段丢掉。
+      ...(parsed.miniprogram ? { miniprogram: parsed.miniprogram } : {}),
+      ...(parsed.driver ? { driver: parsed.driver } : {}),
     };
   } catch {
     return { ...DEFAULTS };

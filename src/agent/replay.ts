@@ -26,7 +26,17 @@ import {
   ensureSession,
   type BskOps,
 } from "../bsk/tools.js";
-import { loadConfig, readAutoScreenshot } from "../config/config.js";
+import {
+  closeMiniprogram,
+  createMiniprogramOps,
+  ensureMiniprogramReady,
+} from "../miniprogram/index.js";
+import {
+  loadConfig,
+  readAutoScreenshot,
+  readDriver,
+  type Driver,
+} from "../config/config.js";
 import {
   DEFAULT_DOWNLOAD_TIMEOUT_MS,
   downloadExpectation,
@@ -739,6 +749,8 @@ export function sourceDriftNotice(script: ReplayScript): string | null {
 
 export interface ReplayOptions {
   session?: string;
+  /** 测试驱动后端：bsk（默认）或 miniprogram（微信小程序）。 */
+  driver?: Driver;
   /** 启用 Jev 语义断言（默认关闭，保证回放不调用任何模型）。 */
   semantic?: boolean;
   debug?: boolean;
@@ -1576,17 +1588,25 @@ async function replayScenario(
   };
 
   try {
-    await ensureBskReady();
-    session = await ensureSession(opts.session);
-    info(t("replay.log.session", { session, name }));
-
+    const driver = opts.driver ?? readDriver();
     const jev = opts.semantic
       ? new JevClient(loadConfig().jev, opts.debug ?? false)
       : undefined;
     if (opts.semantic && !jev?.enabled) {
       info(t("replay.log.semanticOff"));
     }
-    outcome = await executeReplaySteps(createBskOps(session, jev), scenario, {
+    let ops: BskOps;
+    if (driver === "miniprogram") {
+      await ensureMiniprogramReady(loadConfig().miniprogram);
+      session = "miniprogram";
+      ops = createMiniprogramOps(session, { jevClient: jev });
+    } else {
+      await ensureBskReady();
+      session = await ensureSession(opts.session);
+      ops = createBskOps(session, jev);
+    }
+    info(t("replay.log.session", { session, name }));
+    outcome = await executeReplaySteps(ops, scenario, {
       expand,
       jevActive: Boolean(jev?.enabled),
       failFast: opts.failFast ?? false,
@@ -1599,10 +1619,14 @@ async function replayScenario(
     flushDownloadCleanup();
     // 收尾自动截图（与带模型跑同一条规则）：放在 finally 里是为了**失败/中止时也有图**——
     // 那正是最需要现场的时候。截图失败不影响结论（见 captureSessionScreenshot）。
-    if (session && readAutoScreenshot()) {
-      await captureSessionScreenshot(session);
+    if (session) {
+      if (session === "miniprogram") {
+        await closeMiniprogram();
+      } else {
+        if (readAutoScreenshot()) await captureSessionScreenshot(session);
+        await closeSession(session);
+      }
     }
-    if (session) await closeSession(session);
   }
 
   const { trace, assertions, skipped } = outcome;

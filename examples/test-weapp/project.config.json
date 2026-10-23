@@ -1,0 +1,13 @@
+{
+  "description": "pageqa 小程序驱动冒烟测试项目（最小可运行骨架）",
+  "appid": "touristappid",
+  "projectname": "test-weapp",
+  "miniprogramRoot": "./",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "minified": false,
+    "postcss": false
+  },
+  "compileType": "miniprogram"
+}
