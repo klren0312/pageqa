@@ -36,7 +36,9 @@ import {
   readAutoScreenshot,
   readDriver,
   type Driver,
+  type MiniProgramConfig,
 } from "../config/config.js";
+import { mergeMiniprogramConfig } from "../shared/case-meta.js";
 import {
   DEFAULT_DOWNLOAD_TIMEOUT_MS,
   downloadExpectation,
@@ -407,6 +409,11 @@ export interface ReplayScript {
     /** 源用例内容哈希，用于回放时提示「源用例已变更」。 */
     hash: string | null;
   };
+  /**
+   * 录制时源用例头（frontmatter）声明的小程序配置：回放不再经过用例文件，
+   * 不带上这份配置就只能回落到环境变量 / 配置文件。
+   */
+  miniprogram?: Partial<MiniProgramConfig>;
   scenarios: ReplayScenario[];
 }
 
@@ -424,7 +431,11 @@ export function scriptHash(text: string): string {
 /** 把录制结果组装成脚本对象（不含文件 IO，便于单测）。 */
 export function buildReplayScript(
   recordings: ScenarioRecording[],
-  meta: { sourcePath?: string | null; sourceText?: string | null } = {},
+  meta: {
+    sourcePath?: string | null;
+    sourceText?: string | null;
+    miniprogram?: Partial<MiniProgramConfig>;
+  } = {},
 ): ReplayScript {
   return {
     format: REPLAY_FORMAT,
@@ -434,6 +445,7 @@ export function buildReplayScript(
       path: meta.sourcePath ?? null,
       hash: meta.sourceText ? scriptHash(meta.sourceText) : null,
     },
+    ...(meta.miniprogram ? { miniprogram: meta.miniprogram } : {}),
     scenarios: recordings.map((r) => ({
       name: r.name,
       caseSteps: r.caseSteps,
@@ -752,6 +764,8 @@ export interface ReplayOptions {
   session?: string;
   /** 测试驱动后端：bsk（默认）或 miniprogram（微信小程序）。 */
   driver?: Driver;
+  /** 回放脚本里带的小程序配置（或调用方显式给出）：覆盖全局配置。 */
+  miniprogram?: Partial<MiniProgramConfig>;
   /** 启用 Jev 语义断言（默认关闭，保证回放不调用任何模型）。 */
   semantic?: boolean;
   debug?: boolean;
@@ -1608,7 +1622,9 @@ async function replayScenario(
     }
     let ops: BskOps;
     if (driver === "miniprogram") {
-      await ensureMiniprogramReady(loadConfig().miniprogram);
+      await ensureMiniprogramReady(
+        mergeMiniprogramConfig(loadConfig().miniprogram, opts.miniprogram),
+      );
       session = "miniprogram";
       ops = createMiniprogramOps(session, { jevClient: jev });
     } else {
@@ -1732,6 +1748,10 @@ export async function runReplayScript(
   script: ReplayScript,
   opts: ReplayOptions = {},
 ): Promise<ReplayRunResult> {
+  // 脚本自带的 miniprogram 配置在回放时生效：录制源用例里的项目路径不需要再手配一次。
+  if (!opts.miniprogram && script.miniprogram) {
+    opts = { ...opts, miniprogram: script.miniprogram };
+  }
   const scenarios = script.scenarios;
   info(
     t("replay.log.scriptStart", {

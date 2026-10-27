@@ -372,6 +372,24 @@ holding `app.json` / `project.config.json`).
 
 or via env vars `PAGEQA_MINIPROGRAM_CLI_PATH` / `PAGEQA_MINIPROGRAM_PROJECT_PATH`.
 
+**Per-case project (frontmatter)** — put the project in the case file itself, so
+switching projects does not mean editing `config.json`:
+
+```markdown
+---
+miniprogram:
+  projectPath: D:\1project\yudao-ui-admin-uniapp
+---
+
+## W1 open workbench
+打开 mp://pages/index/index 并断言页面包含 '工作台'
+```
+
+`cliPath`, `platform`, `port`, `timeout` and `account` work the same way.
+Precedence: **case frontmatter > env vars > `config.json`**; omitted fields fall
+back to the higher layers. The recorded replay script carries the same settings,
+so `/replay` needs no extra configuration either.
+
 **In the TUI**
 
 ```bash

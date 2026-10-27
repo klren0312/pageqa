@@ -155,6 +155,7 @@ import {
 import { FormatAccounting } from "./format-accounting.js";
 import { FormatSubmitter } from "./format-submitter.js";
 import { getLocale, setLocale, t } from "../shared/i18n.js";
+import { readCaseMeta } from "../shared/case-meta.js";
 import {
   CONFIG_PATH,
   effectiveConcurrency,
@@ -1890,9 +1891,17 @@ export async function runInteractive(
       //
       // 占位符由**子进程**展开（这里传的是原文）：回放脚本靠「具体值 → 占位符」反查还原，
       // 父进程先展开就把这个反查依据抹掉了。
+      //
+      // 用例头（frontmatter）里的“这份用例跑哪个小程序项目”也要带下去：子进程只拿到
+      // 场景正文，读不到源文件；来源是文件时现读一次，免得为它维护跨 `/run` 的缓存。
+      const caseMiniprogram =
+        item.origin.kind === "file"
+          ? readCaseMeta(item.origin.path).miniprogram
+          : undefined;
       result = await runScenarioInChild({
         name: item.name,
         body: item.body,
+        miniprogram: caseMiniprogram,
         // 用「开跑那一刻」的选择：用户在场景执行期间 /model，只影响之后的场景，
         // 不会把跑到一半的会话换成另一个模型（那会让报告里的模型归属含糊不清）。
         // `/model` 只改本进程内存，所以必须显式传给子进程。

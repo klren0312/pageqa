@@ -363,6 +363,24 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 
 或用环境变量 `PAGEQA_MINIPROGRAM_CLI_PATH` / `PAGEQA_MINIPROGRAM_PROJECT_PATH`。
 
+### 用例头（frontmatter）：把项目写进用例
+
+换项目测试时不必再改 `config.json`，直接在用例文件开头写：
+
+```markdown
+---
+miniprogram:
+  projectPath: D:\1project\yudao-ui-admin-uniapp
+---
+
+## W1 打开工作台
+打开 mp://pages/index/index 并断言页面包含 '工作台'
+```
+
+`cliPath` / `platform` / `port` / `timeout` / `account` 同样可写。优先级：
+**用例头 > 环境变量 > `config.json`**；没写的字段自动回落到更高层。录出的回放脚本
+也会带上这份配置，所以 `/replay` 同样不需要再配一次。
+
 ### 其它要注意的
 
 - **一个项目一条自动化通道，且同时只服务一个客户端。** 开发者工具对同一项目只保留一条通道，而那条通道同时只接一个客户端。所以 pageqa 的父进程**故意不**建立连接——由每个场景的子进程自己开（并复用同一个端口，把上一轮留下的通道复活）。同时对同一个项目跑两个 pageqa 会话不会共存：后一个会 `cli close --project` 关掉前一个的项目窗口来抢通道。

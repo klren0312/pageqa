@@ -42,7 +42,12 @@ import {
   readCompactPrompt,
   readDriver,
   type Driver,
+  type MiniProgramConfig,
 } from "../config/config.js";
+import {
+  mergeMiniprogramConfig,
+  splitFrontmatter,
+} from "../shared/case-meta.js";
 import { debugLog, info, setDebug } from "../shared/log.js";
 import {
   addUsage,
@@ -108,6 +113,11 @@ export interface AgentOptions {
   session?: string;
   /** 测试驱动后端：bsk（默认）或 miniprogram（微信小程序）。 */
   driver?: Driver;
+  /**
+   * 用例头（frontmatter）里声明的小程序驱动配置：覆盖全局配置，
+   * 但只覆盖它显式写了的字段（见 `shared/case-meta.ts`）。
+   */
+  miniprogram?: Partial<MiniProgramConfig>;
   systemPrompt?: string;
   debug?: boolean;
   /**
@@ -718,7 +728,9 @@ async function initializeAgent(
   let session: string;
   if (driver === "miniprogram") {
     info("检查小程序驱动…");
-    await ensureMiniprogramReady(loadConfig().miniprogram);
+    await ensureMiniprogramReady(
+      mergeMiniprogramConfig(loadConfig().miniprogram, opts.miniprogram),
+    );
     session = "miniprogram";
     holder.id = session;
     log("[runAgent] miniprogram driver");
@@ -1537,7 +1549,10 @@ async function runAgentCore(
 
 /** 把一个脚本拆分为多个场景（按 `## ` 二级标题分隔）。无标题则整体作为一个场景。 */
 export function splitScenarios(script: string): Scenario[] {
-  const lines = script.split(/\r?\n/);
+  // 用例头（frontmatter）不是步骤：先剥掉。没有 `## ` 的用例否则会把它当成正文，
+  // 模型就会去「执行」那几行 YAML。
+  const { body: text } = splitFrontmatter(script);
+  const lines = text.split(/\r?\n/);
   const collected: Scenario[] = [];
   let currentName = "";
   let currentLines: string[] = [];
@@ -1563,7 +1578,7 @@ export function splitScenarios(script: string): Scenario[] {
   flush();
   return collected.length
     ? collected
-    : [{ name: t("common.scenarioDefault"), body: script.trim() }];
+    : [{ name: t("common.scenarioDefault"), body: text.trim() }];
 }
 
 /** `--only` 选中了哪一个场景。 */

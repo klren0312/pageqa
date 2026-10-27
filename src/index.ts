@@ -24,6 +24,7 @@ import {
   type SideOutputPrefs,
 } from "./config/config.js";
 import { formatLintReport, lintCase, type LintResult } from "./agent/lint.js";
+import { splitFrontmatter } from "./shared/case-meta.js";
 import {
   collectScreenshots,
   setUsdToCny,
@@ -914,7 +915,14 @@ function buildInteractiveScripts(
         sourceText = null;
       }
     }
-    const script = replay.buildReplayScript(group, { sourcePath, sourceText });
+    // 源用例头（frontmatter）里的项目配置要一起写进脚本：回放不读用例文件，
+    // 不带上的话「换项目只改用例」在回放这一环就断了。
+    const meta = sourceText ? splitFrontmatter(sourceText).meta : {};
+    const script = replay.buildReplayScript(group, {
+      sourcePath,
+      sourceText,
+      miniprogram: meta.miniprogram,
+    });
     replay.writeReplayScript(target, script);
     paths.push(target);
   }
@@ -1354,6 +1362,9 @@ async function main(): Promise<number> {
     return 1;
   }
   const sourceText = isFile ? readFileSync(rawInput, "utf8") : rawInput;
+  // 用例头（frontmatter）：把「这份用例跑哪个小程序项目」写在用例里，
+  // 免得每次换项目都去改 ~/.pageqa/config.json。`caseText` 是剥掉头之后的正文。
+  const { meta: caseMeta, body: caseText } = splitFrontmatter(sourceText);
 
   // ── --prefer-replay：同名脚本源哈希仍匹配时，零模型回放 ──
   // 只对「文件输入 + 没有冲突的批处理选项」生效；命中后不再走模型探活、lint 与浏览器。
@@ -1388,7 +1399,7 @@ async function main(): Promise<number> {
    */
   const lintPreflight = () => {
     if (args.noLint) return;
-    const result = lintCase(sourceText);
+    const result = lintCase(caseText);
     if (result.issues.length > 0) {
       info(formatLintReport(isFile ? rawInput : null, result, 5));
       info(t("lint.hint"));
@@ -1405,7 +1416,7 @@ async function main(): Promise<number> {
   // 展开占位符与「反查占位符」必须共用同一时刻：
   // 生成回放脚本时才能把模型看到的具体值（202609191146）还原成 ${timestamp}。
   const now = new Date();
-  const input = expandVars(sourceText, now);
+  const input = expandVars(caseText, now);
   const vars = captureRunVars(now);
   const hasScenarios = /^##\s+/m.test(input);
   const suiteMode = hasScenarios || args.suite;
@@ -1538,6 +1549,7 @@ async function main(): Promise<number> {
         driver: args.driver,
         debug: args.debug,
         vars,
+        miniprogram: caseMeta.miniprogram,
         scriptPath: reportedScriptPath,
         ...(usageSink ? { onUsage: usageSink } : {}),
       });
@@ -1558,6 +1570,7 @@ async function main(): Promise<number> {
         reportedScriptPath,
         usageStream: args.usageStream,
         concurrency,
+        miniprogram: caseMeta.miniprogram,
         ...(usageSink ? { onChildUsage: usageSink } : {}),
       });
       result = {
@@ -1577,6 +1590,7 @@ async function main(): Promise<number> {
         driver: args.driver,
         debug: args.debug,
         vars,
+        miniprogram: caseMeta.miniprogram,
         scriptPath: reportedScriptPath,
         ...(usageSink ? { onUsage: usageSink } : {}),
       });
@@ -1584,7 +1598,7 @@ async function main(): Promise<number> {
     // 报告名用「用例名」（用例文件的一级标题，没有就用文件名）：`pageqa-report/` 里一屏
     // `report-2026….html` 谁也认不出是哪条用例。内联文本也可能写了 `# 标题`，照样取。
     result.report.caseName ??=
-      caseNameFromText(sourceText) ??
+      caseNameFromText(caseText) ??
       (isFile ? caseNameFromPath(rawInput) : undefined);
     let scriptError: string | undefined;
     let scriptOutcome: ScriptOutcome;
@@ -1597,6 +1611,7 @@ async function main(): Promise<number> {
           buildReplayScript(result.recordings, {
             sourcePath: isFile ? rawInput : null,
             sourceText,
+            miniprogram: caseMeta.miniprogram,
           });
         writeReplayScript(scriptPath, script);
         scriptOutcome = { kind: "written", paths: [scriptPath] };

@@ -11,7 +11,11 @@ import {
   type Scenario,
 } from "./agent.js";
 import { closeSession, ensureBskReady, ensureSession } from "../bsk/tools.js";
-import { effectiveConcurrency, readDriver } from "../config/config.js";
+import {
+  effectiveConcurrency,
+  readDriver,
+  type MiniProgramConfig,
+} from "../config/config.js";
 import { createProbeCache } from "./model-probe-cache.js";
 import { debugLog, info } from "../shared/log.js";
 import { getLocale, t } from "../shared/i18n.js";
@@ -77,6 +81,11 @@ export interface ForkSuiteOptions {
   input: string;
   /** 源用例文件路径；内联文本为 null（合并脚本时不写 source 与 hash）。 */
   sourcePath: string | null;
+  /**
+   * 用例头（frontmatter）声明的小程序驱动配置：透传给每个场景子进程。
+   * 子进程拿到的是文件路径时会自己再解析一次；内联输入则靠这里经环境变量带下去。
+   */
+  miniprogram?: Partial<MiniProgramConfig>;
   debug?: boolean;
   /** 用户显式给出的 session；未给时由父进程为每个场景各建一个并负责收尾。 */
   session?: string;
@@ -335,6 +344,7 @@ export async function runSuiteInChildren(
         debug: opts.debug,
         timeoutMs: opts.timeoutMs,
         skipModelProbe: Boolean(suiteProbe),
+        miniprogram: opts.miniprogram,
         emitLog,
         // 并发时日志必然交错，父进程的「开始/结束」行已经分不清谁是谁——
         // 只有这时才给每行加场景编号前缀（逐个跑时加了只会挤掉日志正文，见 ADR-0013 决策九）。
@@ -564,6 +574,8 @@ export interface RunChildOptions extends ChildInvocation {
   onUsage?: (usage: TokenUsage) => void;
   /** 父进程已完成模型探活：子进程跳过自己的 ping（套件编排用）。 */
   skipModelProbe?: boolean;
+  /** 用例头声明的小程序驱动配置：写入子进程环境变量（frontmatter > 环境变量 > 配置）。 */
+  miniprogram?: Partial<MiniProgramConfig>;
 }
 
 /** 日志前缀里场景名的长度上限：再长就把日志正文挤出屏幕，归属反而看不清了。 */
@@ -618,6 +630,10 @@ export async function runScenarioChild(opts: RunChildOptions): Promise<ChildRunR
   // 内部子进程标记：用户面已把「从命令行跑用例」的入口收进交互模式，父子协议
   // 仍要用同一批参数（--only / --json / --emit-script…），靠这个标记把两者区分开。
   env.PAGEQA_INTERNAL_CHILD = "1";
+  // 用例头（frontmatter）声明的小程序配置经环境变量带下去：交互模式的子进程拿到的
+  // 是「场景正文」而不是源文件，读不到 frontmatter；环境变量是 `readMiniprogramConfig`
+  // 的最高优先级来源，正好实现「用例 > 环境变量 > 配置文件」。
+  applyMiniprogramEnv(env, opts.miniprogram);
   if (opts.model) {
     env.PAGEQA_LLM_MODEL = opts.model.model;
     env.PAGEQA_LLM_PROVIDER = opts.model.provider;
@@ -741,6 +757,25 @@ function loadChildScript(path: string | undefined): ReplayScript | undefined {
     );
     return undefined;
   }
+}
+
+/**
+ * 把用例头声明的小程序配置写进子进程环境变量。
+ *
+ * 只写**显式给出**的字段：没写的字段继续沿用父进程继承来的环境变量与配置文件，
+ * 否则「用例只写了 projectPath」会把用户 `PAGEQA_MINIPROGRAM_CLI_PATH` 一起抹掉。
+ */
+function applyMiniprogramEnv(
+  env: NodeJS.ProcessEnv,
+  mp: Partial<MiniProgramConfig> | undefined,
+): void {
+  if (!mp) return;
+  if (mp.cliPath) env.PAGEQA_MINIPROGRAM_CLI_PATH = mp.cliPath;
+  if (mp.projectPath) env.PAGEQA_MINIPROGRAM_PROJECT_PATH = mp.projectPath;
+  if (mp.platform) env.PAGEQA_MINIPROGRAM_PLATFORM = mp.platform;
+  if (mp.timeout != null) env.PAGEQA_MINIPROGRAM_TIMEOUT = String(mp.timeout);
+  if (mp.port != null) env.PAGEQA_MINIPROGRAM_PORT = String(mp.port);
+  if (mp.account) env.PAGEQA_MINIPROGRAM_ACCOUNT = mp.account;
 }
 
 /** 子进程异常结束的描述（退出码 + 信号），用于写进报告与日志。 */
@@ -940,6 +975,8 @@ export interface ChildScenarioOptions {
   entry?: string;
   /** 父进程（TUI 队列）已完成模型探活：子进程跳过自己的 ping。 */
   skipModelProbe?: boolean;
+  /** 用例头声明的小程序驱动配置：交互模式从源用例文件读出后带到子进程。 */
+  miniprogram?: Partial<MiniProgramConfig>;
 }
 
 /**
@@ -992,6 +1029,7 @@ export async function runScenarioInChild(
       abortSignal: opts.abortSignal,
       timeoutMs: opts.timeoutMs,
       debug: opts.debug,
+      miniprogram: opts.miniprogram,
       emitLog,
       onUsage: (usage) => {
         lastUsage = usage;
@@ -1115,6 +1153,8 @@ export function mergeScripts(
     version: REPLAY_VERSION,
     recordedAt: new Date().toISOString(),
     source: ordered[0].source,
+    // 每个子进程读的是同一份源用例，frontmatter 里的小程序配置必然一致。
+    ...(ordered[0].miniprogram ? { miniprogram: ordered[0].miniprogram } : {}),
     scenarios: ordered.flatMap((s) => s.scenarios),
   };
 }

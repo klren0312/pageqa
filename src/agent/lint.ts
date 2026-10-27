@@ -16,6 +16,7 @@
  */
 import { countAssertions, numberSteps } from "../report/report.js";
 import { t } from "../shared/i18n.js";
+import { maskFrontmatter } from "../shared/case-meta.js";
 
 /** 问题级别：`error` 会让用例跑错/跑不动；`warn` 只是写法不统一。 */
 export type LintSeverity = "error" | "warn";
@@ -181,7 +182,10 @@ function snippet(text: string): string {
  */
 export function lintCase(input: string): LintResult {
   const issues: LintIssue[] = [];
-  const lines = input.split(/\r?\n/);
+  // 用例头（frontmatter）不是步骤：逐行掩成空行——既保持行号不变，也不会被
+  // preamble 规则误报成「写在第一个 ## 之前的正文」。
+  const masked = maskFrontmatter(input);
+  const lines = masked.split(/\r?\n/);
 
   interface Entry {
     text: string;
@@ -366,8 +370,8 @@ export function lintCase(input: string): LintResult {
     }
   }
 
-  const steps = numberSteps(input).steps.length;
-  const assertions = countAssertions(input);
+  const steps = numberSteps(masked).steps.length;
+  const assertions = countAssertions(masked);
   const errors = issues.filter((i) => i.severity === "error").length;
 
   return {
