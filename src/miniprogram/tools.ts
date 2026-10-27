@@ -1,5 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { BskToolExec } from "../bsk/tools.js";
+import { createReportDefectTool, type BskToolExec } from "../bsk/tools.js";
+import type { DefectDraft } from "../shared/defect.js";
 import { createMiniprogramOps } from "./ops.js";
 
 function ok(text: string) {
@@ -18,6 +19,8 @@ export interface MiniprogramToolOptions {
   jevClient?: unknown;
   snapshotBudgetChars?: number | (() => number | undefined);
   onExec?: (event: BskToolExec) => void;
+  /** 模型通过 `report_defect` 上报的缺陷（与 bsk 驱动同一个工具实现）。 */
+  onDefect?: (defect: DefectDraft) => void;
 }
 
 /**
@@ -170,5 +173,19 @@ export function createMiniprogramTools(opts: MiniprogramToolOptions): AgentTool[
     },
   };
 
-  return [navigate, snapshot, click, fill, assertText, screenshot, getHtml];
+  const reportDefect = createReportDefectTool({
+    pageUrl: (signal) => ops.pageUrl(signal),
+    onDefect: opts.onDefect,
+  });
+
+  return [
+    navigate,
+    snapshot,
+    click,
+    fill,
+    assertText,
+    screenshot,
+    getHtml,
+    reportDefect,
+  ];
 }

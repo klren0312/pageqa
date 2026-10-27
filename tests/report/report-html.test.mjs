@@ -365,3 +365,55 @@ describe("writeHtmlReport", () => {
     }
   });
 });
+
+// ── 缺陷（ADR-0022）──
+describe("缺陷展示", () => {
+  const defect = {
+    title: "保存后列表未刷新",
+    severity: "critical",
+    kind: "functional",
+    expectation: "列表出现新记录",
+    actual: "列表仍是旧数据",
+    evidence: "截图见本次运行",
+  };
+
+  test("缺陷表带严重度与类型，标题按 HTML 转义", () => {
+    const html = renderHtml(
+      base({
+        status: "pass",
+        defects: [{ ...defect, title: '<script>alert("x")</script>' }],
+      }),
+    );
+    assert.ok(html.includes('class="defects"'));
+    assert.ok(html.includes("严重"));
+    assert.ok(html.includes("功能"));
+    assert.ok(html.includes("&lt;script&gt;"));
+    assert.ok(!html.includes('<script>alert("x")</script>'));
+  });
+
+  test("PASS 带缺陷时统计里出现缺陷计数（不能只看「通过」）", () => {
+    const html = renderHtml(base({ status: "pass", defects: [defect] }));
+    assert.ok(html.includes("<b>1</b>缺陷"));
+  });
+
+  test("套件只在顶部渲染一份缺陷表，场景节不重复", () => {
+    const html = renderHtml(
+      base({
+        status: "pass",
+        assertions: [],
+        defects: [{ ...defect, scenario: "场景A" }],
+        scenarios: [
+          { name: "场景A", status: "pass", steps: [], trace: [], assertions: [] },
+        ],
+      }),
+    );
+    assert.equal(html.split('class="defects"').length - 1, 1);
+    assert.ok(html.includes("场景A"));
+  });
+
+  test("FAIL 且没有缺陷时说明「未识别为产品缺陷」", () => {
+    const html = renderHtml(base({ status: "fail", defects: undefined }));
+    assert.ok(html.includes("未识别为产品缺陷"));
+    assert.ok(!html.includes('class="defects"'));
+  });
+});

@@ -597,7 +597,7 @@ export const COMPACT_SYSTEM_PROMPT = [
   "- navigate(url) 打开页面；snapshot() 读页面 aria 树与可见文本、给元素 @eN 编号；",
   "- click(target,showPage?) / fill(target,value) / select_option(target,option) / pick_date(target,date,endDate?) / hover / scroll / wheel / press(key) / focus / blur / upload(target,file)；",
   "- wait_for(text|selector|gone,timeoutMs?) 等条件出现/消失（页面内等待一律用它；selector 默认等可见，state=attached|detached|hidden 可问「在不在 DOM」）；wait(ms) 只用于页面之外的事情；",
-  "- assert_text(expectation,absent?) / assert_no_console_error() / assert_network(url,status?) 断言；download(target,expectName?) 捕获下载（本身即断言）；screenshot() / get_html(target?) 取证据。",
+  "- assert_text(expectation,absent?) / assert_no_console_error() / assert_network(url,status?) 断言；download(target,expectName?) 捕获下载（本身即断言）；screenshot() / get_html(target?) 取证据；report_defect(title,severity,kind,expectation,actual,evidence) 上报被测产品的缺陷。",
   "",
   "流程：navigate → snapshot → （首次操作前 wait_for 一个只属于该区域的地标）→ 按用例逐步操作 → 断言 → 给出结论。",
   "页面没渲染好时：snapshot 只有根节点、或 wait_for 未达成，说明页面可能仍在加载/渲染失败——先重新 navigate 或换一个真实地标再 wait_for + snapshot；不要猜 CSS 选择器，也不要把该步骤当作完成。",
@@ -610,6 +610,7 @@ export const COMPACT_SYSTEM_PROMPT = [
   "- 下拉框用 select_option、日期用 pick_date（它们的输入框是只读的，fill 填不进去）；target 传控件本身（不是内部 input）；日期范围把结束日期一起传进 endDate，不要分两次调用。",
   "- 上传用 upload；下载用 download 直接捕获，不要先 click。",
   "- 工具失败（找不到元素、超时）后必须重新 snapshot 再重试；同一操作连续两次失败才判该步骤失败。",
+  "- 缺陷只报产品问题：断言不成立且确认页面行为错（不是选择器错/没加载完），或页面有确定的报错证据（JS 报错、接口 4xx/5xx）；用例写错、环境、工具失败不报。上报不影响 PASS/FAIL。",
   "- 等页面变化用 wait_for 等那个变化本身（新面板里的菜单项、结果区的「共 N 条」），不要用 wait 猜秒数。",
   "- 每完成一步记一句「第 k 步完成：<结果>」；全部执行完单独输出一行「步骤完成：k/n」（n = 用例步骤数，不照抄示例）。",
 ].join("\n");

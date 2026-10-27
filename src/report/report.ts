@@ -9,6 +9,7 @@ import {
   type TokenPrice,
 } from "./cost.js";
 import { PRICE_SNAPSHOT } from "./price-snapshot.js";
+import type { Defect, DefectKind, DefectSeverity } from "../shared/defect.js";
 
 export interface AssertionResult {
   expectation: string;
@@ -67,6 +68,13 @@ export interface TestReport {
   script?: string;
   /** 回放中因「元素未找到」被跳过的步骤（不算失败，但必须让人看见）。 */
   skipped?: string[];
+  /**
+   * 本次运行识别出的缺陷（被测产品的问题，见 ADR-0022）。
+   *
+   * 与断言分开：断言决定 PASS/FAIL，缺陷回答「产品有什么问题」。一条全部断言通过的
+   * 用例也可以带缺陷。为空时不写这个字段，老报告与老消费方的形状不变。
+   */
+  defects?: Defect[];
   /**
    * 本场景截下的图（绝对路径，按截图顺序）。
    *
@@ -345,12 +353,19 @@ export function buildReport(
   input: string,
   transcript: string,
   toolAssertions?: AssertionResult[],
-  opts: { cancelled?: boolean } = {},
+  opts: { cancelled?: boolean; defects?: Defect[] } = {},
 ): TestReport {
   const assertions: AssertionResult[] =
     toolAssertions && toolAssertions.length > 0
       ? toolAssertions.map((a) => ({ ...a }))
       : parseAssertions(transcript);
+  // 兜底只读真实断言：下面补的合成断言（条数不足 / 步骤没跑满 / 工具未恢复）说的是
+  // 「测试没跑成」，不是产品问题——把它们记成缺陷，清单就会混进定位失败与环境抖动。
+  const realAssertions = assertions.slice();
+  // 模型上报的缺陷（工具层已校验字段）。有空数组与 undefined 两种「没报」，都按没有处理。
+  const modelDefects: Defect[] = opts.defects?.length
+    ? opts.defects.map((d) => ({ ...d }))
+    : [];
   const { steps } = numberSteps(input);
   const trace = extractTrace(transcript);
   const lastNote = lastStepNote(trace);
@@ -381,6 +396,7 @@ export function buildReport(
           })
         : t("report.cancel"),
       assertions,
+      ...(modelDefects.length > 0 ? { defects: modelDefects } : {}),
       summary: extractSummary(transcript),
       transcript,
       trace,
@@ -472,8 +488,28 @@ export function buildReport(
     });
   }
 
+  // 缺陷：模型报过就以模型的为准（它做过归因判断），一条都没有才兜底。兜底不是
+  // 「又多记了一条失败」，而是「这条失败没人判断过，先按疑似产品问题列出来」（ADR-0022）。
+  const defects: Defect[] = modelDefects.length > 0
+    ? modelDefects
+    : unattributedDefects(realAssertions, {
+        // 场景级进度只有「一条失败断言」时才配得上当它的步骤号；多条时张冠李戴。
+        step:
+          realAssertions.filter((a) => a.verdict === "fail").length === 1
+            ? stepFromNote(lastNote, steps.length)
+            : undefined,
+      });
+
   const summary = extractSummary(transcript);
-  return { status, assertions, summary, transcript, trace, steps };
+  return {
+    status,
+    assertions,
+    ...(defects.length > 0 ? { defects } : {}),
+    summary,
+    transcript,
+    trace,
+    steps,
+  };
 }
 
 /** 统计用例（自然语言测试步骤）中的断言数量，用于校验执行完整性。
@@ -560,6 +596,41 @@ export function extractTrace(transcript: string): string[] {
 export function lastStepNote(trace: string[]): string | null {
   const notes = trace.filter((l) => /第\s*\d+\s*步/.test(l));
   return notes.at(-1) ?? null;
+}
+
+/** 从步骤自述里取「第 k 步」的 k；超出用例步骤数或没写就返回 undefined。 */
+function stepFromNote(note: string | null, total: number): number | undefined {
+  const m = note?.match(/第\s*(\d+)\s*步/);
+  if (!m) return undefined;
+  const step = Number(m[1]);
+  if (!Number.isFinite(step) || step < 1) return undefined;
+  return total > 0 && step > total ? undefined : step;
+}
+
+/**
+ * 把**真实断言不成立**折成未归因缺陷（ADR-0022 决策二）。
+ *
+ * 「未归因」不是谦辞：没有人（模型）判断过这条失败到底是产品问题还是用例写错，
+ * 所以它没有严重度、类型固定为 `unattributed`，报告把它与模型判定的缺陷并列，
+ * 交给人工复核。
+ *
+ * 只该喂真实断言：合成断言与回放的步骤失败断言说的都是「测试没跑成」，
+ * 混进来会让缺陷清单掺进定位失败与环境抖动。
+ */
+export function unattributedDefects(
+  assertions: AssertionResult[],
+  opts: { step?: number } = {},
+): Defect[] {
+  return assertions
+    .filter((a) => a.verdict === "fail")
+    .map((a) => ({
+      // 实际值就是断言的证据：失败的现场（看到/没看到什么）是唯一可复现的线索。
+      title: t("report.defect.unattributedTitle", { expectation: a.expectation }),
+      kind: "unattributed" as const,
+      expectation: a.expectation,
+      actual: a.evidence ?? "",
+      ...(opts.step ? { step: opts.step } : {}),
+    }));
 }
 
 /** 一次最终仍未恢复的工具调用失败（同名工具最后一次调用是失败）。 */
@@ -751,6 +822,44 @@ export function assertionLine(a: AssertionResult): string {
   return "  - [" + verdictTag(a.verdict) + "] " + a.expectation + ev;
 }
 
+/** 严重度标签（未归因缺陷没有严重度 → 「未定级」）。 */
+export function severityLabel(severity?: DefectSeverity): string {
+  return t("report.defect.severity." + (severity ?? "unknown"));
+}
+
+/** 缺陷类型标签。 */
+export function kindLabel(kind: DefectKind): string {
+  return t("report.defect.kind." + kind);
+}
+
+/** 一条缺陷的定位串：场景 · 第 k 步 · 页面地址（有什么写什么）。 */
+export function defectWhere(d: Defect): string {
+  return [
+    d.scenario,
+    typeof d.step === "number" ? t("report.defect.step", { k: d.step }) : null,
+    d.url,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** 渲染一条缺陷：首行严重度/类型 + 标题 + 定位，次行期望/实际/证据。 */
+export function defectLine(d: Defect): string {
+  const where = defectWhere(d);
+  const head =
+    "  - [" + severityLabel(d.severity) + "][" + kindLabel(d.kind) + "] " +
+    d.title +
+    (where ? t("report.defect.where", { where }) : "");
+  const detail = [
+    t("report.defect.expected", { text: d.expectation }),
+    t("report.defect.actual", { text: d.actual || "—" }),
+    d.evidence ? t("report.defect.evidence", { text: d.evidence }) : null,
+  ]
+    .filter(Boolean)
+    .join(t("report.defect.separator"));
+  return head + "\n      " + detail;
+}
+
 /**
  * 报告末行：执行时间。
  *
@@ -776,8 +885,24 @@ export function renderText(r: TestReport): string {
   const lines: string[] = [];
   lines.push(t("report.title"));
   if (r.mode === "replay") lines.push(t("report.modeReplay"));
-  lines.push(t("report.conclusion", { status: statusTag(r.status) }));
+  // 缺陷数挂在结论行上：PASS 带缺陷时只看「结论: PASS」会让人以为一切正常。
+  lines.push(
+    r.defects?.length
+      ? t("report.conclusionDefects", {
+          status: statusTag(r.status),
+          n: r.defects.length,
+        })
+      : t("report.conclusion", { status: statusTag(r.status) }),
+  );
   if (r.cancelReason) lines.push(t("report.cancelled", { reason: r.cancelReason }));
+  // 缺陷排在断言之前：它是最该被先读到、也最该被拿去提给开发的东西。
+  if (r.defects?.length) {
+    lines.push(t("report.defectsTitle", { n: r.defects.length }));
+    for (const d of r.defects) lines.push(defectLine(d));
+  } else if (r.status === "fail") {
+    // 空的缺陷清单不该看起来像漏记：说明这条失败没有经过归因判断。
+    lines.push(t("report.noDefect"));
+  }
   lines.push(t("report.assertCount", { n: r.assertions.length }));
   for (const a of r.assertions) lines.push(assertionLine(a));
   // 跳过必须显式列出：它不计入失败，但「哪些步骤没按脚本执行」是判断回放可信度的关键
@@ -837,10 +962,16 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
     ? durations.reduce((a, b) => a + b, 0)
     : undefined;
   const screenshots = members.flatMap((m) => m.report.screenshots ?? []);
+  // 缺陷只在顶层展平一份（ADR-0022 决策四）：`ScenarioDetail` 不再存一份，否则同一件事
+  // 会在 JSON 与渲染里各出现一次——截图两份同写就出过这个 bug（见 collectScreenshots）。
+  const defects = members.flatMap((m) =>
+    (m.report.defects ?? []).map((d) => ({ ...d, scenario: m.name })),
+  );
   return {
     status: overall,
     ...(mode ? { mode } : {}),
     ...(durationMs === undefined ? {} : { durationMs }),
+    ...(defects.length > 0 ? { defects } : {}),
     assertions: members.flatMap((m) =>
       m.report.assertions.map((a) => ({
         ...a,
@@ -907,8 +1038,22 @@ export function renderSuiteText(
   const lines: string[] = [];
   lines.push(t("report.titleSuite"));
   if (summary.mode === "replay") lines.push(t("report.modeReplay"));
-  lines.push(t("report.overall", { status: statusTag(summary.status) }));
+  lines.push(
+    summary.defects?.length
+      ? t("report.overallDefects", {
+          status: statusTag(summary.status),
+          n: summary.defects.length,
+        })
+      : t("report.overall", { status: statusTag(summary.status) }),
+  );
   lines.push(t("report.scenarioCount", { n: members.length }));
+  // 缺陷只在顶部汇总一份，场景块里不再重复（ADR-0022 决策四）。
+  if (summary.defects?.length) {
+    lines.push(t("report.defectsTitle", { n: summary.defects.length }));
+    for (const d of summary.defects) lines.push(defectLine(d));
+  } else if (summary.status === "fail") {
+    lines.push(t("report.noDefect"));
+  }
   members.forEach((m, i) => {
     const scenario = scenarios[i];
     lines.push("");

@@ -9,12 +9,16 @@ import { basename, dirname, join } from "node:path";
 import { getLocale, t } from "../shared/i18n.js";
 import { formatUsd } from "./cost.js";
 import {
+  defectWhere,
   formatUsage,
+  kindLabel,
+  severityLabel,
   statusTag,
   type AssertionResult,
   type ScenarioDetail,
   type TestReport,
 } from "./report.js";
+import type { Defect } from "../shared/defect.js";
 
 export function escapeHtml(text: string): string {
   return text
@@ -52,6 +56,40 @@ function assertionsTable(list: AssertionResult[]): string {
     `<th>${escapeHtml(t("reportHtml.expectation"))}</th>` +
     `<th>${escapeHtml(t("reportHtml.verdict"))}</th>` +
     `<th>${escapeHtml(t("reportHtml.evidence"))}</th>` +
+    `</tr></thead><tbody>${rows}</tbody></table>`
+  );
+}
+
+/**
+ * 缺陷表（见 ADR-0022）。所有文本都来自模型或页面，必须逐段转义：
+ * 标题、期望/实际/证据里的尖括号不能让表格结构断掉。
+ */
+function defectsTable(list: Defect[]): string {
+  const rows = list
+    .map((d) => {
+      const detail = [
+        t("report.defect.expected", { text: d.expectation }),
+        t("report.defect.actual", { text: d.actual || "—" }),
+        d.evidence ? t("report.defect.evidence", { text: d.evidence }) : null,
+      ]
+        .filter((line): line is string => Boolean(line))
+        .map((line) => escapeHtml(line))
+        .join("<br>");
+      return (
+        `<tr><td>${escapeHtml(severityLabel(d.severity))}</td>` +
+        `<td>${escapeHtml(kindLabel(d.kind))}</td>` +
+        `<td><b>${escapeHtml(d.title)}</b><br><span class="muted">${detail}</span></td>` +
+        `<td>${escapeHtml(defectWhere(d))}</td></tr>`
+      );
+    })
+    .join("");
+  return (
+    `<h3>${escapeHtml(t("reportHtml.defects"))}（${list.length}）</h3>` +
+    `<table class="defects"><thead><tr>` +
+    `<th>${escapeHtml(t("reportHtml.defectSeverity"))}</th>` +
+    `<th>${escapeHtml(t("reportHtml.defectKind"))}</th>` +
+    `<th>${escapeHtml(t("reportHtml.defect"))}</th>` +
+    `<th>${escapeHtml(t("reportHtml.defectWhere"))}</th>` +
     `</tr></thead><tbody>${rows}</tbody></table>`
   );
 }
@@ -227,6 +265,11 @@ th { background: #f6f8fa; }
 /* 固定列宽：期望列留出可读宽度，结论列不再换行，证据列吃掉剩余宽度并在长串（如上游 JSON）内断行 */
 th:nth-child(1), td:nth-child(1) { width: 30%; }
 th:nth-child(2), td:nth-child(2) { width: 72px; white-space: nowrap; }
+/* 缺陷表是四列：严重度与类型各占窄列，缺陷描述吃掉剩余宽度，定位列固定上限 */
+table.defects th:nth-child(1), table.defects td:nth-child(1) { width: 72px; white-space: nowrap; }
+table.defects th:nth-child(2), table.defects td:nth-child(2) { width: 72px; white-space: nowrap; }
+table.defects th:nth-child(3), table.defects td:nth-child(3) { width: auto; }
+table.defects th:nth-child(4), table.defects td:nth-child(4) { width: 24%; }
 ol.steps, ul.skipped { font-size: 0.9rem; padding-left: 1.4em; }
 .shots { display: flex; flex-direction: column; gap: 12px; margin: 8px 0; }
 .shots figure { margin: 0; }
@@ -277,12 +320,23 @@ export function renderHtml(report: TestReport): string {
   const title = reportTitle(report) || kind;
   const generatedAt = new Date().toLocaleString();
   const usageLine = formatUsage(report.usage, report.mode);
+  // 缺陷只在顶部出现一份（ADR-0022 决策四）：场景节里不再重复。
+  const defects = report.defects ?? [];
+  const defectsBlock = defects.length
+    ? defectsTable(defects)
+    : report.status === "fail"
+      ? `<p class="muted">${escapeHtml(t("report.noDefect"))}</p>`
+      : "";
 
   const stats = [
     `<div class="stat"><b>${counts.total}</b>${escapeHtml(t("reportHtml.total"))}</div>`,
     `<div class="stat"><b>${counts.pass}</b>${escapeHtml(t("reportHtml.countPass"))}</div>`,
     `<div class="stat"><b>${counts.fail}</b>${escapeHtml(t("reportHtml.countFail"))}</div>`,
     `<div class="stat"><b>${counts.cancelled}</b>${escapeHtml(t("reportHtml.countCancelled"))}</div>`,
+    // PASS 带缺陷时，这个计数与缺陷表是唯一让人不把「绿」读成「一切正常」的东西。
+    defects.length
+      ? `<div class="stat"><b>${defects.length}</b>${escapeHtml(t("reportHtml.defectCount"))}</div>`
+      : "",
     typeof report.durationMs === "number"
       ? `<div class="stat"><b>${escapeHtml(formatDurationMs(report.durationMs))}</b>${escapeHtml(t("reportHtml.durationLabel"))}</div>`
       : "",
@@ -321,6 +375,7 @@ ${CSS}
     report.mode === "replay" ? " · " + escapeHtml(t("report.modeReplay")) : ""
   }</p>
   <div class="stats">${stats}</div>
+  ${defectsBlock}
   <p>${escapeHtml(usageLine)}</p>
   ${report.script ? `<p>${escapeHtml(t("report.script", { path: report.script }))}</p>` : ""}
   <div class="actions">

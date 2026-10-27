@@ -6,7 +6,10 @@ import {
   buildReport,
   cacheHitRate,
   countAssertions,
+  defectLine,
   emptyUsage,
+  renderText,
+  unattributedDefects,
   extractTrace,
   formatTokens,
   formatUsage,
@@ -664,5 +667,153 @@ describe("collectScreenshots（每张图只算一次）", () => {
       collectScreenshots({ status: "pass", screenshots: ["solo.png"] }),
       ["solo.png"],
     );
+  });
+});
+
+// ── 缺陷（ADR-0022）：产品问题与测试失败分开 ────────────────────────────
+describe("缺陷与测试失败分离", () => {
+  const failed = {
+    expectation: "保存后列表包含新记录",
+    verdict: "fail",
+    evidence: "列表仍是旧数据",
+  };
+  const modelDefect = {
+    title: "保存后列表未刷新",
+    severity: "critical",
+    kind: "functional",
+    expectation: "列表出现新记录",
+    actual: "列表仍是旧数据",
+    evidence: "截图见本次运行",
+  };
+
+  test("断言不成立且模型没上报 → 兜底成一条未归因缺陷", () => {
+    const r = buildReport("保存后断言列表包含新记录", "", [failed]);
+    assert.equal(r.status, "fail");
+    assert.equal(r.defects.length, 1);
+    const d = r.defects[0];
+    assert.equal(d.kind, "unattributed");
+    assert.equal(d.severity, undefined);
+    assert.equal(d.expectation, failed.expectation);
+    assert.equal(d.actual, failed.evidence);
+    assert.ok(d.title.includes(failed.expectation));
+  });
+
+  test("全部通过时不写 defects 字段（老 JSON 形状不变）", () => {
+    const r = buildReport("断言页面包含 A", "", [
+      { expectation: "页面包含 A", verdict: "pass" },
+    ]);
+    assert.equal(r.status, "pass");
+    assert.equal("defects" in r, false);
+  });
+
+  test("模型上报过缺陷就不再兜底（避免同一次失败记两遍）", () => {
+    const r = buildReport("...", "", [failed], { defects: [modelDefect] });
+    assert.deepEqual(r.defects, [modelDefect]);
+  });
+
+  test("合成断言不进缺陷：断言条数不足只补断言，不补缺陷", () => {
+    const r = buildReport("断言 A\n断言 B", "", [
+      { expectation: "A", verdict: "fail", evidence: "x" },
+    ]);
+    assert.equal(r.assertions.length, 2); // 真实 1 + 合成「断言全部执行」
+    assert.equal(r.defects.length, 1);
+    assert.equal(r.defects[0].expectation, "A");
+  });
+
+  test("缺陷不改变结论：全通过 + 模型缺陷仍为 PASS", () => {
+    const r = buildReport("...", "", [{ expectation: "A", verdict: "pass" }], {
+      defects: [{ ...modelDefect, kind: "error" }],
+    });
+    assert.equal(r.status, "pass");
+    assert.equal(r.defects.length, 1);
+  });
+
+  test("只有一条失败断言时用 agent 自报的步骤号；超出来例步数则留空", () => {
+    const ok = buildReport("步骤一\n步骤二\n步骤三", "第 2 步完成：ok", [failed]);
+    assert.equal(ok.defects[0].step, 2);
+    const outOfRange = buildReport("步骤一\n步骤二", "第 9 步完成：ok", [failed]);
+    assert.equal(outOfRange.defects[0].step, undefined);
+  });
+
+  test("unattributedDefects 只吃失败断言", () => {
+    assert.deepEqual(
+      unattributedDefects([
+        { expectation: "通过项", verdict: "pass" },
+        { expectation: "失败项", verdict: "fail", evidence: "证据" },
+      ]).map((d) => d.expectation),
+      ["失败项"],
+    );
+  });
+});
+
+describe("缺陷的文本渲染", () => {
+  const defect = {
+    title: "保存后列表未刷新",
+    severity: "critical",
+    kind: "functional",
+    expectation: "列表出现新记录",
+    actual: "列表仍是旧数据",
+    evidence: "截图见本次运行",
+  };
+
+  test("PASS 带缺陷时结论行带计数，缺陷排在断言之前", () => {
+    const r = buildReport("...", "", [{ expectation: "A", verdict: "pass" }], {
+      defects: [defect],
+    });
+    const text = renderText(r);
+    assert.ok(text.includes("结论: PASS（发现 1 个缺陷）"));
+    assert.ok(text.indexOf("缺陷（1）") < text.indexOf("断言数"));
+  });
+
+  test("FAIL 但缺陷为空时说明「未识别为产品缺陷」", () => {
+    const r = buildReport("步骤一\n步骤二", "步骤完成：1/2", []);
+    assert.equal(r.status, "fail");
+    assert.equal(r.defects, undefined);
+    assert.ok(renderText(r).includes("未识别为产品缺陷"));
+  });
+
+  test("未归因缺陷渲染成「未定级 / 未归因」", () => {
+    const line = defectLine({
+      title: "断言不成立：X",
+      kind: "unattributed",
+      expectation: "X",
+      actual: "没看到 X",
+    });
+    assert.ok(line.includes("[未定级][未归因]"));
+    assert.ok(line.includes("实际: 没看到 X"));
+  });
+});
+
+describe("套件汇总里的缺陷", () => {
+  test("只在顶层展平一份，并补上场景名；场景明细不带 defects", () => {
+    const a = buildReport("...", "", [
+      { expectation: "A", verdict: "fail", evidence: "e" },
+    ]);
+    const summary = summarizeSuite([
+      { name: "场景A", report: a, usage: emptyUsage() },
+    ]);
+    assert.equal(summary.defects.length, 1);
+    assert.equal(summary.defects[0].scenario, "场景A");
+    assert.equal(summary.scenarios[0].defects, undefined);
+  });
+
+  test("缺陷不影响整体结论", () => {
+    const pass = buildReport("...", "", [{ expectation: "A", verdict: "pass" }], {
+      defects: [
+        {
+          title: "页面有 console 报错",
+          severity: "normal",
+          kind: "error",
+          expectation: "无报错",
+          actual: "报错 3 条",
+          evidence: "TypeError",
+        },
+      ],
+    });
+    const summary = summarizeSuite([
+      { name: "场景A", report: pass, usage: emptyUsage() },
+    ]);
+    assert.equal(summary.status, "pass");
+    assert.equal(summary.defects.length, 1);
   });
 });

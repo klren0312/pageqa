@@ -102,6 +102,7 @@ import {
 import { TimingCollector, renderTiming } from "./timing.js";
 import { restorePlaceholders, type RunVarValue } from "./vars.js";
 import { t } from "../shared/i18n.js";
+import type { Defect, DefectDraft } from "../shared/defect.js";
 
 export interface AgentOptions {
   session?: string;
@@ -191,6 +192,7 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "- assert_text(expectation, absent?): 断言页面是否包含某文本；absent=true 表示断言**不包含**（用例写「不包含 X」时用它），返回「成立/不成立」与证据",
   "- assert_no_console_error(ignore?, warnings?): 断言页面没有 JavaScript 报错（用例写「无控制台报错」「不应有 JS 异常」时用它，**不要**用 assert_text 检查某个字眼来代替——这类错误根本不体现在页面文字上）；ignore 传已知噪音的子串数组放行（如 favicon、第三方脚本的报错），warnings=true 时把警告也算失败",
   "- assert_network(url, status?, method?): 断言某个请求发生了且状态符合期望（如 url=\"/api/user/save\"、status=\"200\"；status 也支持 2xx 这类区间，不给则表示「请求成功完成」）；用于确认提交/导出背后接口真的成功",
+  "- report_defect(title, severity, kind, expectation, actual, evidence): 上报一条**被测产品的问题**（缺陷）。只在两类情形用：①断言不成立且确认是产品问题；②用例没断言但页面给出确定证据的问题（JS 报错、接口 4xx/5xx、明确的错误提示）。用例写错、环境不可用、工具/定位失败、自己没跑完一律不报",
   "",
   "工作流程（必须严格遵守）：",
   "1. 第一步永远是 navigate(url) 打开目标页面。",
@@ -215,6 +217,12 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "- 若某步骤确实无法完成（元素找不到、操作被拒绝等），明确说明该步骤失败及原因，然后继续或终止，但仍要如实输出进度声明。",
   "- 只要还有未执行的步骤，就继续调用工具执行下一步，不要中途停下等待用户输入；只有全部步骤都执行（或已明确失败）后才输出进度声明并收尾。",
   "- 工具调用失败（如 click 找不到元素、超时）不等于该步骤失败：必须先重新 snapshot 定位元素后重试；同一操作连续两次失败才可判定该步骤失败。",
+  "",
+  "缺陷上报（关键）：",
+  "- 缺陷是**产品的问题**，不是「测试没跑成」：断言不成立、工具失败、步骤没跑满、自己被中止都不是缺陷本身。",
+  "- 两类才报：①断言不成立，且你确认用例的期望是对的、页面行为错了（不是选择器点错、也不是页面还没加载完）；②用例没断言，但页面给出确定证据的问题——控制台 JS 报错、接口 4xx/5xx、页面上明确的错误提示。",
+  "- 不报：用例写错、环境不可用、工具/定位失败、你没能跑完的步骤。写不出「期望 vs 实际」就不报。",
+  "- 一次 report_defect 报一条；同一根因导致多处断言失败时只报一条，在证据里写清影响范围。上报**不影响 PASS/FAIL**，也不会让用例失败。",
   "",
   "选择类控件（下拉框 / 日期 / 级联，关键）：",
   "- 下拉框（el-select、el-cascader）与日期选择器（el-date-picker）**不是文本输入框**：它们的输入框是只读的，fill 填不进去、只会白费一步。下拉用 select_option、日期用 pick_date，**一次调用**完成选择——通用路径「click 点开 → snapshot 拿编号 → click 选项」要三轮往返，选日期翻月份时更多。",
@@ -481,6 +489,13 @@ interface AgentSession {
    * 时好时坏（写成「…，断言成立。」时既无期望值也无法解析，会把通过的用例判成假失败）。
    */
   assertions: AssertionResult[];
+  /**
+   * 本次运行中模型通过 `report_defect` 上报的缺陷（按上报顺序）。
+   *
+   * 与 `assertions` 并列而不是嵌在里面：缺陷是「产品有什么问题」，断言是「用例过没过」，
+   * 两者各答各的问题（ADR-0022）。
+   */
+  defects: Defect[];
   startedAt: number;
   /**
    * 本次运行的上下文预算（按模型窗口算出的 token 预算）。
@@ -732,6 +747,25 @@ async function initializeAgent(
   const recorder = new Recorder(opts.vars ?? []);
   // 断言结果由工具层逐条上报（见 bsk/tools.ts 的 onExec），报告不再依赖模型措辞。
   const assertions: AssertionResult[] = [];
+  // 事件累积放在工具之前：缺陷上报要读它判断「当前第几步」。
+  const events: string[] = [];
+  // 模型上报的缺陷（ADR-0022）。步骤号按「最后一条『第 k 步』自述的下一步」推：
+  // 缺陷通常在某一步执行过程中被发现，而模型完成一步后才写自述。
+  const defects: Defect[] = [];
+  const noteDefect = (draft: DefectDraft): void => {
+    const step = currentStep();
+    defects.push({ ...draft, ...(step ? { step } : {}) });
+  };
+  /** 当前正在执行的步骤（1 起）；还没有任何步骤自述时留空。 */
+  const currentStep = (): number | undefined => {
+    if (steps.length === 0) return undefined;
+    const matches = [...events.join("").matchAll(/第\s*(\d+)\s*步/g)];
+    const last = matches.at(-1);
+    if (!last) return undefined;
+    const done = Number(last[1]);
+    if (!Number.isFinite(done)) return undefined;
+    return Math.min(done + 1, steps.length);
+  };
 
   // ── 上下文预算：按模型窗口算，而不是按写死的字符数 ──
   // 窗口来源三级回落（配置 > 模型元数据/探测值 > 32k 兜底，见 context.ts 的 resolveWindow）：
@@ -774,6 +808,7 @@ async function initializeAgent(
               });
             }
           },
+          onDefect: noteDefect,
         })
       : createBskTools({
           session,
@@ -790,6 +825,7 @@ async function initializeAgent(
               });
             }
           },
+          onDefect: noteDefect,
         })),
     // Zen 的免费层要求请求里带五个工具名，否则 403（见 free-providers.ts）。
     // 只在这一条车道上补桩：别的 provider 不该为一次「过门禁」多背五个无用声明。
@@ -915,7 +951,6 @@ async function initializeAgent(
   holder.collector = collector;
   log("[runAgent] session 存档 id=" + collector.data.id);
 
-  const events: string[] = [];
   const trimState = createTrimState();
   const agent = new Agent({
     initialState: {
@@ -1029,6 +1064,7 @@ async function initializeAgent(
     timing,
     collector,
     assertions,
+    defects,
     startedAt,
     budget,
     model: { provider: model.provider, id: model.id },
@@ -1380,6 +1416,7 @@ function finalizeResult(
   const transcript = events.join("");
   const report = buildReport(input, transcript, session.assertions, {
     cancelled: aborted,
+    defects: session.defects,
   });
   report.durationMs = Date.now() - startedAt;
   // 金额估算（美元）：单价来自内置快照、被 config.json 的 modelPricing 覆盖。

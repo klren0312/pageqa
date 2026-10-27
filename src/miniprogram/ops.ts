@@ -123,6 +123,23 @@ export function createMiniprogramOps(
 
     lastSnapshot: () => rawSnapshot,
 
+    // 小程序没有 location.href：当前页面路由 + query 就是它的「地址」（ADR-0022）。
+    pageUrl: (_signal?: AbortSignal) =>
+      run(async () => {
+        const page = await getCurrentPage();
+        const path = (page as any)?.path;
+        if (typeof path !== "string" || !path) return undefined;
+        const query = (page as any)?.query;
+        if (!query || typeof query !== "object") return path;
+        const pairs = Object.entries(query as Record<string, unknown>)
+          .map(
+            ([key, value]) =>
+              `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`,
+          )
+          .join("&");
+        return pairs ? `${path}?${pairs}` : path;
+      }),
+
     navigate: (url: string, _signal?: AbortSignal) =>
       run(async () => {
         const mp = await getMiniProgram();

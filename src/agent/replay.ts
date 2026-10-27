@@ -59,6 +59,7 @@ import {
   renderSuiteText,
   renderText,
   summarizeSuite,
+  unattributedDefects,
   type AssertionResult,
   type ScenarioDetail,
   type TestReport,
@@ -1376,6 +1377,13 @@ export function replayScenarioStatus(outcome: {
 export interface ReplayStepOutcome {
   trace: string[];
   assertions: AssertionResult[];
+  /**
+   * 真实断言结果（assert_* 步骤产生的）。
+   *
+   * 与 `assertions` 分开：后者还混着「步骤执行失败」补的合成断言，而缺陷兜底只认
+   * 真实断言——操作失败/定位不到是执行层问题，不是产品缺陷（ADR-0022）。
+   */
+  asserted: AssertionResult[];
   outputs: string[];
   /** 因「元素未找到」被跳过的步骤描述（不算失败，但必须让人看见）。 */
   skipped: string[];
@@ -1441,6 +1449,7 @@ export async function executeReplaySteps(
   const outcome: ReplayStepOutcome = {
     trace: [],
     assertions: [],
+    asserted: [],
     outputs: [],
     skipped: [],
     executed: 0,
@@ -1505,6 +1514,7 @@ export async function executeReplaySteps(
             t("replay.assert.semanticHint");
         }
         outcome.assertions.push(out.assertion);
+        outcome.asserted.push(out.assertion);
       }
       info(
         t("replay.log.ok", {
@@ -1578,6 +1588,7 @@ async function replayScenario(
   let outcome: ReplayStepOutcome = {
     trace: [],
     assertions: [],
+    asserted: [],
     outputs: [],
     skipped: [],
     executed: 0,
@@ -1631,6 +1642,10 @@ async function replayScenario(
 
   const { trace, assertions, skipped } = outcome;
   const status = replayScenarioStatus(outcome);
+  // 回放没有模型，缺陷只能来自确定性兜底：真实断言不成立 → 未归因缺陷。
+  // 被中止的场景不做（半截轨迹不该被当成「产品有问题」）。
+  const defects =
+    status === "cancelled" ? [] : unattributedDefects(outcome.asserted);
   // 耗时构成（墙钟 = 建 session + 逐步执行）：回放零模型，所以只会出现命令与「其它」两类。
   // 与录制路径一样只写日志，不写 stdout 报告（ADR-0002）。
   const wallMs = Date.now() - startedAt;
@@ -1643,6 +1658,7 @@ async function replayScenario(
     script: opts.scriptPath,
     status,
     assertions,
+    ...(defects.length > 0 ? { defects } : {}),
     skipped,
     screenshots,
     summary: [

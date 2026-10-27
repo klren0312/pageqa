@@ -798,6 +798,8 @@ function toMemberReport(suiteReport: TestReport, name: string): TestReport {
     status: suiteReport.status,
     ...(suiteReport.mode ? { mode: suiteReport.mode } : {}),
     assertions: detail?.assertions ?? [],
+    // 缺陷在子进程报告的**顶层**（ADR-0022 决策四），套件汇总据此展平并补场景名。
+    ...(suiteReport.defects?.length ? { defects: suiteReport.defects } : {}),
     steps: detail?.steps ?? [],
     trace: detail?.trace ?? [],
     ...(detail?.summary ? { summary: detail.summary } : {}),

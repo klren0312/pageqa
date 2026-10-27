@@ -24,6 +24,11 @@ import {
 } from "../report/screenshots.js";
 import { JevClient } from "../llm/jev.js";
 import {
+  DEFECT_KINDS,
+  DEFECT_SEVERITIES,
+  type DefectDraft,
+} from "../shared/defect.js";
+import {
   inspectRefTarget,
   parseSnapshotRefs,
   type SnapshotRef,
@@ -842,6 +847,13 @@ export interface BskOps {
   readonly session: string;
   /** 最近一次快照文本（每次 snapshot / assert_text 都会刷新）。 */
   lastSnapshot(): string;
+  /**
+   * 当前页面地址，供缺陷的复现定位用（ADR-0022）。
+   *
+   * 只在报缺陷时读一次；读不到就返回 undefined——地址是锦上添花，不能因为读页址
+   * 失败就让一条缺陷丢失。桌面端是 `evaluate location.href`，小程序端是当前页面路由。
+   */
+  pageUrl(signal?: AbortSignal): Promise<string | undefined>;
   navigate(url: string, signal?: AbortSignal): Promise<string>;
   /**
    * 读取页面快照（已瘦身）；期间无页面改动且间隔很短时复用上一份，不重新抓取。
@@ -2052,6 +2064,11 @@ export function createBskOps(
     lastAssertSemantic: () => assertSemantic,
     lastAssert: () => assertOutcome,
 
+    // 与缺陷上报同一条口径：读不到（页面已关、evaluate 被拒）就不带地址，不抛错。
+    async pageUrl(signal?: AbortSignal): Promise<string | undefined> {
+      return (await readPageLocation(signal))?.href || undefined;
+    },
+
     async navigate(url: string, signal?: AbortSignal): Promise<string> {
       markStale();
       // 先读一次当前地址：如果这次导航与当前页只差 hash / 路由片段，浏览器不会产生
@@ -2941,6 +2958,8 @@ export interface BskToolOptions {
   jevClient?: JevClient;
   /** 每次工具执行后的回调（录制回放脚本用）。 */
   onExec?: (event: BskToolExec) => void;
+  /** 模型通过 `report_defect` 上报的缺陷（字段已校验，场景/步骤由上层补）。 */
+  onDefect?: (defect: DefectDraft) => void;
   /**
    * 单份快照允许占用的**字符预算**（默认见 shared/snapshot.ts 的 `SLIM_BUDGET_CHARS`）。
    *
@@ -3000,6 +3019,103 @@ export function snapshotLooksLikeNotFound(text: string): boolean {
       text,
     )
   );
+}
+
+/**
+ * 「上报一条缺陷」工具（ADR-0022）：一次调用记一条，模型发现的那一刻就报。
+ *
+ * 它不碰页面、不产生断言，也**不改变结论**——上报错了最坏只是报告里多一条记录。
+ * 因此字段不合法时**不抛错**，而是返回一句「未记录：…」让模型补齐后重报：抛错会被
+ * `unrecoveredToolFailures` 当成一次未恢复的工具失败，反而把一条本来通过的用例判红。
+ *
+ * 场景名与用例步骤不在参数里：它们由上层（agent）按运行现场补，模型只描述问题本身。
+ */
+export function createReportDefectTool(opts: {
+  pageUrl?: (signal?: AbortSignal) => Promise<string | undefined>;
+  onDefect?: (defect: DefectDraft) => void;
+}): AgentTool {
+  return {
+    name: "report_defect",
+    label: "Report Defect",
+    description:
+      "上报一条**被测产品的问题**（缺陷）。只在两类情形用：①断言不成立且确认是产品问题（用例期望正确、页面行为错误）；②用例没断言但页面给出确定证据的问题（JS 报错、接口 4xx/5xx、明确的错误提示）。用例写错、环境不可用、工具/定位失败、自己没跑完一律不报；写不出期望与实际就不报。",
+    parameters: paramsOf(
+      {
+        title: {
+          type: "string",
+          description: "一句话说清是什么问题，如「保存后列表未刷新」",
+        },
+        severity: {
+          type: "string",
+          enum: [...DEFECT_SEVERITIES],
+          description:
+            "严重：主流程走不通或数据错误；一般：功能可用但结果/展示不对；轻微：样式/文案/体验问题",
+        },
+        kind: {
+          type: "string",
+          enum: [...DEFECT_KINDS],
+          description: "缺陷类型：功能 / UI / 报错 / 接口 / 性能 / 其他",
+        },
+        expectation: { type: "string", description: "期望的行为或结果" },
+        actual: { type: "string", description: "实际观察到的行为或结果" },
+        evidence: {
+          type: "string",
+          description: "证据：页面文本、控制台报错、接口状态等",
+        },
+      },
+      ["title", "severity", "kind", "expectation", "actual", "evidence"],
+    ),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = (params ?? {}) as Record<string, unknown>;
+      const text = (key: string): string =>
+        typeof p[key] === "string" ? (p[key] as string).trim() : "";
+      const title = text("title");
+      const severity = text("severity");
+      const kind = text("kind");
+      const expectation = text("expectation");
+      const actual = text("actual");
+      const evidence = text("evidence");
+
+      const missing = [
+        title ? null : "title",
+        expectation ? null : "expectation",
+        actual ? null : "actual",
+        evidence ? null : "evidence",
+      ].filter((key): key is string => key !== null);
+      if (missing.length > 0) {
+        return ok(
+          `未记录缺陷：缺少 ${missing.join("、")}。补齐后重新调用 report_defect。`,
+        );
+      }
+      if (!(DEFECT_SEVERITIES as readonly string[]).includes(severity)) {
+        return ok(
+          `未记录缺陷：severity 只能是 ${DEFECT_SEVERITIES.join(" / ")}。`,
+        );
+      }
+      if (!(DEFECT_KINDS as readonly string[]).includes(kind)) {
+        return ok(`未记录缺陷：kind 只能是 ${DEFECT_KINDS.join(" / ")}。`);
+      }
+
+      // 页面地址是尽力而为：读不到不影响缺陷成立，报告里少一行定位而已。
+      let url: string | undefined;
+      try {
+        url = await opts.pageUrl?.(signal);
+      } catch {
+        url = undefined;
+      }
+
+      opts.onDefect?.({
+        title,
+        severity: severity as DefectDraft["severity"],
+        kind: kind as DefectDraft["kind"],
+        expectation,
+        actual,
+        evidence,
+        ...(url ? { url } : {}),
+      });
+      return ok(`已记录缺陷：${title}`);
+    },
+  };
 }
 
 /** 构造一组浏览器操作工具，供 page-test agent 调用。 */
@@ -3892,6 +4008,12 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     },
   };
 
+  // 缺陷上报不经过 bsk 命令，直接用操作层读页址并把校验过的字段交给上层。
+  const reportDefect = createReportDefectTool({
+    pageUrl: (signal) => ops.pageUrl(signal),
+    onDefect: opts.onDefect,
+  });
+
   // 所有工具共用同一个浏览器页面与 BskOps 实例：模型一次返回多个调用时必须按顺序执行，
   // 否则 click/fill 会互相踩页面状态，assert_text 的 lastAssert 也会串。顺序执行也让
   // 模型可以放心把「同一页面状态下的多条独立断言」放进同一轮，省掉每条断言一轮往返。
@@ -3917,6 +4039,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     assertText,
     assertNoConsoleError,
     assertNetwork,
+    reportDefect,
   ].map((tool) => ({ ...tool, executionMode: "sequential" as const }));
 }
 
