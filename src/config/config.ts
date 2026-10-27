@@ -45,6 +45,10 @@ export interface MiniProgramConfig {
   projectPath?: string;
   platform?: "android" | "ios";
   timeout?: number;
+  /**
+   * 自动化通道端口。新版开发者工具会随机分配（如 37703），此时必须显式指定；
+   * 缺省时依次尝试 9420–9425。环境变量 `PAGEQA_MINIPROGRAM_PORT` 同义。
+   */
   port?: number;
   account?: string;
 }

@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import net from "node:net";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { debugLog, info } from "../shared/log.js";
 import type { MiniProgramConfig } from "./types.js";
@@ -51,6 +53,23 @@ export function resetConsoleErrors(): void {
 const WS_ENV = "PAGEQA_MINIPROGRAM_WS_ENDPOINT";
 /** 自动化端口候选：开发者工具默认 9420，往后逐个试。 */
 const CANDIDATE_PORTS = [9420, 9421, 9422, 9423, 9424, 9425];
+
+/**
+ * 本次要尝试的端口：显式配置的端口优先，其后是默认端口段。
+ *
+ * 为什么必须认这个配置：开发者工具的自动化通道端口**并不总是 9420**——新版工具会
+ * 随机分配（如 37703）。只扫写死的默认段，就会「端口明明开着却一直连不上」，
+ * 表现为卡在「检查小程序驱动…」直到超时。配置来源：
+ * `miniprogram.port` 或环境变量 `PAGEQA_MINIPROGRAM_PORT`。
+ */
+function candidatePorts(configured?: number): number[] {
+  const explicit =
+    configured != null && Number.isInteger(configured) && configured > 0
+      ? configured
+      : undefined;
+  if (explicit === undefined) return [...CANDIDATE_PORTS];
+  return [explicit, ...CANDIDATE_PORTS.filter((p) => p !== explicit)];
+}
 /** 探测单个端点的 connect 超时（automator 的 ws 连接没有内置超时）。 */
 const CONNECT_PROBE_TIMEOUT_MS = 1500;
 /** 让开发者工具重开通道后，等 ws 就绪的上限。 */
@@ -106,7 +125,10 @@ function runCli(
       const child = spawn(cliPath, args, {
         stdio: ["ignore", "pipe", "pipe"],
         shell: true,
-        windowsHide: true,
+        // 注意：这里**不能**加 `windowsHide: true`。实测（开发者工具 2.02.0 +
+        // 中文安装路径 + 自带 cli.bat 包装器）加了这个选项后 cmd 会反复重入批处理，
+        // 刷出「Maximum setlocal recursion level reached.」，CLI 永远起不来。
+        // 去掉它只是可能闪一下控制台窗口，换来 CLI 能正常执行。
       });
       const onData = (d: Buffer) =>
         debugLog(`[miniprogram] cli: ${String(d).trim().slice(0, 200)}`);
@@ -165,7 +187,12 @@ async function openChannel(
     const child = spawn(
       cliPath,
       ["auto", "--project", projectPath, "--auto-port", String(port)],
-      { stdio: ["ignore", "pipe", "pipe"], shell: true, windowsHide: true },
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: true,
+        // 同 runCli：windowHide 会触发「Maximum setlocal recursion level reached」，
+        // 这里刻意不传。
+      },
     );
     // cli 的输出要留着：失败时它是唯一的现场（IDE 说了什么、是不是在等一个弹窗）。
     let cliOutput = "";
@@ -226,7 +253,20 @@ export async function ensureMiniprogramReady(
         "PAGEQA_MINIPROGRAM_CLI_PATH 指向微信开发者工具的 cli.bat。",
     );
   }
+  // 开发者工具只认「含 project.config.json 的小程序工程目录」。uni-app / Taro 的
+  // 源码根目录没有这个文件，`cli open` 会返回 code 10，自动化通道也就一直开不出来——
+  // 与其等 30s×N 再看一条含糊的 CLI 输出，不如在这里直接说清楚。
+  if (!existsSync(join(config.projectPath, "project.config.json"))) {
+    throw new Error(
+      `projectPath 不是可直接打开的微信小程序工程：${config.projectPath} 下没有 project.config.json。` +
+        `如果这是 uni-app / Taro 源码目录，请先编译，并把 projectPath 指向编译产物` +
+        `（uni-app 通常是 dist/dev/mp-weixin 或 dist/build/mp-weixin）。`,
+    );
+  }
   const a = await loadAutomator();
+  // 显式配置的端口（如新版开发者工具随机分配的 37703）排在最前，其余默认段兜底。
+  const ports = candidatePorts(config.port);
+  debugLog(`[miniprogram] 候选自动化端口：${ports.join(", ")}`);
 
   // ① 父进程传下来的端点：同一会话内的场景子进程走这条（父进程已经开好通道）。
   const fromEnv = (process.env[WS_ENV] ?? "").trim();
@@ -245,7 +285,7 @@ export async function ensureMiniprogramReady(
 
   // ② 现成的活通道：IDE 侧还开着、且还接受新连接的那条。
   if (!miniProgram) {
-    for (const port of CANDIDATE_PORTS) {
+    for (const port of ports) {
       const endpoint = `ws://127.0.0.1:${port}`;
       try {
         miniProgram = await connectWithTimeout(
@@ -266,12 +306,12 @@ export async function ensureMiniprogramReady(
   if (!miniProgram) {
     debugLog("[miniprogram] 启动微信开发者工具并载入项目…");
     const listening: number[] = [];
-    for (const port of CANDIDATE_PORTS) {
+    for (const port of ports) {
       if (await isPortListening(port)) listening.push(port);
     }
     const order = [
       ...listening,
-      ...CANDIDATE_PORTS.filter((p) => !listening.includes(p)),
+      ...ports.filter((p) => !listening.includes(p)),
     ];
     let lastErr: unknown;
     for (const port of order.slice(0, 3)) {
@@ -294,7 +334,7 @@ export async function ensureMiniprogramReady(
     }
     if (!miniProgram) {
       throw new Error(
-        `无法连接微信开发者工具：候选端口（${CANDIDATE_PORTS.join(", ")}）都没能建立自动化通道。` +
+        `无法连接微信开发者工具：候选端口（${ports.join(", ")}）都没能建立自动化通道。` +
           `请确认开发者工具已登录、且已开启服务端口（设置 → 安全设置）；` +
           `若该项目已在开发者工具里打开，请先把它关掉再重试。` +
           `另外请在开发者工具的「安全」里打开「自动化接口打开工具时默认信任项目」——` +
