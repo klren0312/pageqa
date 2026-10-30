@@ -489,6 +489,7 @@ describe("存档落盘与读取（SQLite 单容器）", () => {
         family: true,
         scope: "session",
         initial: (seed) => seed,
+        checkpointWhen: () => true,
       });
       const storage = await openNodeSqliteStorage(databasePath(dir));
       const session = createSession(storage);

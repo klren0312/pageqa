@@ -95,6 +95,8 @@ const ArchiveDoc: SessionDocFamilyToken<StoredArchive, StoredArchive> =
     scope: "session",
     // 整份档案一次写入，之后只按 id 读回来，所以 seed 就是它本身。
     initial: (seed) => seed,
+    // 同样一次整份写入：存成完整基线，读的时候不必再回放增量。
+    checkpointWhen: () => true,
   });
 
 const IndexDoc: SessionDocToken<StoredIndex> = defineDoc<StoredIndex>({
