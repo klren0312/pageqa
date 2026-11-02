@@ -238,6 +238,7 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
   **默认就是关**：不配时按模型 id 自动判断该端点认哪个字段（`qwen*`/`qwq*` 走 `enable_thinking: false`；`deepseek*`、`hunyuan*`、`hy*`、`glm*` 走 `thinking: {"type":"disabled"}`；认不出时用最常见的 deepseek 约定）。要改写法就填上表里的取值，要「不要关」就填 `none`/`off`。
   启动时会打印实际生效的取值与发出的字段。**万一端点不认这个字段**（严格实现会直接 400），探活会自动去掉它重试一次并把这次降级写进模型对象，本进程后续都不再发，同时打一行说明。所以「默认关闭」不会把本来能用的端点弄坏，代价只在真不兼容时多一次探活请求。
 - **语言**：`--locale zh|en` 或 `PAGEQA_LOCALE`；默认 `zh`。数据契约（JSON 字段、退出码）与语言无关。
+- **启动耗时诊断（可选）**：`PAGEQA_STARTUP_TRACE=1`（或给一个文件路径）后，启动路径上每个阶段都会**立刻**往 `~/.pageqa/startup-trace.log` 追加一行——`index-module`（node 自身 + 入口模块图）、`tui-module`（pi-tui / pi-ai / pi-agent-core 整棵 UI 模块图）、`model-check`（内置 provider 目录 + 模型校正）、`first-frame`（第一帧真的写到终端）等。排查「打开 TUI 要十几秒」时用它：屏幕全黑也照样留得下时间线，首帧之后还会把各段净耗时打进日志视口。不设这个变量时打点是空调用，启动路径零开销。
 - **模型请求代理（可选）**：`~/.pageqa/proxy.json`，见下面的[模型请求的代理](#模型请求的代理)。
 - **免费模型网关（可选）**：`/model` 里自带一批免费/免登录的 OpenAI 兼容网关，见下面的[免费模型网关](#免费模型网关)。
 

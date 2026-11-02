@@ -81,6 +81,11 @@ import {
 } from "../agent/suite.js";
 import { info, setSink } from "../shared/log.js";
 import {
+  markFirstStdoutWrite,
+  markStartup,
+  startupTraceSummary,
+} from "../shared/startup-trace.js";
+import {
   cacheHitRate,
   countAssertions,
   emptyUsage,
@@ -426,6 +431,7 @@ export async function runInteractive(
     truncateToWidth,
     visibleWidth,
   } = await import("@earendil-works/pi-tui");
+  markStartup("pi-tui");
 
   /** 浮层外框：内容按内宽渲染，边框与填充交给 `frameLines`（见 ./overlay-frame.ts）。 */
   class OverlayFrame implements Component {
@@ -651,6 +657,7 @@ export async function runInteractive(
   // 目录本身不含内置 provider（保持启动开销）；`/model`、`/login` 或配置里指向
   // 内置 provider 时才按需加载（见 resolveInitialChoice / ensureBuiltins）。
   const catalog = await createModelCatalog();
+  markStartup("catalog");
   /** 本次会话当前使用的模型：每个场景开跑时取值，切换只影响之后的场景。 */
   let currentChoice: ModelChoice = { ...catalog.defaultChoice };
   /**
@@ -2865,12 +2872,20 @@ export async function runInteractive(
   // 配置里的默认模型可能已不可用（provider 未登录/模型下线）：先校正，避免第一条场景
   // 就以「模型不存在」失败。校正结果会写到视口，用户的第一次交互就能看到。
   await resolveInitialChoice();
+  markStartup("model-check");
   info(
     "[pageqa] " +
       t("tui.model.status", { model: modelLabel(currentChoice) }),
   );
   updateStatus();
 
+  // 首帧才是「开屏」：从这里到 markFirstStdoutWrite 命中之间，屏幕是黑的。
+  markStartup("tui-start");
+  markFirstStdoutWrite("first-frame", () => {
+    // 汇总行只有开了 PAGEQA_STARTUP_TRACE 才有：它写进日志视口，不占 stdout。
+    const summary = startupTraceSummary();
+    if (summary) info(summary);
+  });
   tui.start();
   // 启动后终端尺寸才就绪，立刻渲染一次看板带（窄屏则保持空白、整片日志）。
   updateStatus();

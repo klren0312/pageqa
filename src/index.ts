@@ -74,10 +74,16 @@ import {
   reloadProxyConfig,
 } from "./config/proxy.js";
 import { packageVersion } from "./shared/version.js";
+import { markStartup } from "./shared/startup-trace.js";
 import type {
   AgentRunResult,
   ScenarioSelection,
 } from "./agent/agent.js";
+
+// 第一个启动打点（见 shared/startup-trace.ts）：静态 import 在上面的模块体之前就已求值完，
+// 因此这一行的时刻 = 「node 自身启动 + 本模块图加载」的总和。`PAGEQA_STARTUP_TRACE` 未设时
+// 它是一次空函数调用。
+markStartup("index-module");
 
 interface CliArgs {
   input?: string;
@@ -1007,7 +1013,11 @@ async function interactiveMode(
 ): Promise<number> {
   info(t("log.startupInteractive"));
   // 按需加载：交互模式才会用到 TUI 与它背后的 pi-tui / pi-agent-core（理由见文件头 import 处）。
+  // 打点分段记：这段 import 拉起的是整棵 UI 模块图（pi-tui + pi-ai + pi-agent-core），
+  // 「开屏慢」的大头通常就在这一行。
+  markStartup("tui-module-start");
   const { runInteractive: runTui } = await import("./tui/app.js");
+  markStartup("tui-module");
   const result = await runTui(source.text ?? "", {
     sourcePath: source.path,
     debug: args.debug,
@@ -1207,7 +1217,9 @@ function printProxyConfig(): void {
 }
 
 async function main(): Promise<number> {
+  markStartup("main");
   const args = parseArgs(process.argv.slice(2));
+  markStartup("args");
   // 驱动是**会话级**选择：把生效的驱动写进环境变量，场景子进程继承它
   // （交互模式里的 /driver 切换走同一条路，见 config.setDriver）。
   process.env.PAGEQA_DRIVER = readDriver();
@@ -1230,6 +1242,7 @@ async function main(): Promise<number> {
   setDebug(args.debug);
   installProxyRouting();
   reportProxyRouting();
+  markStartup("proxy");
   if (args.error) {
     process.stderr.write(t("err.param", { msg: args.error }) + "\n\n");
     process.stdout.write(
