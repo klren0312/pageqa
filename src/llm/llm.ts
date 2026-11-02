@@ -38,12 +38,10 @@ interface LlmModelConfig {
 }
 
 const MODELS: LlmModelConfig[] = [
-  { id: "hunyuan-2.0-instruct", name: "Hunyuan 2.0 Instruct", contextWindow: 32000, maxOutput: 64000 },
-  { id: "hy3", name: "Hy3", contextWindow: 192000, maxOutput: 64000 },
   { id: "deepseek-v4.1-flash", name: "Deepseek-V4.1-Flash", contextWindow: 1_000_000, maxOutput: 128_000 },
 ];
 
-/** 预设之外的模型使用的保守上下文窗口（未知模型按最小预设处理，避免超出端点实际限制）。 */
+/** 预设之外的模型使用的保守上下文窗口（未知模型一律按 32k 处理，避免超出端点实际限制）。 */
 const FALLBACK_CONTEXT_WINDOW = 32_000;
 
 /** 兜底模型的输出上限：真正生效的值由 `outputTokenCeiling` 按窗口夹出来。 */

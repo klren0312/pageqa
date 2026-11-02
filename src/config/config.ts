@@ -160,7 +160,7 @@ export interface PageQaConfig {
 const DEFAULTS: PageQaConfig = {
   baseUrl: "http://127.0.0.1:3000/v1",
   apiKey: "codebuddy-proxy-key",
-  model: "hunyuan-2.0-instruct",
+  model: "deepseek-v4.1-flash",
   modelProvider: PAGEQA_PROVIDER_ID,
   jev: {
     enabled: false,

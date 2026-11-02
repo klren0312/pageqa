@@ -57,10 +57,10 @@ describe("/model 的帮助与提示文案", () => {
     const healed = t("tui.model.fallback", {
       provider: "anthropic",
       model: "claude-x",
-      next: "hunyuan-2.0-instruct",
+      next: "deepseek-v4.1-flash",
       healed: t("tui.model.fallbackHealed"),
     });
     assert.match(healed, /已同步更新/);
-    assert.match(healed, /退回并改用 hunyuan-2\.0-instruct/);
+    assert.match(healed, /退回并改用 deepseek-v4\.1-flash/);
   });
 });

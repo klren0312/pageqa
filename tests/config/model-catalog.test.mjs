@@ -95,7 +95,6 @@ describe("模型目录（自定义端点 + 内置 provider）", () => {
     assert.ok(options.every((o) => o.provider === PAGEQA_PROVIDER_ID));
     assert.ok(options.some((o) => o.model === "unit-test-model"));
     // 预设模型同样可选：换模型不必改配置文件。
-    assert.ok(options.some((o) => o.model === "hunyuan-2.0-instruct"));
     assert.ok(options.some((o) => o.model === "deepseek-v4.1-flash"));
   });
 
