@@ -9,7 +9,9 @@
  * - 回放脚本的 `source.hash` 也据此覆盖全部场景（见 ADR-0002 决策七）。
  */
 import { appendFileSync, readFileSync } from "node:fs";
-import { splitScenarios } from "../agent/agent.js";
+// 只依赖轻模块（见 shared/scenario-split.ts）：写回是首帧路径上的一环，
+// 不该为了一次文本切分把整棵 agent 模块图（pi-agent-core + pi-ai）拉起来。
+import { splitScenarios } from "../shared/scenario-split.js";
 
 /** 一段待写回的场景。 */
 export interface CaseScenario {

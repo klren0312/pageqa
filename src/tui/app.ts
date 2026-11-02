@@ -68,17 +68,23 @@
  * - 路由本体在 `../proxy.ts`：进程启动时装配一次，自定义端点另有一条显式注入的 fetch
  *   （内置 provider 的客户端由 pi-ai 内部构造，pageqa 拿不到注入位，只能靠全局替换）。
  */
-import {
-  ModelUnreachableError,
-  splitScenarios,
-  type AgentRunResult,
-} from "../agent/agent.js";
-// 场景在独立子进程里执行（ADR-0013）：交互模式与批处理共用同一个执行器。
-import {
-  EnvironmentUnavailableError,
-  runScenarioInChild,
-  scenarioLogTag,
-} from "../agent/suite.js";
+// ── 首帧路径上只允许「画界面必需」的东西 ──
+//
+// 这里刻意**只留类型导入**（编译期擦除，零运行时开销）：pi-ai / pi-agent-core 那一套
+// 实测会连带拉起 1000+ 个模块（其中 typebox 668、openai SDK 199、undici 109），
+// 慢盘/杀软环境下每个模块要好几毫秒——整棵图就是「打开 TUI 要十几秒」的全部来源。
+// 运行时值一律在用到的地方 `await import()`（见 `getCatalog` / `loadAgentRuntime`），
+// 首帧因此只需 pi-tui + 本项目自己的轻模块。
+import type { AgentRunResult } from "../agent/agent.js";
+import type {
+  LogoutOption,
+  LoginOption,
+  ModelCatalog,
+  ModelChoice,
+  ModelOption,
+} from "../config/models.js";
+// 场景切分是纯文本处理，住在轻模块里（见 shared/scenario-split.ts）。
+import { splitScenarios } from "../shared/scenario-split.js";
 import { info, setSink } from "../shared/log.js";
 import {
   markFirstStdoutWrite,
@@ -164,6 +170,8 @@ import { readCaseMeta } from "../shared/case-meta.js";
 import {
   CONFIG_PATH,
   effectiveConcurrency,
+  loadConfig,
+  PAGEQA_PROVIDER_ID,
   readDriver,
   readModelPricing,
   readSideOutputPrefs,
@@ -185,22 +193,6 @@ import {
   setProxyBypassed,
   setProxyEnabled,
 } from "../config/proxy.js";
-import {
-  createModelCatalog,
-  listLoginOptions,
-  listLogoutOptions,
-  listModelOptions,
-  loadBuiltinProviders,
-  probeModel,
-  refreshFreeProviders,
-  resolveModel,
-  PAGEQA_PROVIDER_ID,
-  type LogoutOption,
-  type LoginOption,
-  type ModelChoice,
-  type ModelOption,
-} from "../config/models.js";
-import { isFreeProvider } from "../llm/free-providers.js";
 // 仅类型导入（编译期擦除）：TUI 路径不需要为 pi-ai 的运行时代码付出加载开销
 // （真正的模型目录由 models.ts 按需动态加载）。
 import type { AuthEvent, AuthPrompt, AuthType } from "@earendil-works/pi-ai";
@@ -405,6 +397,40 @@ function cancelledResult(item: QueuedScenario): AgentRunResult {
     transcript: report.transcript,
     usage: emptyUsage(),
     recordings: [],
+  };
+}
+
+// ── 重依赖的按需加载 ──
+//
+// 两个 Promise 各自只建一次：模块缓存是永久的，重复 `await` 只是微秒级的查表。
+// 谁需要谁 await——首帧路径上一个都不碰（理由见文件头「首帧路径」）。
+
+/** 模型目录所在的模块（pi-ai）：`/model`、`/login`、探活、跑场景才用得到。 */
+function loadModels(): Promise<typeof import("../config/models.js")> {
+  return import("../config/models.js");
+}
+
+/**
+ * 场景执行器（pi-agent-core + pi-durable）：真要跑/回放一个场景时才用得到。
+ *
+ * `agent.js` 提供编排与错误类型，`suite.js` 提供子进程执行入口（ADR-0013）——
+ * 两者共用同一棵 pi-ai 图，所以一起加载。
+ */
+async function loadAgentRuntime(): Promise<{
+  agent: typeof import("../agent/agent.js");
+  suite: typeof import("../agent/suite.js");
+  ModelUnreachableError: typeof import("../agent/agent.js").ModelUnreachableError;
+  EnvironmentUnavailableError: typeof import("../agent/suite.js").EnvironmentUnavailableError;
+}> {
+  const [agent, suite] = await Promise.all([
+    import("../agent/agent.js"),
+    import("../agent/suite.js"),
+  ]);
+  return {
+    agent,
+    suite,
+    ModelUnreachableError: agent.ModelUnreachableError,
+    EnvironmentUnavailableError: suite.EnvironmentUnavailableError,
   };
 }
 
@@ -656,10 +682,30 @@ export async function runInteractive(
   // ── 模型目录与会话级模型选择 ──
   // 目录本身不含内置 provider（保持启动开销）；`/model`、`/login` 或配置里指向
   // 内置 provider 时才按需加载（见 resolveInitialChoice / ensureBuiltins）。
-  const catalog = await createModelCatalog();
-  markStartup("catalog");
-  /** 本次会话当前使用的模型：每个场景开跑时取值，切换只影响之后的场景。 */
-  let currentChoice: ModelChoice = { ...catalog.defaultChoice };
+  //
+  // 连**目录对象本身**也是按需建的：`createModelCatalog()` 在 pi-ai 已经加载时只要几毫秒，
+  // 但加载 pi-ai 要 900+ 个模块——所以它不能在首帧之前发生（见文件头「首帧路径」）。
+  // 首个用到它的人（`/model`、`/login`、探活、跑场景）等同一个 Promise，只建一次。
+  let catalogPromise: Promise<ModelCatalog> | undefined;
+  function getCatalog(): Promise<ModelCatalog> {
+    catalogPromise ??= loadModels().then(async ({ createModelCatalog }) => {
+      const created = await createModelCatalog();
+      markStartup("catalog");
+      return created;
+    });
+    return catalogPromise;
+  }
+  /**
+   * 本次会话当前使用的模型：每个场景开跑时取值，切换只影响之后的场景。
+   *
+   * 初始值直接读配置文件（同步、不加载 pi-ai）：首帧的状态栏要立刻显示「用哪个模型」。
+   * 与 `catalog.defaultChoice` 同源（后者本来就是从这份配置来的）。
+   */
+  const savedChoice = loadConfig();
+  let currentChoice: ModelChoice = {
+    provider: savedChoice.modelProvider,
+    model: savedChoice.model,
+  };
   /**
    * 队列级模型探活缓存。
    *
@@ -674,6 +720,8 @@ export async function runInteractive(
     choice: ModelChoice,
     signal?: AbortSignal,
   ): Promise<boolean> {
+    const { resolveModel, probeModel } = await loadModels();
+    const catalog = await getCatalog();
     const model = resolveModel(catalog, choice);
     if (!model) return false;
     const key = `${choice.provider}/${choice.model}`;
@@ -688,6 +736,7 @@ export async function runInteractive(
     // 探活期间用户按了 Esc：不是模型不可达，交给子进程按「已取消」收尾。
     if (signal?.aborted) return false;
     if (!result.ok) {
+      const { ModelUnreachableError } = await loadAgentRuntime();
       throw new ModelUnreachableError(choice.provider, model.id, result.reason);
     }
     lastProbeKey = key;
@@ -695,7 +744,15 @@ export async function runInteractive(
     return true;
   }
   /** config.json 里保存的启动默认（选中即写盘；写失败时它与 currentChoice 会短暂不一致）。 */
-  let defaultChoice: ModelChoice = { ...catalog.defaultChoice };
+  let defaultChoice: ModelChoice = { ...currentChoice };
+  /**
+   * 启动校正的完成信号（见启动那一段）。
+   *
+   * 首帧不等模型校正，而校正要用 pi-ai 目录（+ 可能一次免费网关的网络刷新）；
+   * 但**开跑场景必须等它**——拿一个“已知不可用”的配置去跑，报出来的错与真相差很远。
+   * 默认已 resolve：没有校正可等（自定义端点）时它不该拖住任何东西。
+   */
+  let startupReady: Promise<void> = Promise.resolve();
   /**
    * 本次会话的并发度（1..8）。
    *
@@ -743,7 +800,11 @@ export async function runInteractive(
 
   /** 按需加载内置 provider（/model、/login、/logout 与内置默认模型都需要）。 */
   async function ensureBuiltins(): Promise<void> {
-    if (!catalog.builtinsLoaded) await loadBuiltinProviders(catalog);
+    const catalog = await getCatalog();
+    if (!catalog.builtinsLoaded) {
+      const { loadBuiltinProviders } = await loadModels();
+      await loadBuiltinProviders(catalog);
+    }
   }
 
   /**
@@ -753,6 +814,8 @@ export async function runInteractive(
    * 失败一律静默——「沿用内置快照继续用」本身就是正确行为，报错只会让用户以为功能坏了。
    */
   async function refreshFreeCatalog(signal?: AbortSignal): Promise<void> {
+    const { refreshFreeProviders } = await loadModels();
+    const catalog = await getCatalog();
     const timeout = AbortSignal.timeout(FREE_CATALOG_TIMEOUT_MS);
     try {
       await refreshFreeProviders(catalog, {
@@ -777,12 +840,15 @@ export async function runInteractive(
    */
   async function resolveInitialChoice(): Promise<void> {
     if (currentChoice.provider === PAGEQA_PROVIDER_ID) return;
+    const { resolveModel } = await loadModels();
+    const catalog = await getCatalog();
     try {
       await ensureBuiltins();
     } catch {
       // 内置 provider 加载失败：下面统一按「不可用」兜底。
     }
     // 免费网关的目录可能已经变了（配置里那个模型 id 是上次选的），刷一次再判断可用性。
+    const { isFreeProvider } = await import("../llm/free-providers.js");
     if (isFreeProvider(currentChoice.provider)) {
       await refreshFreeCatalog();
     }
@@ -1049,6 +1115,7 @@ export async function runInteractive(
       ),
     );
     try {
+      const catalog = await getCatalog();
       await catalog.models.login(provider, type, {
         signal: controller.signal,
         prompt: (prompt) => askAuthPrompt(prompt),
@@ -1079,6 +1146,8 @@ export async function runInteractive(
    * 面板上的「默认」徽章因此仍指向真正落盘的那个）。
    */
   async function applyModel(choice: ModelChoice): Promise<void> {
+    const { resolveModel } = await loadModels();
+    const catalog = await getCatalog();
     try {
       await ensureBuiltins();
     } catch {
@@ -1402,7 +1471,8 @@ export async function runInteractive(
     await refreshFreeCatalog();
     let options: ModelOption[];
     try {
-      options = await listModelOptions(catalog);
+      const { listModelOptions } = await loadModels();
+      options = await listModelOptions(await getCatalog());
     } catch (err2) {
       append(err(t("tui.model.loadFailed", { msg: msgOf(err2) })));
       return;
@@ -1446,7 +1516,8 @@ export async function runInteractive(
     }
     let options: LoginOption[];
     try {
-      options = await listLoginOptions(catalog);
+      const { listLoginOptions } = await loadModels();
+      options = await listLoginOptions(await getCatalog());
     } catch (err2) {
       append(err(t("tui.login.loadFailed", { msg: msgOf(err2) })));
       return;
@@ -1483,7 +1554,8 @@ export async function runInteractive(
     }
     let options: LogoutOption[];
     try {
-      options = await listLogoutOptions(catalog);
+      const { listLogoutOptions } = await loadModels();
+      options = await listLogoutOptions(await getCatalog());
     } catch (err2) {
       append(err(t("tui.logout.loadFailed", { msg: msgOf(err2) })));
       return;
@@ -1503,6 +1575,7 @@ export async function runInteractive(
     if (!pick) return;
     const [provider] = decodeValue(pick.value);
     try {
+      const catalog = await getCatalog();
       await catalog.models.logout(provider);
       append(ok(t("tui.logout.success", { provider })));
     } catch (err2) {
@@ -1881,6 +1954,13 @@ export async function runInteractive(
     // 模型在开跑那一刻定下来：探活与子进程必须用同一个选择，否则探活期间 /model
     // 会让「已探活的 A」被当成「要跑的 B」而跳过 B 的探活。
     const scenarioChoice = { ...currentChoice };
+    // 首帧不等模型校正（见启动那一段），因此第一个场景开跑前先等它落定：
+    // 否则它会拿着一个「已知不可用」的配置去跑，报出来的错与真相差很远。
+    await startupReady;
+    // 执行器（pi-agent-core）与模型目录（pi-ai）都在这里才加载：首帧不必付这笔开销。
+    const runtime = await loadAgentRuntime();
+    const { resolveModel } = await loadModels();
+    const catalog = await getCatalog();
     // 上下文窗口取「开跑那一刻」的模型，与传给子进程的 model 参数同源。
     runningContexts.set(item.id, {
       used: 0,
@@ -1905,7 +1985,7 @@ export async function runInteractive(
         item.origin.kind === "file"
           ? readCaseMeta(item.origin.path).miniprogram
           : undefined;
-      result = await runScenarioInChild({
+      result = await runtime.suite.runScenarioInChild({
         name: item.name,
         body: item.body,
         miniprogram: caseMiniprogram,
@@ -1920,7 +2000,7 @@ export async function runInteractive(
         // 子进程的进度日志直接进日志视口：它自带时间戳，与 log.ts 的输出同形。
         onChildLog: append,
         // 并发时给每行加 `[#k 场景名]` 前缀，串行时原样转发。
-        ...(parallel ? { logTag: scenarioLogTag(item.id, item.name) } : {}),
+        ...(parallel ? { logTag: runtime.suite.scenarioLogTag(item.id, item.name) } : {}),
         // 每轮 LLM 调用后刷新状态栏里的 token 累计：长流程跑到一半就能看出已经烧了多少。
         // 上报的是累计值，上下文取相邻两次的增量（即最近一轮喂给模型的 token 数）。
         onUsage: (usage) => {
@@ -1938,7 +2018,7 @@ export async function runInteractive(
       });
     } catch (err2) {
       append(err(t("tui.sceneError", { i: item.id, name: item.name, msg: msgOf(err2) })));
-      if (err2 instanceof ModelUnreachableError) {
+      if (err2 instanceof runtime.ModelUnreachableError) {
         // 模型不通：这个场景如实记为失败（**不是**「已取消」——它是配置错误，
         // 混进「不计入退出码」的类别会让 CI 把「模型连不上」当成通过），
         // 同时把整条队列停掉。继续跑只会把一次「连不上」摊成 N 个「用例失败」，
@@ -1947,7 +2027,7 @@ export async function runInteractive(
         append(dim(t("err.modelUnreachableHint")));
         const stopped = queue.cancelAllWaiting(t("tui.model.stopNote"));
         if (stopped > 0) append(warn(t("tui.model.stopRun", { n: stopped })));
-      } else if (err2 instanceof EnvironmentUnavailableError) {
+      } else if (err2 instanceof runtime.EnvironmentUnavailableError) {
         // 浏览器环境跑不起来：同样记失败 + 停队列，但说法必须与「模型不通」分开，
         // 否则报告会把人引到错误的方向去（见 ADR-0013 决策七）。
         result = failedResult(item, err2, t("tui.env.expectation"));
@@ -2130,6 +2210,8 @@ export async function runInteractive(
     raw: string,
     signal: AbortSignal,
   ): Promise<FormatOutcome> {
+    const { resolveModel } = await loadModels();
+    const catalog = await getCatalog();
     const model = resolveModel(catalog, currentChoice);
     if (!model) return { kind: "failed", msg: t("tui.format.noModel") };
     const timeout = AbortSignal.timeout(FORMAT_TIMEOUT_MS);
@@ -2268,6 +2350,8 @@ export async function runInteractive(
     hint: string,
     candidates: string[],
   ): Promise<string | undefined> {
+    const { resolveModel } = await loadModels();
+    const catalog = await getCatalog();
     const model = resolveModel(catalog, currentChoice);
     if (!model) return undefined;
     try {
@@ -2869,17 +2953,14 @@ export async function runInteractive(
         : t("tui.noSource")),
   );
   append(dim(t("tui.enterHint")));
-  // 配置里的默认模型可能已不可用（provider 未登录/模型下线）：先校正，避免第一条场景
-  // 就以「模型不存在」失败。校正结果会写到视口，用户的第一次交互就能看到。
-  await resolveInitialChoice();
-  markStartup("model-check");
-  info(
-    "[pageqa] " +
-      t("tui.model.status", { model: modelLabel(currentChoice) }),
-  );
-  updateStatus();
+  // 先用配置里那个值报一行（首帧就能看到），校正若改了模型再补一行（见下）。
+  const startupModelLabel = modelLabel(currentChoice);
+  info("[pageqa] " + t("tui.model.status", { model: startupModelLabel }));
 
-  // 首帧才是「开屏」：从这里到 markFirstStdoutWrite 命中之间，屏幕是黑的。
+  // ── 首帧：只画界面，不等任何重依赖 ──
+  // 模型目录（pi-ai）与内置 provider 目录实测是开屏耗时的全部大头：前者 900+ 个模块，
+  // 后者还要再加载一遍全部 provider。把它们放到首帧之后，用户先看到界面（输入框可用、
+  // /help 这类纯界面命令立刻能用），再在后台把“能不能跑”校正完。
   markStartup("tui-start");
   markFirstStdoutWrite("first-frame", () => {
     // 汇总行只有开了 PAGEQA_STARTUP_TRACE 才有：它写进日志视口，不占 stdout。
@@ -2889,6 +2970,25 @@ export async function runInteractive(
   tui.start();
   // 启动后终端尺寸才就绪，立刻渲染一次看板带（窄屏则保持空白、整片日志）。
   updateStatus();
+
+  // ── 首帧之后：校正模型选择 ──
+  // 配置里的默认模型可能已不可用（provider 未登录/模型下线）：校正一次，避免第一条场景
+  // 就以「模型不存在」失败。校正结果会写到视口，用户的第一次交互就能看到。
+  // 跑场景前会 await 这个 Promise（见 runScenario），所以校正没完就不会开跑。
+  startupReady = resolveInitialChoice()
+    .catch(() => {
+      // 校正失败（目录加载不出来等）不该让界面停在半路：按现状继续，
+      // 真跑起来会由探活给出可读报错。
+    })
+    .then(() => {
+      markStartup("model-check");
+      // 只在真的换了模型时补一行：没换就别把同一行打第二遍。
+      const corrected = modelLabel(currentChoice);
+      if (corrected !== startupModelLabel) {
+        info("[pageqa] " + t("tui.model.status", { model: corrected }));
+      }
+      updateStatus();
+    });
 
   // Ctrl+C 有两条路径到我们这儿：raw 模式下它是 `\x03` 这个字节（上面的输入监听），
   // 而在 raw 模式没生效的时刻——启动早期、以及收尾还原终端之后——它会变成 SIGINT 信号，

@@ -44,10 +44,14 @@ import {
   type Driver,
   type MiniProgramConfig,
 } from "../config/config.js";
+import { mergeMiniprogramConfig } from "../shared/case-meta.js";
+// 场景切分住在轻模块里（见 shared/scenario-split.ts 的模块头）：
+// 这里原样 re-export，调用点与测试无需改动。
 import {
-  mergeMiniprogramConfig,
-  splitFrontmatter,
-} from "../shared/case-meta.js";
+  splitScenarios,
+  type Scenario,
+} from "../shared/scenario-split.js";
+export { splitScenarios, type Scenario };
 import { debugLog, info, setDebug } from "../shared/log.js";
 import {
   addUsage,
@@ -102,7 +106,6 @@ import {
   SessionCollector,
   writeArchive,
   type SessionContextInfo,
-  type SessionParams,
 } from "../session/archive.js";
 import { TimingCollector, renderTiming } from "./timing.js";
 import { restorePlaceholders, type RunVarValue } from "./vars.js";
@@ -159,11 +162,6 @@ export interface AgentRunResult {
   usage: TokenUsage;
   /** 本次运行录制到的可回放步骤（单场景一条；套件模式逐场景一条）。 */
   recordings: ScenarioRecording[];
-}
-
-export interface Scenario {
-  name: string;
-  body: string;
 }
 
 /**
@@ -1545,40 +1543,6 @@ async function runAgentCore(
   });
   await saveSessionArchive(holder);
   return result;
-}
-
-/** 把一个脚本拆分为多个场景（按 `## ` 二级标题分隔）。无标题则整体作为一个场景。 */
-export function splitScenarios(script: string): Scenario[] {
-  // 用例头（frontmatter）不是步骤：先剥掉。没有 `## ` 的用例否则会把它当成正文，
-  // 模型就会去「执行」那几行 YAML。
-  const { body: text } = splitFrontmatter(script);
-  const lines = text.split(/\r?\n/);
-  const collected: Scenario[] = [];
-  let currentName = "";
-  let currentLines: string[] = [];
-  let inScenario = false;
-  const flush = () => {
-    if (!inScenario) return;
-    const body = currentLines.join("\n").trim();
-    if (body.length > 0)
-      collected.push({ name: currentName || t("common.scenarioDefault"), body });
-    currentLines = [];
-  };
-  for (const line of lines) {
-    const m = line.match(/^##\s+(.*)$/);
-    if (m) {
-      flush();
-      inScenario = true;
-      currentName = m[1].trim();
-    } else if (inScenario) {
-      currentLines.push(line);
-    }
-    // 一级标题(#)与##之前的开场说明文字：不计入任何场景
-  }
-  flush();
-  return collected.length
-    ? collected
-    : [{ name: t("common.scenarioDefault"), body: text.trim() }];
 }
 
 /** `--only` 选中了哪一个场景。 */
