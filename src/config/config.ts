@@ -145,7 +145,7 @@ export interface PageQaConfig {
    * 单位是**美元 / 每百万 token**。
    *
    * 覆盖内置快照（价目取自 `report/price-snapshot.ts`，会过期）。内置目录不填价——
-   * pi-ai 的 42 个 provider 模型目录里 `cost` 为空，免费网关硬编码 0，所以
+   * pi-ai 的 42 个 provider 模型目录里 `cost` 为空，所以
    * 「按目录价估算」走不通，价只能来自快照或这里。缺省 `{}` = 只用快照。
    */
   modelPricing?: ModelPricing;

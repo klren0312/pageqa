@@ -100,10 +100,6 @@ _Avoid_：本次会话模型、当前模型、会话模型
 同时执行几个场景的**上限**（1..8），代价是同时开着同样多的浏览器窗口。默认 1：串行是「场景之间可能有隐含顺序依赖」的保护，并发等于声明这些场景互不依赖。
 _Avoid_：并行度、线程数、worker 数
 
-**免费网关（Free Gateway）**：
-`/model` 里自带的一批免费 OpenAI 兼容模型来源（cline / llm7 / fastrouter / orcarouter / xkiro），目录数据取自 pi-free。它在列表里的存在形态是三件事的合集：**快照**（上一次审计的免费模型，断网时的兜底）+ **动态目录**（打开 `/model` 时拉各网关的 `/v1/models`，只留免费条目）+ **免费判定**（快照命中或该网关自己的命名规律，逐网关显式声明）。配了 key 的网关才出现；允许匿名的那三个不配也出现（ADR-0017）。
-_Avoid_：免费模型、pi-free、免费 provider
-
 **代理路由（Proxy Routing）**：
 每个对外请求该走哪条路的判断：`direct`（直连）/ `proxy`（走代理）/ `fallback`（先直连、网络层失败再走代理）。按**代理规则**自上而下匹配，第一条命中者胜；都没命中用 `mode`。配置在 `~/.pageqa/proxy.json`，交互模式里由 `/proxy` 面板开关。装配点是替换 `globalThis.fetch`（见 ADR-0016）。
 _Avoid_：环境变量代理、HTTP_PROXY、翻墙、socket 代理

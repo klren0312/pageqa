@@ -91,7 +91,7 @@ pageqa --tui                     # 显式强制进入交互模式（非 TTY 下�
 | `/status` | 查看运行队列（每场景一行带状态与来源） |
 | `/cancel <n>` | 取消队列里还没开始的第 n 个场景 |
 | `/new` | 开新会话：清空视口与队列、token 重新计，但**上一批归档**（仍进退出报告与回放脚本）。队列还有在跑/待办、或输入仍在格式化时拒绝 |
-| `/model` | 切换本会话模型——`Enter` 即切换**并**存为启动默认。列表自带一批**免费网关**，带「免费」标记——见[免费模型网关](#免费模型网关) |
+| `/model` | 切换本会话模型——`Enter` 即切换**并**存为启动默认 |
 | `/login` · `/logout` | 登录 / 移除某 provider 的本地凭据（写入 `~/.pageqa/auth.json`） |
 | `/setting` | 改持久化偏好：测试报告(HTML) / 回放脚本 开关、语言、**并发量**（1/2/3/4/6/8） |
 | `/proxy` | 模型请求的代理路由：开关（写回 `~/.pageqa/proxy.json`）、仅本次会话直连、重新加载配置、查看统计与规则——见[模型请求的代理](#模型请求的代理) |
@@ -222,7 +222,7 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 - **场景级执行上限（可选）**：`scenarioTimeoutMs` 或 `PAGEQA_SCENARIO_TIMEOUT`（毫秒，**默认不限**）。套件模式下单个场景超过上限即终止它的子进程、该场景记失败（报告里带 `reason: "timeout"`）、**继续跑后面的场景**。默认关着：长流程十几分钟是常态，凭空定一个上限就是给自己造新的失败来源；CI 要门禁时显式设。
 - **小窗口模型 / 上下文窗口（可选）**：`contextWindow` 或 `PAGEQA_LLM_CONTEXT_WINDOW`（token 数）。自配端点拿不到模型的窗口元数据，而本地推理引擎（LM Studio / llama.cpp）的窗口由**加载设置**决定（同一个模型可以是 8192，也可以是 131072）——**不声明时 pageqa 会问一次引擎自己**（LM Studio 的 `/api/v0/models`、llama.cpp 的 `/props`），问不到才退回保守的 32k；声明了就以声明为准。预算按 `窗口 − 输出预留 − 安全边际` 算，占用超 75% / 85% 时分级裁剪历史快照（激进档还会整组丢弃中间消息并注入状态提示）；**固定前缀（系统提示 + 工具说明，默认约 12.4k token）在这三种情况下会被压缩成小模型档（约 3.5k）**：① 预算低于约 16k（窗口装不下）；② **模型名看起来是小模型**（≤9B 参数标注如 `4b`/`e4b`/`7b`，或 mini/nano/tiny 这类用词）——窗口开到 131072 的 4B 模型也照样压，否则每轮白读 9k token 的规则书；③ 配置 `compactPrompt`（`PAGEQA_COMPACT_PROMPT`，填 `false` 可强制不压）。快照按剩余空间缩小，`max_tokens` 按窗口钳制（小窗口 1/8），每轮还用端点回报的真实用量自校准估算。仍撞窗口时先紧急压缩重试一次，再撞就判失败、并在报告里给出路（换更大窗口的模型 / 声明 `contextWindow` / 把长用例拆成多个场景）。详见 `docs/adr/0014`。
 - **Jev 语义断言（可选）**：在 config 加 `jev` 字段（或 `PAGEQA_JEV_*` 环境变量），用于字面未命中时的语义复检，纠正同义/近义/格式差异造成的假 FAIL；调用失败自动降级回字符串匹配。
-- **费用估算（可选）**：报告末行会按本次用到的四类 token 估一个金额，单价来自内置快照（`src/report/price-snapshot.ts`，覆盖 Anthropic / OpenAI / Google / DeepSeek / 通义 / GLM / Kimi），**`modelPricing` 覆盖快照**——`provider → 模型 id（或 "*"）→ {input,output,cacheRead,cacheWrite}`，单位美元 / 每百万 token；自建端点与免费网关靠它才有估算。四类 token 各按自己的价（缓存读通常只有 input 的一折），漏配的项按 0 计而不是折算。查不到价时报告写「未配置价格」，**不写 `$0.00`**——后者会被读成「这个模型免费」。`usdToCny`（或 `PAGEQA_USD_TO_CNY`，默认 7.1）只决定并列显示的人民币数，价目本身始终是美元。
+- **费用估算（可选）**：报告末行会按本次用到的四类 token 估一个金额，单价来自内置快照（`src/report/price-snapshot.ts`，覆盖 Anthropic / OpenAI / Google / DeepSeek / 通义 / GLM / Kimi），**`modelPricing` 覆盖快照**——`provider → 模型 id（或 "*"）→ {input,output,cacheRead,cacheWrite}`，单位美元 / 每百万 token；自建端点靠它才有估算。四类 token 各按自己的价（缓存读通常只有 input 的一折），漏配的项按 0 计而不是折算。查不到价时报告写「未配置价格」，**不写 `$0.00`**——后者会被读成「这个模型免费」。`usdToCny`（或 `PAGEQA_USD_TO_CNY`，默认 7.1）只决定并列显示的人民币数，价目本身始终是美元。
 - **关闭端点的思考模式（可选）**：混元 / DeepSeek / Qwen / GLM 这类**混合推理**模型在 OpenAI 兼容端点上默认开着思考，模型会先吐一大段思考内容——慢、烧 token，还把 agent 的步骤编号与结论搅乱。配 `thinkingFormat`（或环境变量 `PAGEQA_LLM_THINKING_FORMAT`）后，pageqa 会在**每次请求**里显式带上该端点认的关闭字段：
 
   | `thinkingFormat` | 关思考时请求体里发的字段 |
@@ -240,29 +240,6 @@ pageqa lint --strict cases/login.md                       # 告警也算失败�
 - **语言**：`--locale zh|en` 或 `PAGEQA_LOCALE`；默认 `zh`。数据契约（JSON 字段、退出码）与语言无关。
 - **启动耗时诊断（可选）**：`PAGEQA_STARTUP_TRACE=1`（或给一个文件路径）后，启动路径上每个阶段都会**立刻**往 `~/.pageqa/startup-trace.log` 追加一行——`index-module`（node 自身 + 入口模块图）、`tui-module`（pi-tui / pi-ai / pi-agent-core 整棵 UI 模块图）、`model-check`（内置 provider 目录 + 模型校正）、`first-frame`（第一帧真的写到终端）等。排查「打开 TUI 要十几秒」时用它：屏幕全黑也照样留得下时间线，首帧之后还会把各段净耗时打进日志视口。不设这个变量时打点是空调用，启动路径零开销。
 - **模型请求代理（可选）**：`~/.pageqa/proxy.json`，见下面的[模型请求的代理](#模型请求的代理)。
-- **免费模型网关（可选）**：`/model` 里自带一批免费/免登录的 OpenAI 兼容网关，见下面的[免费模型网关](#免费模型网关)。
-
----
-
-## 免费模型网关
-
-`/model` 里除了自定义端点与 pi-ai 内置 provider，还自带一批**免费**网关（数据取自[pi-free](https://github.com/apmantza/pi-free) 的整理，`/model` 里带「免费」标记）：
-
-| provider | 端点 | key 环境变量 | 备注 |
-| --- | --- | --- | --- |
-| `cline` | `https://api.cline.bot/api/v1` | `CLINE_API_KEY` | 目录公开；**聊天仍需登录**（`/login cline`）。未登录时模型照常列出，探活会给出可读报错 |
-| `llm7` | `https://api.llm7.io/v1` | `LLM7_API_KEY` | 两个免费 selector：`default` / `fast` |
-| `fastrouter` | `https://api.fastrouter.ai/api/v1` | `FASTROUTER_API_KEY` | 目录公开；`:free` 路由有每分钟/每天限额 |
-| `orcarouter` | `https://api.orcarouter.ai/v1` | `ORCAROUTER_API_KEY` | 需 key；只列 `-free` 路由 |
-| `xkiro` | `https://api.xkiro.com/v1` | `XKIRO_API_KEY` | 需 key；只列 `:free` 路由 |
-| `kilo` | `https://api.kilo.ai/api/gateway` | `KILO_API_KEY` | 需 key，或用设备码登录（`/login kilo`）；唯一一个 `/models` 带权威 `isFree` 标记的网关，免费清单不靠命名规律猜 |
-| `opencode-free` | `https://opencode.ai/zen/v1` | *（无，固定匿名 bearer `public`）* | OpenCode Zen 的匿名免费车道；恒出现在列表里、无需任何凭据，但请求必须带下面的工具指纹 |
-
-- **不用装 Pi CLI**：pi-free 本身是 Pi 的扩展（依赖 `@earendil-works/pi-coding-agent`），pageqa 只把它整理出来的数据搬了过来。
-- **目录先远端后快照**：打开 `/model` 时并发拉各网关的公开 `/v1/models`，只保留免费条目；拉不到就用内置快照（pi-free 2026-08-26 审计的结果），因此断网也总有模型可选。刷新失败不报错，静默回落。
-- **凭据**：写环境变量或直接 `/login <provider>`，都落 `~/.pageqa/auth.json`。`cline` / `llm7` / `fastrouter` / `opencode-free` 不配也能用、装完就出现在列表里；`kilo` / `orcarouter` / `xkiro` 必须配 key 才出现（kilo 也可用 `/login kilo`）。
-- **不保证**：免费网关的限流、模型下线、目录改名都由上游说了算。探活（开跑前那次 `ping`）就是为此存在的——不通会直接中止并说明原因，不会让场景跑出一堆假失败。
-- **`opencode-free` 也搬了，代价是一道指纹门禁**：OpenCode Zen 的免费层会指纹请求里的工具列表——`tools[]` 必须同时含 `bash`/`edit`/`glob`/`grep`/`read`，否则 403 `FreeTierError`。pageqa 的工具集是浏览器动作，五个一个都没有，所以**只在选中这个网关时**才补五个占位工具：它们只为过门禁而声明，模型真去调时如实回答「pageqa 未实现，请改用浏览器工具」。别的 provider 不受影响（桩是**按运行**追加的，不是全局的），代价是这条车道上每轮多几百 token。
 
 ---
 

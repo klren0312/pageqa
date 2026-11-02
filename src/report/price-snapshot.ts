@@ -9,8 +9,8 @@
  * 永远优先（见 {@link resolveTokenPrice} 的顺序：config 精确 → config `*` → 快照）。
  *
  * 收录原则：只收**这个仓库真的会用到的**——pageqa 的模型来自自定义端点
- * （`PAGEQA_LLM_*`）、内置 provider（/login 登录 Anthropic / OpenAI / Google…）
- * 与免费网关。免费网关与自建端点没有统一公开价，一律不收（它们靠 config）。
+ * （`PAGEQA_LLM_*`）与内置 provider（/login 登录 Anthropic / OpenAI / Google…）。
+ * 自建端点没有统一公开价，一律不收（它靠 config）。
  *
  * 数字取自各厂商公开的模型定价页。**这是快照不是承诺**：改动只需动这个文件，
  * 不需要改任何逻辑。每个模型的注释留了采集日期，方便判断是否该刷新。

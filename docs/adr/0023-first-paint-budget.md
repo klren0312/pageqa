@@ -24,7 +24,7 @@
 
 1. **首帧预算：`tui/app.ts` 的静态 import 只允许「画界面必需」**——pi-tui（`await import`）、本项目自己的 UI 模块、以及纯文本/格式化的轻模块。pi-ai / pi-agent-core / pi-durable **一律改成用到时 `await import()`**：模型目录（`getCatalog()`）、场景执行器（`loadAgentRuntime()`）、登录/登出/选择器、格式化与挑文件。
 2. **模型目录按需构建**：`createModelCatalog()` 本身几毫秒，但加载 pi-ai 要 900+ 个模块，所以连「建目录」也推迟到首个使用者。启动时的 `currentChoice` 直接读 `config.json`（同步、不碰 pi-ai），首帧状态栏因此照样显示模型。
-3. **模型校正移到首帧之后**：`resolveInitialChoice()` 会加载全部内置 provider（+ 免费网关可能一次网络刷新），原来是首帧前的 `await`。现在它是首帧之后的后台 Promise（`startupReady`），**跑场景前必须 `await` 它**——拿一个「已知不可用」的配置去跑，报出来的错与真相差很远。校正若真的换了模型，日志补一行（没换不重复打）。
+3. **模型校正移到首帧之后**：`resolveInitialChoice()` 会加载全部内置 provider 目录，原来是首帧前的 `await`。现在它是首帧之后的后台 Promise（`startupReady`），**跑场景前必须 `await` 它**——拿一个「已知不可用」的配置去跑，报出来的错与真相差很远。校正若真的换了模型，日志补一行（没换不重复打）。
 4. **纯文本工具搬出重模块**：`splitScenarios` 从 `agent/agent.ts` 挪到 `shared/scenario-split.ts`（`agent.ts` 原样 re-export），`tui/writeback.ts` 因此不再为了切分场景拉起整棵 agent。
 5. **`undici` 按需加载**（`config/proxy.ts`）：直连路径一个 undici API 都不用，而它值 109 个模块。只有真要走代理时才 `import("undici")`。
 6. **打点保留**：`PAGEQA_STARTUP_TRACE` 默认关闭（空调用），但阶段划分与 `first-frame`（一次性包 `process.stdout.write`，命中「第一帧真的写到终端」）长期保留——这条预算线以后要被反复核对。

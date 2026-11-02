@@ -6,7 +6,6 @@
  * - **内置 provider 延迟加载**：`@earendil-works/pi-ai/providers/all` 会把 40 多个
  *   provider（连带各自的模型目录）拉进来，批处理跑自定义端点时完全用不上。
  *   因此只有「当前选择的 provider 不是 pageqa」或用户打开 /model、/login 时才 import。
- *   免费网关（free-providers.ts）随同一批注册、同一批刷新。
  * - **可用性以「是否配好鉴权」为准**：与 pi-coding-agent 一致——没配鉴权的 provider
  *   不列进 /model（列出来也没法用，反而让人以为坏了）。
  * - 本模块不持有「当前模型」状态：那是会话级状态，由 TUI / agent 调用方持有并传入。
@@ -30,11 +29,6 @@ import {
 import { FileCredentialStore } from "./auth.js";
 import { createPageqaProvider } from "../llm/llm.js";
 import { info } from "../shared/log.js";
-import {
-  createFreeProviders,
-  FREE_PROVIDER_IDS,
-  isFreeProvider,
-} from "../llm/free-providers.js";
 import { t } from "../shared/i18n.js";
 
 export { PAGEQA_PROVIDER_ID };
@@ -91,13 +85,11 @@ export async function createModelCatalog(
 }
 
 /**
- * 注册全部内置 provider 与免费网关（幂等）。
+ * 注册全部内置 provider（幂等）。
  *
  * 用动态 import：只有真正需要时才付出这份加载开销。
  *
- * 免费网关（见 free-providers.ts）与内置 provider 一起注册，因此它们享受同一条
- * 「没配鉴权就不列进 /model」的规则；差别只在免费网关里允许匿名的那几个
- * （cline / llm7 / fastrouter）——它们目录公开、聊天免密，藏起来反而没人知道它们存在。
+ * 是否列进 `/model` 由 `listModelOptions` 按「有没有配好鉴权」判，这里只负责注册。
  */
 export async function loadBuiltinProviders(
   catalog: ModelCatalog,
@@ -111,32 +103,7 @@ export async function loadBuiltinProviders(
     if (provider.id === PAGEQA_PROVIDER_ID) continue;
     catalog.models.setProvider(provider);
   }
-  for (const provider of createFreeProviders()) {
-    catalog.models.setProvider(provider);
-  }
   catalog.builtinsLoaded = true;
-}
-
-/**
- * 刷新免费网关的动态目录。
- *
- * 免费网关的模型列表会变（上游加新的 `:free` 路由），快照只是兜底，因此打开 `/model`
- * 与「启动时选中的就是免费网关」这两个时机都要刷一次。
- *
- * 刻意不抛错：`Models.refresh` 把失败收进 `errors`，而刷新失败后的行为就是
- * 「沿用快照继续用」——为此打断一次 `/model` 或一次运行不值得。调用方若想知道结果，
- * 看返回值即可。
- */
-export async function refreshFreeProviders(
-  catalog: ModelCatalog,
-  opts: { signal?: AbortSignal } = {},
-): Promise<ReadonlyMap<string, Error>> {
-  const result = await catalog.models.refresh({
-    providers: [...FREE_PROVIDER_IDS],
-    allowNetwork: true,
-    signal: opts.signal,
-  });
-  return result.errors;
 }
 
 /** 按选择取到具体模型；未注册返回 undefined（调用方据此给出可读报错）。 */
@@ -277,8 +244,6 @@ export interface ModelOption {
   model: string;
   name: string;
   contextWindow: number;
-  /** 该模型是否来自免费网关（`/model` 里给它加一个「免费」标记）。 */
-  free: boolean;
 }
 
 /**
@@ -298,7 +263,7 @@ export async function listModelOptions(
       const configured = await checkConfigured(catalog, provider.id, opts.signal);
       if (!configured) continue;
     }
-    const free = isFreeProvider(provider.id);
+    const free = false;
     for (const model of provider.getModels()) {
       out.push({
         provider: provider.id,
@@ -306,7 +271,6 @@ export async function listModelOptions(
         model: model.id,
         name: model.name,
         contextWindow: model.contextWindow,
-        free,
       });
     }
   }

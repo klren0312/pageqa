@@ -276,14 +276,6 @@ const PICK_TIMEOUT_MS = 20_000;
  */
 const KANBAN_MIN_WIDTH = 90;
 
-/**
- * 免费网关目录刷新的上限（见 `refreshFreeCatalog`）。
- *
- * 比 `PICK_TIMEOUT_MS` 短：刷新是「锦上添花」，用户等它的时候选择器还开不了，
- * 因此宁可超时回落快照，也不要让一个慢网关把 `/model` 拖到超时。
- */
-const FREE_CATALOG_TIMEOUT_MS = 8_000;
-
 /** 用户主动取消交互（Esc / Ctrl+C）时用的哨兵错误，与真正的失败区分开。 */
 const CANCELLED = "__cancelled__";
 
@@ -748,7 +740,7 @@ export async function runInteractive(
   /**
    * 启动校正的完成信号（见启动那一段）。
    *
-   * 首帧不等模型校正，而校正要用 pi-ai 目录（+ 可能一次免费网关的网络刷新）；
+   * 首帧不等模型校正，而校正要用 pi-ai 目录与内置 provider 目录；
    * 但**开跑场景必须等它**——拿一个“已知不可用”的配置去跑，报出来的错与真相差很远。
    * 默认已 resolve：没有校正可等（自定义端点）时它不该拖住任何东西。
    */
@@ -808,25 +800,6 @@ export async function runInteractive(
   }
 
   /**
-   * 免费网关的目录刷新（只在真的要看到/用它们时才做，见 free-providers.ts）。
-   *
-   * 一次刷新是几个网关的 `/v1/models` 并发请求，因此设上限：某个网关慢不能把 `/model` 卡住。
-   * 失败一律静默——「沿用内置快照继续用」本身就是正确行为，报错只会让用户以为功能坏了。
-   */
-  async function refreshFreeCatalog(signal?: AbortSignal): Promise<void> {
-    const { refreshFreeProviders } = await loadModels();
-    const catalog = await getCatalog();
-    const timeout = AbortSignal.timeout(FREE_CATALOG_TIMEOUT_MS);
-    try {
-      await refreshFreeProviders(catalog, {
-        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      });
-    } catch {
-      // 刷新失败等价于「这次没拿到新目录」，不是错误。
-    }
-  }
-
-  /**
    * 校正启动时的模型选择，**并把纠正结果写回配置**。
    *
    * 配置里可能留着「上次登录过的 provider」（例如 anthropic），但那台机器后来
@@ -846,11 +819,6 @@ export async function runInteractive(
       await ensureBuiltins();
     } catch {
       // 内置 provider 加载失败：下面统一按「不可用」兜底。
-    }
-    // 免费网关的目录可能已经变了（配置里那个模型 id 是上次选的），刷一次再判断可用性。
-    const { isFreeProvider } = await import("../llm/free-providers.js");
-    if (isFreeProvider(currentChoice.provider)) {
-      await refreshFreeCatalog();
     }
     if (resolveModel(catalog, currentChoice)) return;
     const fallback = catalog.models.getModels(PAGEQA_PROVIDER_ID)[0];
@@ -1467,8 +1435,6 @@ export async function runInteractive(
       append(err(t("tui.model.loadFailed", { msg: msgOf(err2) })));
       return;
     }
-    // 免费网关的目录随上游变动，开选择器时刷一次（失败静默回落快照）。
-    await refreshFreeCatalog();
     let options: ModelOption[];
     try {
       const { listModelOptions } = await loadModels();
@@ -1489,7 +1455,6 @@ export async function runInteractive(
       if (o.provider === currentChoice.provider && o.model === currentChoice.model) {
         badges.push(t("tui.model.badgeCurrent"));
       }
-      if (o.free) badges.push(t("tui.model.badgeFree"));
       return {
         value: encodeValue(o.provider, o.model),
         label: o.model + (badges.length > 0 ? `  [${badges.join(" / ")}]` : ""),

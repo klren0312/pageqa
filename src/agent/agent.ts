@@ -10,17 +10,11 @@ import {
   loadBuiltinProviders,
   PAGEQA_PROVIDER_ID,
   probeModel,
-  refreshFreeProviders,
   resolveModel,
   type ModelCatalog,
   type ModelChoice,
 } from "../config/models.js";
 import { detectContextWindow } from "../llm/window-detect.js";
-import {
-  createOpencodeFreeGateTools,
-  isFreeProvider,
-  OPENCODE_FREE_PROVIDER_ID,
-} from "../llm/free-providers.js";
 import {
   captureSessionScreenshot,
   closeSession,
@@ -621,9 +615,6 @@ export async function probeModelReachable(): Promise<void> {
   if (!hasProvider(catalog, choice.provider)) {
     await loadBuiltinProviders(catalog);
   }
-  if (isFreeProvider(choice.provider)) {
-    await refreshFreeProviders(catalog);
-  }
   const model = resolveModel(catalog, choice);
   if (!model) {
     throw new Error(
@@ -670,12 +661,6 @@ async function initializeAgent(
   if (!hasProvider(catalog, choice.provider)) {
     log("[runAgent] 注册内置 provider（选择=" + choice.provider + "）...");
     await loadBuiltinProviders(catalog);
-  }
-  // 免费网关的目录随上游变动，配置里存的那个模型 id 可能还没进快照：刷一次再解析。
-  // 刷新失败不阻断（refreshFreeProviders 不抛），最坏情况是沿用快照。
-  if (isFreeProvider(choice.provider)) {
-    log("[runAgent] 刷新免费网关目录（选择=" + choice.provider + "）...");
-    await refreshFreeProviders(catalog, { signal: opts.abortSignal });
   }
   const model = resolveModel(catalog, choice);
   if (!model) {
@@ -837,11 +822,6 @@ async function initializeAgent(
           },
           onDefect: noteDefect,
         })),
-    // Zen 的免费层要求请求里带五个工具名，否则 403（见 free-providers.ts）。
-    // 只在这一条车道上补桩：别的 provider 不该为一次「过门禁」多背五个无用声明。
-    ...(choice.provider === OPENCODE_FREE_PROVIDER_ID
-      ? createOpencodeFreeGateTools()
-      : []),
   ];
   log(
     "[runAgent] 工具数=" +

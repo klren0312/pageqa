@@ -19,7 +19,6 @@
     "test": "node --test --test-timeout=300000 tests/e2e/smoke.test.mjs",
     "test:unit": "npm run build && node --test --test-timeout=120000 \"tests/agent/*.test.mjs\" \"tests/bsk/*.test.mjs\" \"tests/cli/*.test.mjs\" \"tests/config/*.test.mjs\" \"tests/llm/*.test.mjs\" \"tests/report/*.test.mjs\" \"tests/session/*.test.mjs\" \"tests/shared/*.test.mjs\" \"tests/tui/*.test.mjs\"",
     "test:one": "node --test --test-timeout=60000",
-    "test:free-providers": "npm run build && node --test --test-timeout=60000 tests/llm/free-providers.test.mjs",
     "test:model-catalog": "npm run build && node --test --test-timeout=60000 tests/config/model-catalog.test.mjs tests/tui/model-default-persistence.test.mjs",
     "prepublishOnly": "npm run build",
     "postinstall": "patch-package || exit 0",

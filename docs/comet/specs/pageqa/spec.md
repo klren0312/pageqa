@@ -12,7 +12,6 @@ pageqa/
     index.ts            # CLI 入口：解析参数（含 sessions 子命令）、装配 agent、连 bsk session、返回退出码
     agent.ts            # 编排器：pi-agent-core Agent + bsk 工具 + 报告（含默认系统提示）
     llm.ts              # LLM 后端：pi-ai 自定义 provider -> CodeBuddy 反代（混元）
-    free-providers.ts   # 免费网关目录（数据取自 pi-free）：内置快照 + 动态 /v1/models，只列免费条目
     proxy.ts            # 模型请求的代理路由：按域名规则 direct / proxy / fallback（~/.pageqa/proxy.json）
     bsk/tools.ts        # browserskill 操作层（BskOps）与工具层（13 个 AgentTool）
     bsk/picker.ts       # 选择类控件（下拉/日期）的页面侧探针：表达式构造与结果解析（纯逻辑）
@@ -40,8 +39,6 @@ pageqa/
 - `streamFn` 使用 `models.streamSimple.bind(models)`，供 `pi-agent-core` 的 Agent 驱动 LLM。
 
 - **出口（`src/config/proxy.ts`）**：模型端点直连不通时要能改走代理，但 `127.0.0.1` 上的本地端点与 bsk daemon 必须直连——一刀切设 `HTTP_PROXY` 会把它们也塞进代理（症状是「连上了但不回话」）。因此按域名逐条决定：`direct` / `proxy` / `fallback`（先直连、遇网络层错误再走代理），规则自上而下第一条命中者胜，都不命中按全局 `mode`。装配点是替换 `globalThis.fetch`（pi-ai 每次请求才构造 SDK 客户端，取的是当时的全局 fetch），走代理时用 undici 自带的 fetch + `ProxyAgent`（外部 undici 的 dispatcher 与 Node 内置 fetch 跨大版本不兼容）。配置在 `~/.pageqa/proxy.json`（`--init-config` 生成模板），环境变量 `PAGEQA_PROXY_URL` / `_ENABLED` / `_MODE` 优先，交互模式 `/proxy` 面板可开关并查看统计与规则。详见 `docs/adr/0016`。
-
-- **免费网关（`src/llm/free-providers.ts`）**：`/model` 除自定义端点与 pi-ai 内置 provider 外，还自带一批免费 OpenAI 兼容网关（cline / llm7 / fastrouter / orcarouter / xkiro），目录数据取自 pi-free 的 `docs/providers.md` 与 `docs/free_models.md`（2026-08-26 审计）。每个网关的模型目录是「内置快照（基线）+ 动态 `fetchModels` 打公开 `/v1/models`」，只保留免费条目（快照命中或该网关自己声明的命名规律，llm7 只认快照）；刷新失败静默回落快照，因此断网也总有模型可选。允许匿名的三个（cline / llm7 / fastrouter）无凭据也 resolve，因此照常出现在 `/model`，其余两个需 key。详见 `docs/adr/0017`。
 
 ## 3. 浏览器驱动（browserskill / bsk）
 

@@ -70,7 +70,7 @@ describe("价目解析：config 覆盖优先，未命中返回 null", () => {
   });
 
   test("两边都没有则返回 null（调用方据此说「未配置价格」）", () => {
-    // 免费网关与自建端点没有公开统一价，必须落到这里而不是猜一个 0。
+    // 自建端点没有公开统一价，必须落到这里而不是猜一个 0。
     assert.equal(resolveTokenPrice("cline", "claude-sonnet-4", undefined, PRICE_SNAPSHOT), null);
     assert.equal(resolveTokenPrice("pageqa", "hunyuan-2.0-instruct", {}, PRICE_SNAPSHOT), null);
   });

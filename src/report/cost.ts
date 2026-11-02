@@ -3,8 +3,8 @@
  *
  * 为什么必须自己维护价目：`@earendil-works/pi-ai` 的 `Model` 上确实有 `cost` 字段
  * （`ModelCost`：input / output / cacheRead / cacheWrite），但**内置目录不填它**——
- * 实测 42 个 provider 的模型目录里 `cost` 出现 0 次，免费网关更是在 `toModel` 里
- * 硬编码成 0。也就是说「按目录价估算」这条路走不通，价只能来自这里。
+ * 实测 42 个 provider 的模型目录里 `cost` 出现 0 次。也就是说「按目录价估算」
+ * 这条路走不通，价只能来自这里。
  *
  * 因此这个模块的两个设计点：
  * 1. **价目 = 内置快照 < config 覆盖**。快照让人开箱就能看到估算，但它会过期
