@@ -23,7 +23,6 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { CONFIG_DIR, ensureConfigDir } from "./config.js";
 
 /** 一个请求该走哪条路。 */
@@ -246,7 +245,7 @@ export function resolveProxyAction(url: string, config: ProxyConfig): ProxyActio
 // ─── 代理 Agent ───────────────────────────────────────────
 
 /**
- * **走代理**时用的 fetch：undici 自己的实现，与下面的 `ProxyAgent` 出自同一份 undici。
+ * **走代理**时用的那份 undici：它的 fetch + 它的 `ProxyAgent`，两者必须出自同一份。
  *
  * 刻意不把外部 undici 的 `ProxyAgent` 塞给 Node 内置的 fetch：内置 fetch 用的是 Node 自带
  * 的那份 undici，两份的请求处理接口跨大版本并不兼容（实测报
@@ -254,19 +253,57 @@ export function resolveProxyAction(url: string, config: ProxyConfig): ProxyActio
  * 同一份 undici 内部的 fetch + dispatcher 则必然配套。
  *
  * 直连仍然走 Node 原生 fetch（`nativeFetch`）：那条路径没有任何理由换实现。
+ *
+ * **按需加载**：`import("undici")` 会连带拉起 109 个模块（实测本机 ~150ms、慢盘上更贵），
+ * 而直连路径一个都用不上——绝大多数人不开代理。因此它只在真的要发一个走代理的请求时才
+ * import；模块缓存之后，后续请求只是微秒级的 Promise。
  */
-const proxiedFetch = undiciFetch as unknown as typeof globalThis.fetch;
+type UndiciFetch = typeof globalThis.fetch;
+let undiciFetch: UndiciFetch | undefined;
+let ProxyAgentClass: typeof import("undici").ProxyAgent | undefined;
 
-let proxyAgent: ProxyAgent | null = null;
+let proxyAgent: import("undici").ProxyAgent | null = null;
 let proxyAgentUrl = "";
 
 /** 按代理地址取 agent；地址变了就换一个（换代理 = 换连接池）。 */
-function getProxyAgent(proxyUrl: string): ProxyAgent {
+function getProxyAgent(proxyUrl: string): import("undici").ProxyAgent {
   if (!proxyAgent || proxyAgentUrl !== proxyUrl) {
-    proxyAgent = new ProxyAgent(proxyUrl);
+    // 调用点已经 await 过 `ensureUndici()`，这里必然已经拿到构造函数。
+    proxyAgent = new ProxyAgentClass!(proxyUrl);
     proxyAgentUrl = proxyUrl;
   }
   return proxyAgent;
+}
+
+/** 第一次真要走代理时才加载 undici（幂等）。 */
+async function ensureUndici(): Promise<UndiciFetch> {
+  if (!undiciFetch) {
+    const mod = await import("undici");
+    // SAFETY: undici 的 `fetch` 与 WHATWG/Node 内置的 `fetch` 是同一套请求接口
+    // （签名为 (input, init) => Promise<Response>），只是 @types 里两边各自声明了一份；
+    // 这里断言的是「同一份实现」，而它的 dispatcher 扩展字段本就只在 undici 那份里存在。
+    undiciFetch = mod.fetch as unknown as UndiciFetch;
+    ProxyAgentClass = mod.ProxyAgent;
+  }
+  return undiciFetch;
+}
+
+/**
+ * 发一个走代理的请求。
+ *
+ * `dispatcher` 是 undici 的扩展字段，既不在 `@types/node` 的 `RequestInit` 里，
+ * 也不在 DOM 的那份里，但 Node 内置的 fetch 实实在在认它——类型只能从这儿绕过去。
+ */
+async function proxiedRequest(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit | undefined,
+  proxyUrl: string,
+): Promise<Response> {
+  const fetchImpl = await ensureUndici();
+  return fetchImpl(input, {
+    ...init,
+    dispatcher: getProxyAgent(proxyUrl),
+  } as RequestInit);
 }
 
 /**
@@ -415,7 +452,7 @@ export function createProxyFetch(
     }
     if (action === "proxy") {
       stats.proxy++;
-      return proxiedFetch(input, withProxyDispatcher(init, cfg.proxy));
+      return proxiedRequest(input, init, cfg.proxy);
     }
     // fallback：先直连，网络层不通再走代理重试一次。
     stats.fallback++;
@@ -424,22 +461,9 @@ export function createProxyFetch(
     } catch (err) {
       if (!isNetworkError(err) || !bodyReplayable(input, init)) throw err;
       stats.fallbackHit++;
-      return proxiedFetch(input, withProxyDispatcher(init, cfg.proxy));
+      return proxiedRequest(input, init, cfg.proxy);
     }
   } as typeof fetch;
-}
-
-/**
- * 带上代理 dispatcher 的请求参数。
- *
- * `dispatcher` 是 undici 的扩展字段，既不在 `@types/node` 的 `RequestInit` 里，
- * 也不在 DOM 的那份里，但 Node 内置的 fetch 实实在在认它——类型只能从这儿绕过去。
- */
-function withProxyDispatcher(
-  init: RequestInit | undefined,
-  proxyUrl: string,
-): RequestInit {
-  return { ...init, dispatcher: getProxyAgent(proxyUrl) } as RequestInit;
 }
 
 let installed = false;
