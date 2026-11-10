@@ -90,6 +90,15 @@ import {
 } from "./picker.js";
 import { slimOptionsFor, slimSnapshot } from "../shared/snapshot.js";
 import {
+  createPageReader,
+  READ_DEFAULT_MAX_CHARS,
+  READ_MAX_CHARS_LIMIT,
+  readAssertCorpusEnabled,
+  renderRead,
+  type PageRead,
+  type ReadOptions,
+} from "./read.js";
+import {
   BskIpcAbortError,
   BskIpcRpcError,
   BskIpcTransportError,
@@ -1034,6 +1043,18 @@ export interface BskOps {
   lastAssert(): AssertOutcome | null;
 }
 
+/**
+ * bsk 驱动独有的读取能力：`bsk read`（0.5.0+）。
+ *
+ * 刻意**不放进 `BskOps`**：小程序驱动没有这条命令，而 agent / replay / locator 只认
+ * `BskOps`。放进公共接口等于逼每个驱动实现一个「不支持」的桩，还会让回放误以为
+ * 这是一条可录制动作。工具层拿到的是本接口，因此只有桌面浏览器会暴露 `read` 工具。
+ */
+export interface BskReadOps extends BskOps {
+  /** 读一次页面；返回 null 表示当前 bsk 没有这条命令或本次读取失败（调用方退回 snapshot）。 */
+  readPage(signal?: AbortSignal, options?: ReadOptions): Promise<PageRead | null>;
+}
+
 /** 一次断言型工具（assert_text / download / assert_no_console_error / assert_network）的结构化结果。 */
 export interface AssertOutcome {
   /** 断言期望（assert_text 的 expectation，或 download 的「文件已下载」期望）。 */
@@ -1329,7 +1350,7 @@ export function createBskOps(
    * 而不是等它进上下文之后再靠裁剪去救。
    */
   snapshotBudgetChars?: number | (() => number | undefined),
-): BskOps {
+): BskReadOps {
   /** 每次取快照前求值：预算可能在工具建好之后才回填（见 `BskToolOptions`）。 */
   const currentSlimOptions = () =>
     slimOptionsFor(
@@ -1337,6 +1358,12 @@ export function createBskOps(
         ? snapshotBudgetChars()
         : snapshotBudgetChars,
     );
+  /**
+   * `bsk read`（0.5.0+）的读取器：命令不存在、参数不认、输出形状不认识时一律静默
+   * 退回快照（见 read.ts）。因此它对断言结论只可能「多命中一次」，不会把本该通过的
+   * 断言改成失败；旧版 bsk 上则完全退回今天的行为。
+   */
+  const pageReader = createPageReader({ session, run: (args, signal) => bsk(args, signal) });
   const quiet = ["--session", session, "--quiet"];
   let snapshotText = "";
   /** 同一份快照瘦身前的完整原文（assert_text 的字面匹配必须用它，见 ensureRawSnapshot）。 */
@@ -2063,6 +2090,7 @@ export function createBskOps(
     lastSnapshot: () => snapshotText,
     lastAssertSemantic: () => assertSemantic,
     lastAssert: () => assertOutcome,
+    readPage: (signal, options) => pageReader.read(signal, options),
 
     // 与缺陷上报同一条口径：读不到（页面已关、evaluate 被拒）就不带地址，不抛错。
     async pageUrl(signal?: AbortSignal): Promise<string | undefined> {
@@ -2689,6 +2717,23 @@ export function createBskOps(
         "assert_text",
         signal,
       );
+      // aria 快照的盲区（CSS 大小写转换后的文本、带 hidden 但被 CSS 恢复显示的内容、
+      // 表单当前值）由 `bsk read` 的 textContent 补上；读不到就完全按原行为判定。
+      // 约束：只取 items[].values 的字符串值且长度够（短回显不是页面内容，避免 "ok"
+      // 假命中）；快照过短时不合并（literalAssertion 的「页面没打开」保护要原样生效）；
+      // 读取失败由读取器吞掉，断言不会因一条可选能力报错。
+      // 注意 read 的 textContent **不做可见性过滤**，隐藏模板里的字也会进来：用例对此
+      // 敏感时用 PAGEQA_BSK_READ_ASSERT=0 关掉合并（read 工具本身仍可用）。
+      const pageRead = readAssertCorpusEnabled() ? await pageReader.read(signal) : null;
+      const readText = pageRead?.text?.trim() ?? "";
+      const corpus =
+        snap.trim().length < MIN_ASSERT_SNAPSHOT_CHARS ||
+        readText.length < MIN_ASSERT_SNAPSHOT_CHARS
+          ? snap
+          : `${snap}\n${readText}`;
+      if (readText) {
+        debugLog(`[bsk] assert_text 语料：快照 ${snap.length} + read ${readText.length} 字符`);
+      }
       // 本次断言是否「靠语义判断才成立」，每次调用先重置：
       // 只有字面未命中、由 Jev 复核判定成立的断言才为 true。
       assertSemantic = false;
@@ -2704,14 +2749,14 @@ export function createBskOps(
 
       // 字面判定：三条规则（快照过短一律不成立、反向断言只看字面、字面命中不做语义复核）
       // 都在 literalAssertion 里，有单测钉住。返回 null = 正向断言、字面未命中。
-      const literal = literalAssertion(snap, expectation, absent);
+      const literal = literalAssertion(corpus, expectation, absent);
       if (literal) return verdict(literal.pass, literal.evidence);
 
       // 字面未命中才请 Jev 复核：这正是语义判断有价值的场景
       //    （同义词/近义表达/格式差异导致的误报 FAIL）。
       if (jevClient?.enabled) {
         try {
-          const prob = await jevClient.assertText(snap, expectation);
+          const prob = await jevClient.assertText(corpus, expectation);
           const pass = prob >= jevClient.threshold;
           // 靠语义复核才成立的断言，回放时字符串匹配必然不成立，需要标记
           assertSemantic = pass;
@@ -3267,6 +3312,79 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
           ? t("bsk.snapshot.notFound")
           : "";
       return hint ? ok(text + "\n\n" + hint) : result;
+    },
+  };
+
+  /**
+   * `bsk read`：与 snapshot 一样是**观察**，不产生断言、不进录制、回放也不需要它。
+   *
+   * 与 snapshot 的分工：输出没有 `@eN`，模型拿它当定位来源就只能猜选择器。它补的是
+   * 快照读不到的**文本**（root 的 textContent，含隐藏 DOM）与**状态**（value / checked /
+   * 属性，需显式 selector + fieldsJson），不是结构。
+   */
+  const readPage: AgentTool = {
+    name: "read",
+    label: "Read Page",
+    description:
+      "读取当前页面的标题 / URL / 整页文本（bsk 0.5.0+，DOM read protocol 1.9）。" +
+      "**只读、不含 @eN 编号**：要看页面结构、要给 click/fill 定位元素，仍然必须用 snapshot。" +
+      "默认只读页面根节点的 textContent（不做可见性过滤，含隐藏 DOM 文本）；要读表单状态或属性，给 selector 加 fieldsJson，例如 fieldsJson='[{\"key\":\"v\",\"read\":\"value\"},{\"key\":\"ok\",\"read\":\"checked\"},{\"key\":\"href\",\"read\":\"attribute\",\"attribute\":\"href\"}]'，字段只支持 text/attribute/value/checked/exists 五种，不执行 JS。" +
+      "三类场景：①页面持续刷新或有动画，snapshot 读到一半就变了；②确认输入框此刻的 value、复选框是否勾选、按钮的 disabled 属性；③assert_text 该命中却报未找到时，核对页面上真正印出来的字。" +
+      "当前 bsk 没有这条命令、或 daemon 协议太老时会返回「不可用」，那时改用 snapshot / get_html。" +
+      "默认最多回 16KiB 文本，maxChars 可调（上限 64KiB）；它**不产生断言**，结论仍由 assert_* 给。",
+    parameters: paramsOf({
+      selector: {
+        type: "string",
+        description: "可选：CSS 选择器，限定读取范围；不给则读页面根节点",
+      },
+      fieldsJson: {
+        type: "string",
+        description: "可选：--fields-json 的 JSON 数组字符串，自定义要读的字段（text/attribute/value/checked/exists）",
+      },
+      maxChars: {
+        type: "number",
+        description: `可选：最多返回多少字符（默认 ${READ_DEFAULT_MAX_CHARS}，上限 ${READ_MAX_CHARS_LIMIT}）`,
+      },
+      maxNodes: { type: "number", description: "可选：最多读多少个匹配节点（1–1000）" },
+      maxBytes: { type: "number", description: "可选：bsk 侧字节预算（1024–1048576）" },
+      timeoutMs: { type: "number", description: "可选：读取超时毫秒（100–10000）" },
+    }),
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
+      const p = (params as ReadPageParams) ?? {};
+      const maxChars =
+        typeof p.maxChars === "number" && Number.isFinite(p.maxChars)
+          ? Math.max(256, Math.min(p.maxChars, READ_MAX_CHARS_LIMIT))
+          : READ_DEFAULT_MAX_CHARS;
+      const options: ReadOptions = {
+        ...(typeof p.selector === "string" && p.selector.trim()
+          ? { selector: p.selector.trim() }
+          : {}),
+        ...(typeof p.fieldsJson === "string" && p.fieldsJson.trim()
+          ? { fieldsJson: p.fieldsJson.trim() }
+          : {}),
+        ...(typeof p.maxNodes === "number" ? { maxNodes: p.maxNodes } : {}),
+        ...(typeof p.maxBytes === "number" ? { maxBytes: p.maxBytes } : {}),
+        ...(typeof p.timeoutMs === "number" ? { timeoutMs: p.timeoutMs } : {}),
+      };
+      return exec(
+        "read",
+        { ...options, maxChars },
+        async (s) => {
+          if (options.fieldsJson) {
+            try {
+              const fields: unknown = JSON.parse(options.fieldsJson);
+              if (!Array.isArray(fields)) throw new Error("not an array");
+            } catch {
+              return 'fieldsJson 不是合法的 JSON 数组；应为 [{"key":"text","read":"text"}] 这种形式。';
+            }
+          }
+          const result = await ops.readPage(s, options);
+          return result
+            ? renderRead(result, maxChars)
+            : "bsk read 不可用（当前 bsk 没有这条命令、daemon 协议低于 1.9，或本次读取失败）；请改用 snapshot 看结构与编号、get_html 看属性。";
+        },
+        signal,
+      );
     },
   };
 
@@ -4020,6 +4138,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
   return [
     navigate,
     snapshot,
+    readPage,
     click,
     fill,
     selectOption,
@@ -4045,6 +4164,14 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
 
 interface NavParams {
   url: string;
+}
+interface ReadPageParams {
+  maxChars?: number;
+  selector?: string;
+  fieldsJson?: string;
+  maxNodes?: number;
+  maxBytes?: number;
+  timeoutMs?: number;
 }
 interface TargetParams {
   target: string;

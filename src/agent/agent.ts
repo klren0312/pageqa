@@ -176,6 +176,7 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "可用工具（各工具自己的参数说明里有完整规则，这里只列何时用谁）：",
   "- navigate(url): 打开网页",
   "- snapshot(): 读取页面 aria 树与可见文本，并定位元素",
+  "- read(selector?, fieldsJson?, maxChars?): 读标题 / URL / 整页 textContent（bsk 0.5.0+）。**不含 @eN，不能用来定位**：要看结构与编号仍用 snapshot；持续刷新的页面读文本、或 assert_text 该命中却未命中时用它核对。默认只读根节点文本；要读 value / checked / 属性须给 selector + fieldsJson（字段只支持 text/attribute/value/checked/exists）。它不产生断言，旧版 bsk 或 daemon 协议 < 1.9 时返回「不可用」",
   "- click(target, showPage?): 点击元素，target 用 @eN 引用或 CSS 选择器；**会改页面**的点击（展开菜单/弹窗、切换路由）带上 showPage=true，直接附新编号清单，不要再紧跟一次 snapshot",
   "- fill(target, value): 只用于**真正的文本输入框**；下拉框、日期选择器不是文本框",
   "- select_option(target, option): **下拉框/级联一律用它**，一次调用完成；option 传页面上印出来的选项文本",
