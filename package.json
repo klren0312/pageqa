@@ -43,18 +43,18 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@earendil-works/chord": "^1.4.0",
-    "@earendil-works/pi-agent-core": "^1.4.0",
-    "@earendil-works/pi-ai": "^1.4.0",
-    "@earendil-works/pi-durable": "^1.4.0",
-    "@earendil-works/pi-tui": "^1.4.0",
-    "undici": "^8.12.3"
+    "@earendil-works/chord": "^1.5.2",
+    "@earendil-works/pi-agent-core": "^1.5.2",
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@earendil-works/pi-durable": "^1.5.2",
+    "@earendil-works/pi-tui": "^1.5.2",
+    "undici": "^8.12.4"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
     "miniprogram-automator": "0.13.0",
     "patch-package": "^8.0.1",
-    "serve": "^14.2.6",
+    "serve": "^14.2.8",
     "typescript": "^7.0.2"
   }
 }
