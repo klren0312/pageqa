@@ -104,6 +104,22 @@ describe("并发量的文案两种语种都不缺", () => {
     "log.thinkingAuto",
     "log.thinkingOffExplicit",
     "log.thinkingDowngraded",
+    // /setting 面板里的「模型思考」开关
+    "tui.setting.thinking",
+    "tui.setting.thinkingTitle",
+    "tui.setting.thinkingAuto",
+    "tui.setting.thinkingAutoDesc",
+    "tui.setting.thinkingKeep",
+    "tui.setting.thinkingKeepDesc",
+    "tui.setting.thinkingFormatDesc",
+    "tui.setting.thinkingNoop",
+    "tui.setting.thinkingCurrent",
+    "tui.setting.thinkingStateAuto",
+    "tui.setting.thinkingStateKeep",
+    "tui.setting.thinkingStateFormat",
+    "tui.setting.thinkingEnvTag",
+    "tui.setting.thinkingEnvOverride",
+    "tui.setting.thinkingSaved",
   ];
 
   test("zh 与 en 都能渲染出文案（而不是把 key 原样返回）", () => {

@@ -409,6 +409,9 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.refs.forRetry":
       "当前页面的可交互元素（用这里的新编号重试本次 {action}，不必再单独调用 snapshot）",
     "bsk.refs.failed": "（取快照失败：{msg}）",
+    // 自动附带时的预算超限（REFS_AUTO_MAX_CHARS）：不展开清单，让模型自己决定要不要快照。
+    "bsk.refs.tooLarge":
+      "可交互元素太多（清单约 {chars} 字符），这里不展开：需要新编号时自己调用一次 snapshot。",
     // 原生对话框透传（src/bsk/ipc-commands.ts 的 renderDialogs / extractDialogs）
     "bsk.dialog.notice":
       "注意：这次操作期间页面弹出了原生对话框，bsk 已按默认策略处理（确认框点确定、提示框点关闭），页面不会卡住：",
@@ -459,7 +462,9 @@ const catalogs: Record<Locale, Catalog> = {
     "bsk.getHtml.refOnly":
       "get_html 的 target 只支持 @eN 引用（bsk 的 get-html 没有选择器入口），收到的是「{target}」。要按选择器取 DOM 请改用 evaluate。",
     "bsk.getHtml.unreadable":
-      "读不到 HTML：bsk 返回的内容无法解析。请确认当前 bsk 版本支持 get-html 命令（`bsk get-html --help`）。",
+      "读不到 HTML：bsk 返回的内容无法解析（原始输出：{detail}）。请确认当前 bsk 版本支持 get-html 命令（`bsk get-html --help`）。",
+    "bsk.waitFor.badSelector":
+      "wait_for 的 {field} 只接受 CSS 选择器，收到的是「{selector}」——它是{why}，Chrome 的 querySelector 不认。要按文字等待请改用 text 条件（如 text: \"工单来源\"），要按结构等待请换成纯 CSS 选择器。",
     "bsk.getHtml.truncated":
       "（已按 maxBytes 截断：完整 HTML 有 {bytes} 字节，你看到的不是全部——要全文就传 out 落盘）",
     "bsk.getHtml.badBudget":
@@ -475,6 +480,9 @@ const catalogs: Record<Locale, Catalog> = {
       "点开 {target} 之后没有等到可见的下拉浮层（它可能不是「点开出现浮层」型的下拉）。若它其实是普通输入框，请改用 fill；否则用 snapshot 看清页面后手动点选。",
     "bsk.picker.optionMissing": "浮层里没有可见文本为「{option}」的选项。",
     "bsk.picker.optionCandidates": "当前可选项：{list}",
+    "bsk.picker.viaSnapshot": "（页面探针不可用，选项按快照文本定位）",
+    "bsk.picker.probeFallback":
+      "（当前环境不允许执行页面脚本，select_option 已改为读快照定位。若候选与预期不符，用 click 展开后按 snapshot 里的 @eN 手点）",
     "bsk.picker.badDate":
       "无法理解日期「{spec}」。支持的写法：2026-09-29、2026/9/29、2026年9月29日，或 today / 今天 / +3 / -7。",
     "bsk.picker.noPanel":
@@ -494,6 +502,15 @@ const catalogs: Record<Locale, Catalog> = {
       "（当前页面是 404 / 页面不存在。若用例不是专门验证 404，直接判定该步骤失败并停止后续操作；不要继续猜筛选控件或选择器。）",
     "bsk.selectorMiss":
       "选择器没有匹配到任何元素（{action} 没有执行）。先用 snapshot 取当前页面的 @eN 编号，或从快照里确认存在的 CSS 选择器，再重试；不要继续凭控件名字猜选择器。",
+    // 熔断（src/bsk/tools.ts 的 exec）：同一动作用同样入参连续失败到阈值后的提示与拒执行。
+    // 这两条只说「换个做法」，不复述原报错——原报错就在上面一行。
+    "bsk.repeatFailure.warn":
+      "注意：「{action}」用同样的入参已经连续失败 {count} 次。原样重试不会改变结果——请换一条路径（snapshot 取新编号后换定位方式，或换一个工具）；再失败 {left} 次这个动作就会被直接拒绝执行。",
+    "bsk.repeatFailure.stop":
+      "「{action}」用同样的入参已经连续失败 {count} 次，这次没有执行：继续重试同一个动作不会改变结果。请换路径（snapshot 取新编号后换定位方式，或换一个工具）；若仍然不成，如实把该步骤判为失败并继续下一步。",
+    // 成功重复（同一动作连续成功到阈值）：它不报错，但流程在原地踏步。
+    "bsk.repeatSuccess.stop":
+      "「{action}」已经连续成功 {count} 次，但页面并没有因此往前推进，这次不再执行。不要重复这个动作：直接推进到用例的下一步（或改用能真正改变页面的动作）；需要确认页面就用 snapshot。",
     // 下载断言（src/bsk/tools.ts 的 download 工具 + src/report/downloads.ts）
     "bsk.download.expectation": "导出的文件已下载到本地",
     "bsk.download.expectationNamed": "下载的文件名匹配 {pattern}",
@@ -525,10 +542,25 @@ const catalogs: Record<Locale, Catalog> = {
     // ── 交互模式（src/tui/app.ts）──
     "tui.title": "pageqa 交互模式",
     "tui.hint":
-      "Enter 提交 · Shift+Enter 换行 · Esc 中止场景（空闲时丢弃未落地输入） · ↑↓/PgUp/PgDn 滚日志 · Ctrl+P 历史 · Ctrl+C 收工 · /help",
+      "Enter 提交 · Shift+Enter 换行 · Esc 中止场景（空闲时丢弃未落地输入） · ↑↓/PgUp/PgDn 滚日志 · Ctrl+P 历史 · Alt+C 复制 · Ctrl+C 收工 · /help",
     "tui.help":
-      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /replay <脚本> 加载一个回放脚本（.json）的场景，零模型重跑\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本；有在跑/待办或格式化中的输入时拒绝）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model\n  /driver            切换测试驱动后端（浏览器 / 微信小程序）         选择模型（Enter 即切换并设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /proxy         查看/开关模型请求的代理路由（配置 ~/.pageqa/proxy.json）\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 语言），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入：先用当前模型整理成用例（## 场景名 / 一行一步 / 断言单独成行），再写回并入队\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景；没有场景在跑时丢弃格式化中的输入，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
+      "命令：\n  /status        查看运行队列\n  /run <文件>    加载一个已有用例文件（路径或文件名关键字）并加入运行队列\n  /replay <脚本> 加载一个回放脚本（.json）的场景，零模型重跑\n  /new           开一个新会话（清空视口与运行队列；已跑过的场景仍会进退出报告与回放脚本；有在跑/待办或格式化中的输入时拒绝）\n  /cancel <n>    取消一个尚未开始的待办（n 为队列编号）\n  /model\n  /driver            切换测试驱动后端（浏览器 / 微信小程序）         选择模型（Enter 即切换并设为启动默认）\n  /login         登录一个 provider（API Key 或订阅登录），凭据写入 ~/.pageqa/auth.json\n  /logout        移除某个 provider 的本地凭据\n  /proxy         查看/开关模型请求的代理路由（配置 ~/.pageqa/proxy.json）\n  /help          显示本帮助\n  /exit          收工（等同于 Ctrl+C）\n  /setting       修改设置（测试报告 / 回放脚本 / 模型思考 / 语言 / 并发量），写入 ~/.pageqa/config.json\n键位：\n  Enter          提交输入：先用当前模型整理成用例（## 场景名 / 一行一步 / 断言单独成行），再写回并入队\n  Shift+Enter    换行（写多场景用例时用）\n  Esc            中止当前场景；没有场景在跑时丢弃格式化中的输入，队列继续跑下一个\n  Ctrl+P/Ctrl+N  历史输入：上一条 / 下一条提交过的文本（↑/↓ 让给了日志滚动）\n  Ctrl+C         收工：中止当前 + 取消全部待办 → 还原终端 → 输出汇总报告（正常退出，不是硬杀）\n  Ctrl+C ×2      收尾期间再按一次：不再等队列停下，立刻收尾（报告照打）\n日志视口：\n  PageUp/PageDown   上下翻一页日志\n  ↑ / ↓             滚动日志（输入框为空时；有内容时它们是光标/历史）\n  Ctrl+↑ / Ctrl+↓   逐行滚动（任何时候都生效）\n  Home / End        跳到日志开头 / 回到末尾继续跟随\n  鼠标滚轮           滚动日志（一格 {wheel} 行）。有些终端会把滚轮当作 ↑/↓ 送来，走上面那条\n状态栏：运行进度（第几条/共几条、已耗时）· 待办数 · 当前模型 · 已写回数 · 落点\n输入框下方：本次会话的 token 消耗（⬇ 输入 / ⬆ 输出 / 读 缓存读 / 写 缓存写 / 总 合计 / 调用次数；末尾 `命中 n%` 是缓存命中率），每轮 LLM 调用后刷新",
     "tui.scroll.paused": "↓ 已暂停跟随 · End 回到底部",
+    // 鼠标选中复制：pi-tui 内置拖动选区，复制通道由 ./tui/clipboard.ts 提供。
+    "tui.copy.failed":
+      "复制失败：原生剪贴板打不开，写 OSC 52 也失败了（可用 Alt+C 重试）",
+    "tui.copy.oscFallback":
+      "（剪贴板已回退到 OSC 52：部分终端会静默丢弃，复制可能没生效）",
+    "tui.copy.noSelection":
+      "没有选中内容：先拖动选中日志文字，再按 Alt+C。若拖动看不到反显，说明鼠标上报被关掉了（见启动提示 / PAGEQA_TUI_MOUSE）",
+    "tui.copy.emptySelection":
+      "有选区但取不到文本：多半停在空白区、或拖动跨出了日志视口（PAGEQA_TUI_DEBUG=1 可打印诊断）",
+    "tui.copy.disabled":
+      "（PAGEQA_COPY_ON_SELECT=0：拖动只选中、不自动复制，复制请用 Alt+C）",
+    "tui.mouse.disabled":
+      "注意 PAGEQA_TUI_MOUSE=0：鼠标上报已关闭，拖动是终端自己的选中（不会复制到剪贴板）。在此终端里若想用拖动复制，请 unset 该变量后重启",
+    "tui.help.copy":
+      "鼠标复制：\n  拖动选中        松开左键即自动复制（双击选词、三击选行；拖到视口边缘自动滚动）\n  Alt+C           复制当前选区（自动复制失败时的重试入口）\n  复制通道        先走平台原生剪贴板，不可用时回退终端 OSC 52（部分终端会静默丢弃）\n  不要鼠标接管    PAGEQA_TUI_MOUSE=0 启动：拖动与滚轮交回终端原生处理（可用终端自己的选中复制）\n  不要拖动即复制  PAGEQA_COPY_ON_SELECT=0 启动：拖动只选中、不复制",
     "tui.appended": "（追加）",
     "tui.replayTag": "（回放）",
     "tui.originAdded": "追加",
@@ -628,7 +660,8 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.cmd.login": "登录一个 provider（API Key 或订阅登录）",
     "tui.cmd.logout": "移除已登录 provider 的本地凭据",
     "tui.cmd.help": "显示本帮助",
-    "tui.cmd.setting": "修改设置（测试报告 / 回放脚本 / 语言）",
+    "tui.cmd.setting":
+      "修改设置（测试报告 / 回放脚本 / 模型思考 / 语言 / 并发量）",
     "tui.cmd.proxy": "查看/开关模型请求的代理路由",
     "tui.cmd.exit": "收工（等同于 Ctrl+C）",
     "tui.cmd.driver": "切换测试驱动后端（浏览器 / 微信小程序）",
@@ -678,7 +711,7 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.setting.locale": "语言",
     "tui.setting.on": "开",
     "tui.setting.off": "关",
-    "tui.setting.hint": "↑↓ 选择 · Enter 切换 · Esc 关闭 · 配置: {path}",
+    "tui.setting.hint": "↑↓ 选择 · Enter 切换/进入选择 · Esc 关闭 · 配置: {path}",
     "tui.setting.saved": "已更新：{name} = {value}",
     "tui.setting.failed": "写入配置失败：{msg}",
     "tui.setting.concurrency": "并发量",
@@ -688,6 +721,25 @@ const catalogs: Record<Locale, Catalog> = {
     "tui.setting.concurrencyCurrent": "· 当前",
     "tui.setting.concurrencySaved":
       "并发量已设为 {n}：之后派发的场景立刻生效，并已写回 {path}",
+    // 模型思考开关（thinkingFormat）：空串=自动关思考，none=不关
+    "tui.setting.thinking": "模型思考（thinkingFormat）",
+    "tui.setting.thinkingTitle": "模型思考开关（↑↓ 选择 · Enter 确认 · Esc 取消）",
+    "tui.setting.thinkingAuto": "自动（按模型关闭思考，默认）",
+    "tui.setting.thinkingAutoDesc": "删掉配置键；按模型 id 选端点认得的关闭字段",
+    "tui.setting.thinkingKeep": "不关思考（端点保持自己的默认）",
+    "tui.setting.thinkingKeepDesc":
+      "请求不带思考开关；强制 reasoning 的端点选这个",
+    "tui.setting.thinkingFormatDesc": "发送 {field}",
+    "tui.setting.thinkingNoop": "此格式发不出关闭开关（等同不关）",
+    "tui.setting.thinkingCurrent": "· 当前",
+    "tui.setting.thinkingStateAuto": "自动关闭思考",
+    "tui.setting.thinkingStateKeep": "不关思考",
+    "tui.setting.thinkingStateFormat": "关闭思考：{format}",
+    "tui.setting.thinkingEnvTag": "· 环境变量覆盖",
+    "tui.setting.thinkingEnvOverride":
+      "环境变量 PAGEQA_LLM_THINKING_FORMAT 优先于此设置，写回文件不会改变本次生效值",
+    "tui.setting.thinkingSaved":
+      "模型思考已设为 {value}：之后派发的场景生效，并已写回 {path}",
 
     // ── 模型切换与登录 ──
     "tui.model.status": "模型 {model}",
@@ -896,6 +948,7 @@ const catalogs: Record<Locale, Catalog> = {
       "超过 {sec} 秒的场景级上限，已终止子进程",
     "report.reason.infrastructure": "环境不可用（{msg}），本场景没有执行",
     "report.cancelEnvGone": "环境不可用，本场景没有执行",
+    "report.cancelModelGone": "模型端点不可用、运行已停止，本场景没有派发",
 
     // ── HTML 报告（src/report/report-html.ts）──
     "reportHtml.generatedAt": "生成时间: {time}",
@@ -1024,7 +1077,7 @@ const catalogs: Record<Locale, Catalog> = {
     "  /replay <脚本>            零模型回放一个已录制的脚本\n" +
     "  /driver                   切换测试驱动后端：桌面浏览器 / 微信小程序\n" +
     "  /model                    选择本次会话使用的模型\n" +
-    "  /setting                  旁路产物开关、语言、并发量\n" +
+    "  /setting                  旁路产物开关、模型思考、语言、并发量\n" +
     "  /help                     全部命令与键位\n" +
     "\n" +
     "跑用例只在交互模式里：命令行的 run / --replay / --only / --driver 等入口已收进\n" +
@@ -1579,6 +1632,8 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "bsk.refs.forRetry":
       "interactive elements on the current page (retry this {action} with a new ref from here — no separate snapshot call needed)",
     "bsk.refs.failed": "(snapshot failed: {msg})",
+    "bsk.refs.tooLarge":
+      "too many interactive elements (~{chars} chars) to inline here: call snapshot yourself when you need fresh refs.",
     // native dialog passthrough (renderDialogs / extractDialogs in src/bsk/ipc-commands.ts)
     "bsk.dialog.notice":
       "Note: the page raised a native dialog during this action; bsk handled it with the default policy (accepted confirms, dismissed alerts) so the page is not blocked:",
@@ -1630,7 +1685,9 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "bsk.getHtml.refOnly":
       'get_html only accepts an @eN ref (bsk\'s get-html has no selector entry); got "{target}". Use evaluate if you need to read DOM by selector.',
     "bsk.getHtml.unreadable":
-      "could not read HTML: bsk returned an unrecognised payload. Check that this bsk version supports the get-html command (`bsk get-html --help`).",
+      "could not read HTML: bsk returned an unrecognised payload (raw output: {detail}). Check that this bsk version supports the get-html command (`bsk get-html --help`).",
+    "bsk.waitFor.badSelector":
+      "wait_for's {field} only accepts a CSS selector; got \"{selector}\" — it is {why} and Chrome's querySelector does not understand it. To wait for text use the text condition (e.g. text: \"Work order source\") instead; to wait for structure use a plain CSS selector.",
     "bsk.getHtml.truncated":
       " (truncated to maxBytes: the full HTML is {bytes} bytes, so this is not all of it — pass out to write it to a file)",
     "bsk.getHtml.badBudget":
@@ -1647,6 +1704,9 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "bsk.picker.optionMissing":
       "the overlay has no option whose visible text is \"{option}\".",
     "bsk.picker.optionCandidates": "currently selectable: {list}",
+    "bsk.picker.viaSnapshot": " (page probe unavailable; option located by snapshot text)",
+    "bsk.picker.probeFallback":
+      " (this environment forbids page scripts, so select_option located the option by snapshot. If the candidates look wrong, expand with click and pick the @eN from snapshot by hand)",
     "bsk.picker.badDate":
       "cannot understand the date \"{spec}\". Supported: 2026-09-29, 2026/9/29, 2026年9月29日, or today / 今天 / +3 / -7.",
     "bsk.picker.noPanel":
@@ -1666,6 +1726,12 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "(the current page is a 404 / not-found page. Unless the case explicitly tests 404, fail this step and stop; do not keep guessing filter controls or selectors.)",
     "bsk.selectorMiss":
       "the selector matched no element ({action} did not run). Call snapshot for the current @eN refs, or use a CSS selector confirmed by the snapshot, then retry; do not keep guessing from control names.",
+    "bsk.repeatFailure.warn":
+      "note: {action} has now failed {count} times in a row with identical arguments. Retrying it unchanged will not change the outcome — take a different route (snapshot for fresh refs, then locate it another way, or use a different tool); after {left} more failures this action will be refused outright.",
+    "bsk.repeatFailure.stop":
+      "{action} has failed {count} times in a row with identical arguments, so it was not executed this time: repeating the same action will not change the outcome. Take a different route (snapshot for fresh refs, then locate it another way, or use a different tool); if that still fails, record the step as failed and move on.",
+    "bsk.repeatSuccess.stop":
+      "{action} has already succeeded {count} times in a row without moving the page forward, so it was not executed again. Do not repeat it: advance to the next step of the case (or switch to an action that actually changes the page); call snapshot when you need to inspect the page.",
     // download assertion (the `download` tool in src/bsk/tools.ts + src/report/downloads.ts)
     "bsk.download.expectation": "the exported file has been downloaded locally",
     "bsk.download.expectationNamed":
@@ -1699,10 +1765,25 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     // ── interactive mode ──
     "tui.title": "pageqa interactive mode",
     "tui.hint":
-      "Enter submit · Shift+Enter newline · Esc abort scenario (discard unqueued input when idle) · ↑↓/PgUp/PgDn scroll log · Ctrl+P history · Ctrl+C finish · /help",
+      "Enter submit · Shift+Enter newline · Esc abort scenario (discard unqueued input when idle) · ↑↓/PgUp/PgDn scroll log · Ctrl+P history · Alt+C copy · Ctrl+C finish · /help",
     "tui.help":
-      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /replay <f>    load the scenarios of a replay script (.json) and rerun them with no model\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script; refuses while something is running/pending or inputs are still being formatted)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model\n  /driver            switch the test driver backend (browser / mini program)         choose the model (Enter switches and sets it as the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /proxy         inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / language), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input: the current model first formats it into a case (## scenario name / one line per step / one assertion per line), then it is written back and queued\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario; when idle, discard inputs still being formatted, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
+      "commands:\n  /status        view the run queue\n  /run <file>    load an existing case file (path or filename keyword) into the run queue\n  /replay <f>    load the scenarios of a replay script (.json) and rerun them with no model\n  /new           start a new session (clears the viewport and run queue; scenarios that already ran still go into the exit report and the replay script; refuses while something is running/pending or inputs are still being formatted)\n  /cancel <n>    cancel a not-yet-started pending item (n is the queue number)\n  /model\n  /driver            switch the test driver backend (browser / mini program)         choose the model (Enter switches and sets it as the startup default)\n  /login         sign in a provider (API key or subscription); credentials go to ~/.pageqa/auth.json\n  /logout        remove locally stored credentials for a provider\n  /proxy         inspect / toggle proxy routing for model requests (config: ~/.pageqa/proxy.json)\n  /help          show this help\n  /exit          finish (same as Ctrl+C)\n  /setting       change settings (test report / replay script / model thinking / language / concurrency), saved to ~/.pageqa/config.json\nkeys:\n  Enter          submit input: the current model first formats it into a case (## scenario name / one line per step / one assertion per line), then it is written back and queued\n  Shift+Enter    newline (for writing multi-scenario cases)\n  Esc            abort current scenario; when idle, discard inputs still being formatted, queue continues to the next\n  Ctrl+P/Ctrl+N  input history: previous / next submitted text (↑/↓ went to the log)\n  Ctrl+C         finish: abort current + cancel all pending → restore the terminal → print the summary (a normal exit, never a hard kill)\n  Ctrl+C ×2      pressed again while winding down: stop waiting for the queue and finish now (the report is still printed)\nlog viewport:\n  PageUp/PageDown  scroll the log one page up/down\n  ↑ / ↓            scroll the log (when the input box is empty; otherwise they stay the editor's)\n  Ctrl+↑ / Ctrl+↓  scroll one line (always works)\n  Home / End       jump to the start of the log / back to the end\n  mouse wheel      scroll the log ({wheel} lines per notch). Some terminals report the wheel as ↑/↓ — that is the row above\nstatus bar: run progress (n of m, elapsed) · pending count · current model · written-back count · write-back target\nbelow the input box: the session's token usage (⬇ input / ⬆ output / read and write = cache read/write / total / call count, plus the cache hit rate at the end; refreshed after each LLM call)",
     "tui.scroll.paused": "↓ follow paused · End to jump to bottom",
+    // Mouse selection copy: pi-tui owns the selection, ./tui/clipboard.ts owns the clipboard.
+    "tui.copy.failed":
+      "copy failed: the native clipboard is unavailable and writing OSC 52 failed too (retry with Alt+C)",
+    "tui.copy.oscFallback":
+      " (clipboard fell back to OSC 52: some terminals drop it silently, so the copy may not have taken effect)",
+    "tui.copy.noSelection":
+      "no selection to copy: drag across log text first, then press Alt+C. If dragging shows no highlight at all, mouse reporting is disabled (see the startup notice / PAGEQA_TUI_MOUSE)",
+    "tui.copy.emptySelection":
+      "a selection exists but its text is empty: it probably sits on blank rows or crosses outside the log viewport (set PAGEQA_TUI_DEBUG=1 for diagnostics)",
+    "tui.copy.disabled":
+      " (PAGEQA_COPY_ON_SELECT=0: dragging only selects, it does not copy; use Alt+C)",
+    "tui.mouse.disabled":
+      "note: PAGEQA_TUI_MOUSE=0, so mouse reporting is off and dragging is the terminal's own selection (which never reaches the clipboard). Unset it and restart to use drag-to-copy here",
+    "tui.help.copy":
+      "mouse copy:\n  drag         selecting text copies it on release (double-click = word, triple-click = line; dragging past the edge auto-scrolls)\n  Alt+C        copy the current selection (retry after a failed automatic copy)\n  channels     the platform clipboard first, terminal OSC 52 as fallback (some terminals drop it silently)\n  no mouse     start with PAGEQA_TUI_MOUSE=0 to hand dragging and the wheel back to the terminal\n  no copy      start with PAGEQA_COPY_ON_SELECT=0 to select without copying",
     "tui.appended": " (appended)",
     "tui.replayTag": " (replay)",
     "tui.originAdded": "appended",
@@ -1809,7 +1890,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.cmd.logout": "remove locally stored credentials for a provider",
     "tui.cmd.help": "show this help",
     "tui.cmd.setting":
-      "change settings (test report / replay script / language)",
+      "change settings (test report / replay script / model thinking / language / concurrency)",
     "tui.cmd.proxy": "inspect / toggle the proxy routing for model requests",
     "tui.cmd.exit": "finish (same as Ctrl+C)",
     "tui.cmd.driver":
@@ -1863,7 +1944,8 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.setting.locale": "language",
     "tui.setting.on": "on",
     "tui.setting.off": "off",
-    "tui.setting.hint": "↑↓ select · Enter toggles · Esc closes · config: {path}",
+    "tui.setting.hint":
+      "↑↓ select · Enter toggles / opens a picker · Esc closes · config: {path}",
     "tui.setting.saved": "updated: {name} = {value}",
     "tui.setting.failed": "failed to write config: {msg}",
     "tui.setting.concurrency": "concurrency",
@@ -1875,6 +1957,28 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "tui.setting.concurrencyCurrent": "· current",
     "tui.setting.concurrencySaved":
       "concurrency set to {n}: takes effect for scenarios dispatched from now on, and was written back to {path}",
+    // model thinking switch (thinkingFormat): "" = auto-disable, none = keep
+    "tui.setting.thinking": "model thinking (thinkingFormat)",
+    "tui.setting.thinkingTitle":
+      "model thinking switch (↑↓ select · Enter confirms · Esc cancels)",
+    "tui.setting.thinkingAuto": "auto (disable thinking by model id, default)",
+    "tui.setting.thinkingAutoDesc":
+      "removes the config key; picks the endpoint's off-switch from the model id",
+    "tui.setting.thinkingKeep": "keep thinking (endpoint uses its own default)",
+    "tui.setting.thinkingKeepDesc":
+      "no thinking switch in the request; use this for endpoints that mandate reasoning",
+    "tui.setting.thinkingFormatDesc": "sends {field}",
+    "tui.setting.thinkingNoop":
+      "this format cannot send an off-switch (same as keeping thinking)",
+    "tui.setting.thinkingCurrent": "· current",
+    "tui.setting.thinkingStateAuto": "thinking disabled automatically",
+    "tui.setting.thinkingStateKeep": "thinking kept",
+    "tui.setting.thinkingStateFormat": "thinking disabled via {format}",
+    "tui.setting.thinkingEnvTag": "· env override",
+    "tui.setting.thinkingEnvOverride":
+      "PAGEQA_LLM_THINKING_FORMAT takes precedence over this setting; writing the file will not change the value in effect this run",
+    "tui.setting.thinkingSaved":
+      "model thinking set to {value}: effective for scenarios dispatched from now on, written back to {path}",
 
     // ── model switching & login ──
     "tui.model.status": "model {model}",
@@ -2089,6 +2193,8 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
       "environment unavailable ({msg}); this scenario was not executed",
     "report.cancelEnvGone":
       "environment unavailable; this scenario was not executed",
+    "report.cancelModelGone":
+      "the model endpoint became unavailable and the run stopped; this scenario was not dispatched",
 
     "reportHtml.generatedAt": "generated at: {time}",
     "reportHtml.duration": "duration: {dur}",
@@ -2222,7 +2328,7 @@ session 后端），不需要额外开关；它落在用户目录而不是工作
     "  /replay <script>          zero-model replay of a recorded script\n" +
     "  /driver                   switch the test driver: desktop browser / WeChat mini program\n" +
     "  /model                    choose the model used by this session\n" +
-    "  /setting                  side-output switches, language, concurrency\n" +
+    "  /setting                  side-output switches, model thinking, language, concurrency\n" +
     "  /help                     all commands and key bindings\n" +
     "\n" +
     "Cases run inside the session only: the command-line run / --replay / --only / --driver\n" +
