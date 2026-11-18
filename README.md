@@ -95,7 +95,7 @@ Auto-entry: with no `--json`, bare **`pageqa`** enters the TUI on a TTY. Run a c
 | `/new` | New session: clears viewport and queue, resets token counter, but **archives the previous batch** (still in the exit report and replay script). Refuses while something is running/pending or inputs are still being formatted |
 | `/model` | Switch this session's model — `Enter` applies it now **and** saves it as the startup default |
 | `/login` · `/logout` | Sign in / remove a provider's local credentials (`~/.pageqa/auth.json`) |
-| `/setting` | Persistent prefs: test report (HTML) / replay script toggles, language, **concurrency** (1/2/3/4/6/8) |
+| `/setting` | Persistent prefs: test report (HTML) / replay script toggles, **model thinking** (`thinkingFormat`: auto / keep / explicit format), language, **concurrency** (1/2/3/4/6/8) |
 | `/proxy` | Proxy routing for model requests: on/off (saved to `~/.pageqa/proxy.json`), bypass for this session, reload the file, show counters and rules — see [Proxy for model requests](#proxy-for-model-requests) |
 | `/help` · `/exit` | Help / finish and exit (`/quit` is an alias) |
 
@@ -243,6 +243,7 @@ Exit code: `0` clean; `1` has an `error` (or a `warn` under `--strict`).
   The effective value and the field being sent are printed at startup. **If the endpoint rejects that field** (strict implementations answer 400), the probe drops it, retries once, writes the downgrade into the model object so this process never sends it again, and says so. So defaulting to off cannot break an endpoint that used to work; it costs one extra probe request only when the endpoint really is incompatible.
 - **Language**: `--locale zh|en` or `PAGEQA_LOCALE`; default `zh`. The data contract (JSON fields, exit codes) is language-neutral.
 - **Startup timing diagnostics (optional)**: set `PAGEQA_STARTUP_TRACE=1` (or a file path) and every startup phase appends a line **immediately** to `~/.pageqa/startup-trace.log` — `index-module` (node itself + entry module graph), `tui-module` (the whole pi-tui / pi-ai / pi-agent-core UI graph), `model-check` (built-in provider catalog + model validation), `first-frame` (the first frame actually written to the terminal). Use it for "opening the TUI takes ten-odd seconds": the timeline survives a completely black screen, and once the first frame lands the per-phase deltas are also printed into the log viewport. With the variable unset, every mark is a no-op call — zero cost on the startup path.
+- **Progress log on disk (on by default)**: every progress line is also appended to `~/.pageqa/logs/pageqa-YYYY-MM-DD.log` (one file per day; cleanup keeps **today only** — a long-running process rolls to a new file at midnight and prunes the rest). `PAGEQA_LOG=0` turns it off, `PAGEQA_LOG_DIR` relocates it, `PAGEQA_LOG_KEEP_DAYS=3` retains more days.
 - **Proxy for model requests (optional)**: `~/.pageqa/proxy.json` — see [Proxy for model requests](#proxy-for-model-requests) below.
 
 ---
