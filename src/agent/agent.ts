@@ -57,6 +57,7 @@ import {
   numberSteps,
   parseAssertions,
   parseProgress,
+  parseStepMark,
   renderSuiteText,
   renderText,
   statusTag,
@@ -74,6 +75,7 @@ import type { ScenarioRecording } from "./replay.js";
 import {
   COMPACT_SYSTEM_PROMPT,
   buildStateNote,
+  buildStepAnchor,
   calibrateFromUsage,
   compactTools,
   contextOverflowError,
@@ -199,7 +201,7 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "",
   "工作流程（必须严格遵守）：",
   "1. 第一步永远是 navigate(url) 打开目标页面。",
-  "2. navigate 之后先 snapshot() 看清页面；**在开始逐步交互之前，先 wait_for 一个地标**——用你刚刚在快照里看到的、**接下来要操作的那个区域**里的元素（筛选表单的字段标签、表格表头、面板里的菜单项），并带上 showPage=true 省掉随后的 snapshot。不要用页面标题、导航、菜单里的文字（等它们等于没等），也不要用 wait 猜秒数：这一步会原样录进回放脚本，回放等的是同一个条件。",
+  "2. navigate 之后先 snapshot() 看清页面；**在开始逐步交互之前，先 wait_for 一个地标**——用你刚刚在快照里看到的、**接下来要操作的那个区域**里的元素（筛选表单的字段标签、表格表头、面板里的菜单项），它的结果里会带新编号，省掉随后的 snapshot。不要用页面标题、导航、菜单里的文字（等它们等于没等），也不要用 wait 猜秒数：这一步会原样录进回放脚本，回放等的是同一个条件。",
   "3. 按用户意图逐步交互；每次交互后如需要可再次 snapshot 确认状态。",
   "4. 只有在 navigate + snapshot 已成功、页面确为期望页面之后，才能调用 assert_text 校验关键结果。",
   "5. 最后用简洁中文给出结论：每个断言「成立/不成立」，并附证据（实际看到的标题或文本片段）。",
@@ -251,8 +253,8 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "- 用例中每一处「断言」都必须对应一次工具调用：一条「断言 …」= 一次 assert_text（校验下载用 download）。即使断言与操作写在同一行（如「打开页面并断言标题包含 X」），也要在操作完成后单独调用一次 assert_text；仅凭 snapshot 肉眼确认、在文字里写「成立」不算执行断言，报告会按「断言数不足」判 FAIL。",
   "- 严禁在步骤未执行完的情况下给出「测试通过」结论；宁可报告某步骤失败，也不要静默省略步骤。",
   "- 不要编造未观察到的内容；若元素不存在、导航失败或页面未打开，明确说明。",
-  "- **@eN 元素编号随页面变动而失效，禁止跨动作沿用**：任何会改动页面的动作（navigate / click / fill / select_option / hover / scroll / pick_date / upload 等）之后，页面会重新编号；接下来若要再定位或操作某个元素，**必须先拿到新的 @eN**，不得沿用动作之前的旧编号。沿用过期编号会被工具拒绝（报「@eN 引用已失效」），只会多一轮失败重试——想省快照就改用目标元素的稳定特征（文本、字段 label、CSS selector）去定位，而不是记一个会过期的序号。" +
-  "- **select_option / pick_date 的结果里默认就附了「动作后的可交互元素」清单（含新编号）**：紧接着要操作页面时，直接从那里面取新编号，**不要再单独调用 snapshot**。其它动作（click / fill / hover / wait_for 等）要一次拿到新编号就传 showPage: true，否则它们的返回里没有清单。",
+  "- **@eN 元素编号随页面变动而失效，禁止跨动作沿用**：任何会改动页面的动作（navigate / click / fill / select_option / hover / scroll / pick_date / upload 等）之后，页面会重新编号；接下来若要再定位或操作某个元素，**必须先拿到新的 @eN**，不得沿用动作之前的旧编号。沿用过期编号会被工具拒绝（报「@eN 引用已失效」），只会多一轮失败重试——想省快照就改用目标元素的稳定特征（文本、字段 label、CSS selector）去定位，而不是记一个会过期的序号——**上一个动作的结果里通常已经带了新编号清单**，不必为了「拿编号」专门再 snapshot 一次。" +
+  "- **动作的返回里默认就附了「动作后的可交互元素」清单（含新编号）**：click / fill / hover / press / wheel / select_option / pick_date / upload 成功后都带。紧接着要操作页面时**直接从那里取新编号，不要再单独调用 snapshot**（那份清单就是刚抓的快照，比你手上任何编号都新）。只有清单里写着「可交互元素太多…请自己 snapshot」时才需要单独抓一次。",
   "- 断言的期望值必须严格来自「用例显式写明的断言内容」（如「接收人 0227054520211299」「日志编号」）或「页面上真实观察到的文本」（如表头、具体字段值）。**严禁编造用例里没有的额外断言**：用例写了几条「断言 …」，就只调几次 assert_text，不要自己加戏。典型错误有两种：(1) 臆测总数——从别的场景/快照看到「共 22 条」就拿它当本场景的断言目标；(2) 用例说「确认有数据 / 表格无数据则 FAIL」，却额外去断言「暂无数据」这类占位文案——那正是用例没要求的断言。要表达「有数据」，直接断言一个确定会出现的正面标记（如「编号」表头或某条具体记录值）即可。",
   "- 用例写的是「断言页面**不包含** X」（或「X 不应出现 / 看不到 X」）时，用一次 `assert_text(expectation=\"X\", absent=true)` 表达：expectation 里只放 X 本身，**不要把「不包含」这类否定字眼写进文本**。反向断言与正向断言一样必须真的发起工具调用，不要因为「本来就没看到」就跳过它、或在文字里写一句「成立」——那样报告会按「断言数不足」判 FAIL。",
   "- 涉及文件上传时必须用 upload 工具：原生系统文件选择框无法被自动化点击，直接 click 上传按钮会卡住流程。",
@@ -645,9 +647,16 @@ async function initializeAgent(
   // 由 pageqa 统一给用例的每行编号后再交给模型：模型输出的「步骤完成：k/n」
   // 就能映射回用例原文，报告可直接指出「停在哪一步、下一步该做什么」。
   const { numbered, steps } = numberSteps(input);
+  // 终端那行只给 60 字预览（否则一条用例就把视口顶穿）；文件里放原文——事后要回答的
+  // 「这次到底跑的是哪几句」只有原文能答，`…（753 字符，21 个步骤）` 答不了。
   info(
     t("log.caseStart", {
       text: preview(input),
+      chars: input.length,
+      steps: steps.length,
+    }),
+    t("log.caseStart", {
+      text: input.trim(),
       chars: input.length,
       steps: steps.length,
     }),
@@ -943,6 +952,39 @@ async function initializeAgent(
   log("[runAgent] session 存档 id=" + collector.data.id);
 
   const trimState = createTrimState();
+
+  /**
+   * 每轮往请求尾部追加一条「进度锚」（见 context.ts 的 buildStepAnchor）。
+   *
+   * 只改**当次请求**，不写回 `agent.state.messages`：否则 159 轮下来会累积 159 条
+   * 几乎相同的进度行，把窗口吃掉——而它要说的事每轮都一样，只有数字在变。
+   */
+  let anchorTurn = 0;
+  /** 已扫描到的 events 下标（只扫增量；每轮全量重扫是 O(n²)）。 */
+  let anchorScanned = 0;
+  /** 已自报完成的步骤数：只增不减——模型偶尔先报大数再报小数，倒退回旧步骤是错的。 */
+  let anchorDone = 0;
+  const withStepAnchor = (list: AgentMessage[]): AgentMessage[] => {
+    anchorTurn += 1;
+    if (events.length > anchorScanned) {
+      const fresh = events.slice(anchorScanned).join("");
+      anchorScanned = events.length;
+      // 两种自述都认：过程中的「第 k 步完成」与收尾的「步骤完成：k/n」。
+      // 取两者较大的那个——模型偶尔先报单步、后写一个更小的总数声明。
+      const done = Math.max(
+        alignProgress(parseProgress(fresh), steps.length)?.done ?? 0,
+        parseStepMark(fresh) ?? 0,
+      );
+      if (done > anchorDone) anchorDone = done;
+    }
+    const anchor = buildStepAnchor({
+      steps,
+      done: anchorDone,
+      turn: anchorTurn,
+    });
+    return anchor ? [...list, anchor] : list;
+  };
+
   const agent = new Agent({
     initialState: {
       systemPrompt,
@@ -956,17 +998,20 @@ async function initializeAgent(
     // 预算是估算值，因此裁剪阈值留了 25% 余量（75% 触发）——估算必然有偏，
     // 紧贴上限的请求最容易撞端点 400；真的撞了还有一次溢出恢复兜底（见 executeWithContinuations）。
     transformContext: async (messages) => {
-      const chars = countMessageChars(messages);
+      // 进度锚在**估算之前**并入：它就是这一轮真正要发出去的内容，
+      // 不并进去等于每轮都少算一份预算（小窗口下正好够把请求顶过窗口）。
+      const anchored = withStepAnchor(messages);
+      const chars = countMessageChars(anchored);
       // 原始估算（用于与端点回报的真实 usage 对标，见 context.ts 的 TokenCalibration）
       // 与「按校准放大后的占用」是两个数：前者是标定基准，后者才用于判定。
-      const raw = estimateMessageTokens(messages);
+      const raw = estimateMessageTokens(anchored);
       const scale = trimState.calibration.scale;
       const before = Math.round(raw * scale);
       const aggressive = trimState.aggressive;
       if (!needsTrim(before, budget, aggressive)) {
         noteEstimate(trimState.calibration, raw);
-        collector.noteTurnContext(messages, chars, before);
-        return messages;
+        collector.noteTurnContext(anchored, chars, before);
+        return anchored;
       }
       const plan = trimPlan(before, budget, aggressive);
       let trimmed: AgentMessage[];
@@ -974,7 +1019,7 @@ async function initializeAgent(
       if (plan.mode === "aggressive") {
         // 激进档：截断只能缩小单条消息，长流程下条数照样把窗口顶穿——这里整组丢弃
         // 中间的旧消息（头部永生清单与尾部最近一轮保留），并补一份状态提示进去。
-        const cut = dropMiddleMessages(messages, plan.keepRecentMessages);
+        const cut = dropMiddleMessages(anchored, plan.keepRecentMessages);
         dropped = cut.dropped;
         trimmed = trimToolResults(cut.messages, plan);
         if (dropped > 0) {
@@ -994,7 +1039,7 @@ async function initializeAgent(
           );
         }
       } else {
-        trimmed = trimToolResults(messages, plan);
+        trimmed = trimToolResults(anchored, plan);
       }
       const rawAfter = estimateMessageTokens(trimmed);
       const after = Math.round(rawAfter * scale);
@@ -1079,10 +1124,22 @@ export function toolResultText(result: unknown): string {
     .join(" ");
 }
 
-/** 压成单行并截断：失败原因往往是多行堆栈，不能整段灌进日志与轨迹。 */
+/** 压成单行并截断：失败原因往往是多行堆栈，不能整段灌进终端与轨迹。 */
 function clipOneLine(text: string, max = 160): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? oneLine.slice(0, max) + "…" : oneLine;
+}
+
+/**
+ * 原文（只去首尾空白）：给**日志文件**用的版本。
+ *
+ * 终端那份必须压成单行，但文件不该跟着压——落盘的全部价值就是「不必重跑也能看清原文」，
+ * 而这里恰恰是 `error:/hint:/details:` 三行的接缝处。实测被截断的 `This action req…`
+ * 正好把「requires a valid control context from cooperate sync」切掉，那半句才是判据。
+ * 保留换行也让人在文件里能一行一行读，而不是从一坨空格里找 `hint:`。
+ */
+function verbatim(text: string): string {
+  return text.trim();
 }
 
 /**
@@ -1165,7 +1222,12 @@ function subscribeProgress(
       // 存档要的是**模型给出的入参原文**：点错了哪个元素、URL 写成了什么，
       // 都在这一个字段里，而进度日志里只剩工具名。
       collector.noteToolStart(e.toolCallId, e.toolName, e.args);
-      events.push("[tool] " + e.toolName);
+      // 轨迹是「文本增量 + 这些标记」混在同一个数组里拼起来的（见 runAgent 的
+      // `events.join("")`），而下游要按**行**解析 `[tool-ok]` / `[tool-error]`
+      // （report.ts 的 TOOL_OUTCOME_LINE 用 `^` 锚定行首）。标记不带换行的话，
+      // 它会和上一个/下一个标记粘成 `[tool] click[tool-error] click：…` 一行，
+      // 「工具失败未恢复」的判定就永远匹配不到——PASS 因此变得不可信。
+      events.push("[tool] " + e.toolName + "\n");
       log("[agent] 工具调用开始: " + e.toolName);
       toolCount += 1;
       toolStartedAt = Date.now();
@@ -1177,21 +1239,36 @@ function subscribeProgress(
       // 失败原因必须落进日志与执行轨迹。
       // 只写「失败，将重试或报告」的话，交互模式下盯着视口也分不清是
       // 「本地服务没起」「URL 写错」还是「选择器匹配不上」——而这三种的处理方式完全不同。
-      const reason = e.isError ? clipOneLine(toolResultText(e.result)) : "";
+      // 轨迹与终端：单行（视口的上下文按行计，且 report.ts 的 TOOL_OUTCOME_LINE 用 `^`
+      // 锚定行首——多行会把它拆散）。
+      const raw = e.isError ? toolResultText(e.result) : "";
+      const reason = e.isError ? clipOneLine(raw) : "";
       events.push(
         (e.isError ? "[tool-error] " : "[tool-ok] ") +
           e.toolName +
-          (reason ? "：" + reason : ""),
+          (reason ? "：" + reason : "") +
+          "\n",
       );
       log(
         "[agent] 工具调用" + (e.isError ? "失败" : "完成") + ": " + e.toolName,
       );
+      // 文件那份给原文：这里的失败原因常是 `error:/hint:/details:` 三行，压单行再截 160
+      // 字正好切在最关键的那半句上（见 verbatim 的注释）。
+      const fileReason = e.isError ? "：" + verbatim(raw) : "";
       info(
         t("log.toolEnd", {
           mark: e.isError ? "✗" : "✓",
           n: toolCount,
           tool: e.toolName,
           reason: reason ? "：" + reason : "",
+          retry: e.isError ? "（将重试或报告）" : "",
+          cost,
+        }),
+        t("log.toolEnd", {
+          mark: e.isError ? "✗" : "✓",
+          n: toolCount,
+          tool: e.toolName,
+          reason: fileReason,
           retry: e.isError ? "（将重试或报告）" : "",
           cost,
         }),

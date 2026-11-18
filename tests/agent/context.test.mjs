@@ -5,6 +5,7 @@ import {
   MAX_CALIBRATION,
   OVERFLOW_CALIBRATION_FLOOR,
   buildStateNote,
+  buildStepAnchor,
   calibrateFromUsage,
   compactTools,
   contextOverflowError,
@@ -28,6 +29,7 @@ import {
   windowFromOverflowMessage,
 } from "../../dist/agent/context.js";
 import { DEFAULT_SYSTEM_PROMPT } from "../../dist/agent/agent.js";
+import { parseStepMark } from "../../dist/report/report.js";
 
 // 纯单元测试：估算/预算/裁剪都是纯函数，不开浏览器也不调模型。
 //
@@ -680,5 +682,79 @@ describe("小窗口前缀压缩：默认前缀装不进 8k，压缩后才装得�
     assert.ok(chars > 0 && chars < 4000, `快照预算应明显小于 8k 窗口，实际 ${chars}`);
     // 「前缀 + 快照 + 输出预留」不得超过窗口——否则第一轮快照就会撞墙
     assert.ok(3600 + chars + small.outputReserve < small.window);
+  });
+});
+
+/**
+ * 进度锚（buildStepAnchor）：现场 pageqa-2026-11-18.log 第二次运行，22 步的用例跑了
+ * 159 轮，前 21 轮全在原地确认页面。系统提示里「必须按编号顺序执行」只在对话开头说过
+ * 一次，一轮工具结果之后就推远了——模型手上没有「我在第几步」的读数。
+ */
+describe("每轮注入的进度锚", () => {
+  const steps = ["打开工单管理页面", "点击新建工单", "填写标题", "提交并断言列表出现该标题"];
+
+  const textOf = (msg) => msg.content[0].text;
+
+  test("还没自报进度时给出全部步骤与轮次", () => {
+    const note = buildStepAnchor({ steps, done: 0, turn: 12 });
+    const text = textOf(note);
+    assert.match(text, /第 12 轮/);
+    assert.match(text, /共 4 步/);
+    assert.match(text, /还没自报过任何步骤完成/);
+    assert.match(text, /1\. 打开工单管理页面/);
+    assert.match(text, /4\. 提交并断言列表出现该标题/);
+  });
+
+  test("已自报 k 步后只列剩下的步骤", () => {
+    const text = textOf(buildStepAnchor({ steps, done: 2, turn: 30 }));
+    assert.match(text, /已自报完成 2 步，下一步是第 3 步/);
+    assert.match(text, /3\. 填写标题/);
+    assert.doesNotMatch(text, /1\. 打开工单管理页面/, "已完成的步骤不该再占版面");
+  });
+
+  test("跑满后不再给清单，只要求收尾", () => {
+    const text = textOf(buildStepAnchor({ steps, done: 4, turn: 40 }));
+    assert.match(text, /全部完成/);
+    assert.match(text, /步骤完成：4\/4/);
+    assert.doesNotMatch(text, /1\. 打开工单管理页面/, "跑满时多给一行都会勾着它继续动");
+    assert.doesNotMatch(text, /一次只推进一步/);
+  });
+
+  test("步骤清单过长时退化成「当前 + 后两步」，不把窗口吃掉", () => {
+    const many = Array.from({ length: 60 }, (_, i) => `第${i + 1}句步骤描述`.repeat(3));
+    const text = textOf(buildStepAnchor({ steps: many, done: 0, turn: 5 }));
+    assert.ok(text.length < 900, `锚必须短，实际 ${text.length} 字符`);
+    assert.match(text, /1\. /);
+    assert.match(text, /3\. /);
+    assert.doesNotMatch(text, /4\. /);
+    assert.match(text, /其余 57 步见对话开头的用例原文/);
+  });
+
+  test("没有步骤时不给锚（不往上下文里塞空话）", () => {
+    assert.equal(buildStepAnchor({ steps: [], done: 0, turn: 3 }), null);
+  });
+
+  test("done 超过总数时按总数夹住（模型会自报假进度）", () => {
+    const text = textOf(buildStepAnchor({ steps, done: 9, turn: 50 }));
+    assert.match(text, /步骤完成：4\/4/);
+  });
+});
+
+/** 「第 k 步完成」才是推进证据：「第 k 步」不带完成多半是在描述或计划。 */
+describe("解析单步完成自述", () => {
+  test("取最后一次「第 k 步完成」", () => {
+    assert.equal(parseStepMark("第 3 步完成：填好了\n第 4 步完成：提交成功"), 4);
+  });
+
+  test("不认没有「完成」的「第 k 步」", () => {
+    assert.equal(parseStepMark("接下来执行第 5 步，先 snapshot"), null);
+  });
+
+  test("认「第 k 步已完成」这种写法", () => {
+    assert.equal(parseStepMark("第 7 步已完成：弹窗关闭"), 7);
+  });
+
+  test("没有任何自述时为 null", () => {
+    assert.equal(parseStepMark(""), null);
   });
 });

@@ -580,6 +580,82 @@ export function buildStateNote(note: CompactionStateNote): AgentMessage {
   } as AgentMessage;
 }
 
+/** {@link buildStepAnchor} 的输入。 */
+export interface StepAnchorInput {
+  /** 用例的步骤原文（`numberSteps().steps`，不含 `### 步骤 k：` 前缀）。 */
+  steps: string[];
+  /** 已自报完成的步骤数；0 = 这一轮之前还没自报过。 */
+  done: number;
+  /** 本次运行已发起的模型轮次（从 1 开始）——给模型一个成本感。 */
+  turn: number;
+}
+
+/**
+ * 每轮注入的「进度锚」。
+ *
+ * 为什么需要它（现场 pageqa-2026-11-18.log 第二次运行）：22 步的用例跑了 **159 轮**、
+ * 355 秒。前 21 轮全在原地确认页面（navigate 同一个 URL 成功 5 次、wait_for 6 次、
+ * snapshot 4 次），真正的推进从第 22 轮才开始。系统提示里写了「必须按编号顺序执行」，
+ * 但那句话只在对话开头——一轮工具结果之后就被推远了，模型手上没有任何「我在第几步、
+ * 还差几步」的读数，于是用「再确认一次页面」来代替推进。
+ *
+ * 与 {@link buildStateNote} 的分工：那条只在上下文被压缩时给一次（告诉模型什么被丢掉了），
+ * 这条**每轮都给**，内容是「现在第几步、接下来那句是什么、还剩几步」。它不改历史
+ * （`transformContext` 的返回值只用于当次请求），所以不会随轮次累积。
+ *
+ * 长度控制是硬要求：每轮都注入，长清单会吃掉小窗口模型的整个预算。清单超预算时退化成
+ * 「当前步 + 后两步 + 一句回看」，够模型接着做，不至于把窗口占满。
+ */
+const STEP_ANCHOR_MAX_CHARS = 900;
+/** 单条步骤在锚里的长度上限：步骤原文通常一行为一句，超出部分对「该做什么」没有增量。 */
+const STEP_ANCHOR_LINE_MAX = 56;
+
+function clipStep(text: string): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length <= STEP_ANCHOR_LINE_MAX
+    ? one
+    : `${one.slice(0, STEP_ANCHOR_LINE_MAX)}…`;
+}
+
+export function buildStepAnchor(input: StepAnchorInput): AgentMessage | null {
+  const total = input.steps.length;
+  if (total === 0) return null;
+  const done = Math.max(0, Math.min(input.done, total));
+  const head = `[进度锚] 第 ${input.turn} 轮；用例共 ${total} 步`;
+  // 跑满了就不再给清单：此时唯一该做的事是收尾，多给一行都会勾着它继续动。
+  if (done >= total) {
+    return anchorMessage(
+      `${head}，你已自报全部完成。` +
+        `不要再执行新步骤、也不要重复已完成的操作：直接输出一行「步骤完成：${total}/${total}」并给出结论。`,
+    );
+  }
+  const remaining = input.steps.slice(done);
+  const lines = remaining.map((s, i) => `${done + i + 1}. ${clipStep(s)}`);
+  const full = lines.join("\n");
+  const listed =
+    full.length <= STEP_ANCHOR_MAX_CHARS
+      ? full
+      : // 超预算：只给「当前 + 后两步」，其余指向用例原文（它在对话开头，永远在）。
+        `${lines.slice(0, 3).join("\n")}\n…（其余 ${remaining.length - 3} 步见对话开头的用例原文）`;
+  const where =
+    done === 0
+      ? "还没自报过任何步骤完成"
+      : `已自报完成 ${done} 步，下一步是第 ${done + 1} 步`;
+  return anchorMessage(
+    `${head}，${where}。\n${listed}\n` +
+      "一次只推进一步：完成当前步骤就自报「第 k 步完成：<结果>」再进下一步；" +
+      "同一个动作（同一工具 + 同样入参）重复调用不算推进——需要确认页面就 snapshot 一次，然后继续做下一步。",
+  );
+}
+
+function anchorMessage(text: string): AgentMessage {
+  return {
+    role: "user",
+    content: [{ type: "text", text }],
+    timestamp: Date.now(),
+  } as AgentMessage;
+}
+
 /**
  * 小窗口专用系统提示。
  *
