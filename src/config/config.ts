@@ -542,6 +542,28 @@ export function saveSideOutputPref(
 }
 
 /**
+ * 只读地取配置文件里的「思考开关」原值（**不会**创建文件，不含环境变量覆盖）。
+ *
+ * 面板要显示与写回的是**文件里的值**：把 `PAGEQA_LLM_THINKING_FORMAT` 混进来展示，
+ * 用户会以为写盘改掉了它，实际 env 仍优先（见 loadConfig）。空串/非字符串按「没配」
+ * 处理 = 自动判断。
+ */
+export function readThinkingFormat(): string | undefined {
+  const raw = readRawConfig().thinkingFormat;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+}
+
+/**
+ * 把「思考开关」持久化（保留其它字段）；供交互模式 /setting 使用。
+ *
+ * `undefined` 表示删掉这个键、回到默认的自动判断：`JSON.stringify` 会省略值为
+ * undefined 的键，下次 `loadConfig()` 读不到就走 `parseThinkingSetting("")` 的 auto 分支。
+ */
+export function saveThinkingFormat(value: string | undefined): void {
+  updateUserConfig({ thinkingFormat: value });
+}
+
+/**
  * `compat.thinkingFormat` 的合法取值（pi-ai 的并集，见 node_modules/@earendil-works/pi-ai）。
  *
  * 它决定的不是「思考强度」，而是**在请求体里用什么写法告诉端点「别思考」**——各家

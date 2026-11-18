@@ -75,6 +75,9 @@
 // 慢盘/杀软环境下每个模块要好几毫秒——整棵图就是「打开 TUI 要十几秒」的全部来源。
 // 运行时值一律在用到的地方 `await import()`（见 `getCatalog` / `loadAgentRuntime`），
 // 首帧因此只需 pi-tui + 本项目自己的轻模块。
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type { AgentRunResult } from "../agent/agent.js";
 import type {
   LogoutOption,
@@ -116,10 +119,12 @@ import type { ScenarioRecording } from "../agent/replay.js";
 // 仅类型导入（编译期擦除），不会让「非交互路径」为 UI 依赖付出加载开销。
 import type {
   Component,
+  ScrollView,
   SelectItem,
   SelectListLayoutOptions,
   SlashCommand,
   StackChild,
+  TuiAltScreen,
 } from "@earendil-works/pi-tui";
 import {
   ScenarioQueue,
@@ -134,6 +139,8 @@ import {
   type SessionBatch,
 } from "./batches.js";
 import { accent, dim, editorTheme, err, ok, title, warn } from "./theme.js";
+import { createClipboardCopy } from "./clipboard.js";
+import { splitTerminalSequences } from "./input-split.js";
 import { frameLines, overlayInnerWidth } from "./overlay-frame.js";
 import { packageVersion } from "../shared/version.js";
 import {
@@ -172,15 +179,20 @@ import {
   effectiveConcurrency,
   loadConfig,
   PAGEQA_PROVIDER_ID,
+  parseThinkingSetting,
   readDriver,
   readModelPricing,
   readSideOutputPrefs,
+  readThinkingFormat,
   saveConcurrency,
   saveDriver,
   saveLocale,
   saveModelSelection,
   saveSideOutputPref,
+  saveThinkingFormat,
   setDriver,
+  THINKING_FORMATS,
+  THINKING_OFF_FIELD,
   type Driver,
   type SideOutputPrefs,
 } from "../config/config.js";
@@ -444,6 +456,7 @@ export async function runInteractive(
     TUI_KEYBINDINGS,
     isKeyRelease,
     matchesKey,
+    getNativeClipboard,
     setKeybindings,
     sliceByColumn,
     truncateToWidth,
@@ -554,13 +567,92 @@ export async function runInteractive(
   const terminal = new ProcessTerminal();
   // 滚动键位与滚轮步长是 pi-tui 的全局设置（输入分发时才读取），必须在收到按键之前装好。
   setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, KEYBINDINGS));
+  /**
+   * 鼠标接管与「拖动即复制」默认都开，靠环境变量关：
+   * - `PAGEQA_TUI_MOUSE=0`：连鼠标上报一起关掉，拖动选中与滚轮回滚还给终端自己（逃生通道）；
+   * - `PAGEQA_COPY_ON_SELECT=0`：仍可拖动选中（照样反显），只是松手不写剪贴板。
+   */
+  const mouseEnabled = process.env.PAGEQA_TUI_MOUSE !== "0";
+  const copyOnSelect = process.env.PAGEQA_COPY_ON_SELECT !== "0";
+  /**
+   * 鼠标上报序列有没有真的写出去。
+   *
+   * 终端只在收到 `\x1b[?1000h` 之后才把拖动交给应用；收不到时屏幕上那块「选中」是终端自己
+   * 画的，应用永远拿不到坐标。这是区分「终端没转」与「应用取不到文本」的唯一凭据。
+   *
+   * 探针是**一次性**的：命中就换回原 `write`，否则每帧渲染都要扫一遍几十 KB 的字符串。
+   */
+  let mouseSequenceSent = false;
+  /** 最近一次含鼠标事件的上行 chunk 被拆成了几条（>1 即证明终端会合并，见 ./input-split.ts）。 */
+  let lastMouseChunkParts = 0;
+  {
+    const write = terminal.write.bind(terminal);
+    terminal.write = (data: string): void => {
+      if (!mouseSequenceSent && data.includes("\x1b[?1000h")) {
+        mouseSequenceSent = true;
+        terminal.write = write;
+      }
+      write(data);
+    };
+  }
+  const nativeClipboard = getNativeClipboard();
+  const copySelection = createClipboardCopy({
+    setText: nativeClipboard?.setText?.bind(nativeClipboard),
+    write: (data) => terminal.write(data),
+    // 走到 OSC 52 说明原生通道失守：这行日志是「看到 Copied! 但剪贴板是空的」唯一的线索。
+    onFallback: () => append(dim(t("tui.copy.oscFallback"))),
+    failureMessage: () => t("tui.copy.failed"),
+  });
   const tui = new TuiAltScreen(terminal, true, undefined, {
-    mouse: true,
+    mouse: mouseEnabled,
+    copyOnSelect,
+    copySelection,
     wheelScrollLines: WHEEL_SCROLL_LINES,
     // `follow: "end"` 的代价是「上滚」这件事本身没有别的凭据：没有这行提示，用户只能看到
     // 日志不再刷新，却不知道是自己滚走了、也不知道怎么回去。它同时是可点击的（点一下回底部）。
     scrollToEndIndicator: () => t("tui.scroll.paused"),
   });
+
+  /**
+   * 逐条派发 stdin 的转义序列。
+   *
+   * pi-tui 用整串精确匹配识别鼠标事件（见 `./input-split.ts` 的说明）：一次快速拖动被终端
+   * 合并成一个 chunk 时，整串不匹配、事件被当成键盘丢掉——`handleMouseEvent` 不会被调用，
+   * 于是没有 anchor、没有反显，Alt+C 只会答「没有选中内容」。这里把 chunk 拆开再喂。
+   */
+  const inputSink = tui as unknown as {
+    handleTerminalInput: (data: string) => void;
+  };
+  /**
+   * 诊断通道：`PAGEQA_TUI_MOUSE_LOG=1` 时把 stdin 原样落到 `./mouse-trace.log`。
+   *
+   * 这是唯一能回答「终端到底有没有把按下转给应用」的证据：文件里出现 `\u001b[<0;`
+   * 就说明事件到了、应用取不到文本；只有 `\u001b[<64;`（滚轮）或方向键，就说明终端
+   * 压根没上报按下。写进文件而不是视口，是因为这段数据不适合让人手抄。
+   */
+  const tracePath = process.env.PAGEQA_TUI_MOUSE_LOG
+    ? join(process.cwd(), "mouse-trace.log")
+    : undefined;
+  const dispatchTerminalInput = inputSink.handleTerminalInput.bind(tui);
+  inputSink.handleTerminalInput = (data: string): void => {
+    if (tracePath) {
+      try {
+        appendFileSync(tracePath, `${JSON.stringify(data)}\n`);
+      } catch {
+        // 诊断写不进去不该影响交互
+      }
+    }
+    const parts = splitTerminalSequences(data);
+    // 诊断口径：`0` 表示一条鼠标事件都没收到（终端没转发），`1` 表示收到过但没合并，
+    // `>1` 表示终端确实把多次拖动合并在同一个 chunk 里（正是这次要修的那种输入）。
+    const mouseParts = parts.filter((p) => p.startsWith("\x1b[<")).length;
+    if (mouseParts > 0) lastMouseChunkParts = mouseParts;
+    if (parts.length < 2) {
+      dispatchTerminalInput(data);
+      return;
+    }
+    for (const part of parts) dispatchTerminalInput(part);
+  };
 
   // ── 视口：上方滚动日志 + 底部固定输入区 ──
   const logLines: string[] = [];
@@ -782,6 +874,13 @@ export async function runInteractive(
     );
     tui.requestRender();
   };
+
+  // 这两个开关是环境变量，最容易踩的坑是「上一轮调试留下的变量还在」，然后「拖动不复制」
+  // 被当成功能坏了。启动时把生效状态说出来，比事后查环境省一轮。
+  if (!mouseEnabled) append(warn(t("tui.mouse.disabled")));
+  if (mouseEnabled && !copyOnSelect) append(dim(t("tui.copy.disabled")));
+  // 鼠标排障用的原始输入落盘：说清落在哪，省得还要解释一次。
+  if (tracePath) append(dim(`input trace → ${tracePath}`));
 
   // 日志即视口内容：工具调用、bsk 命令、耗时这些都从 stdio 重定向进来，
   // 「长流程卡在哪一步」在同一屏上就能看到（stdout 仍只留给最终报告）。
@@ -1211,7 +1310,82 @@ export async function runInteractive(
   }
 
   /**
-   * `/setting`：修改旁路产物开关、语言与并发量（ADR-0011 决策二、ADR-0013 决策三）。
+   * 「模型思考」的候选项（`thinkingFormat`）。
+   *
+   * 语义容易反：没配（空串）才是**默认关闭思考**，`none`/`off` 是**不要关**
+   * （请求不带任何思考开关，端点保持自己的默认，强制 reasoning 的端点就选它）。
+   * 具体格式让高级用户改「关闭字段」的写法，描述直接复用 THINKING_OFF_FIELD。
+   */
+  const THINKING_AUTO = "__pageqa_thinking_auto__";
+
+  function thinkingValueLabel(value: string): string {
+    const setting = parseThinkingSetting(value);
+    if (setting.kind === "off") return t("tui.setting.thinkingStateKeep");
+    if (setting.kind === "format")
+      return t("tui.setting.thinkingStateFormat", { format: setting.format });
+    // invalid 时 loadConfig 会退回 auto，展示「生效值」而不是那个拼错的字符串。
+    return t("tui.setting.thinkingStateAuto");
+  }
+
+  /** 主面板的 description：展示生效值；env 覆盖时额外标出来。 */
+  function thinkingDescription(): string {
+    const env = process.env.PAGEQA_LLM_THINKING_FORMAT;
+    const value = env ?? readThinkingFormat() ?? "";
+    const label = thinkingValueLabel(value);
+    return env ? `${label} ${t("tui.setting.thinkingEnvTag")}` : label;
+  }
+
+  /** 二级选择器：自动 / 不关 / 具体格式。Esc 返回 undefined（保持原值）。 */
+  async function pickThinking(): Promise<string | undefined> {
+    const env = process.env.PAGEQA_LLM_THINKING_FORMAT;
+    // env 里写 "off" 归到「不关」，拼错的值按实际生效的 auto 归到「自动」。
+    const parsed = parseThinkingSetting(env ?? readThinkingFormat() ?? "");
+    const current =
+      parsed.kind === "off"
+        ? "none"
+        : parsed.kind === "format"
+          ? parsed.format
+          : THINKING_AUTO;
+    const items: SelectItem[] = [
+      {
+        value: THINKING_AUTO,
+        label: t("tui.setting.thinkingAuto"),
+        description: t("tui.setting.thinkingAutoDesc"),
+      },
+      {
+        value: "none",
+        label: t("tui.setting.thinkingKeep"),
+        description: t("tui.setting.thinkingKeepDesc"),
+      },
+      ...THINKING_FORMATS.map((format) => {
+        const field = THINKING_OFF_FIELD[format];
+        return {
+          value: format,
+          label: format,
+          description: field
+            ? t("tui.setting.thinkingFormatDesc", { field })
+            : t("tui.setting.thinkingNoop"),
+        };
+      }),
+    ];
+    const pick = await openSelector(
+      t("tui.setting.thinkingTitle"),
+      items.map((item) =>
+        item.value === current
+          ? {
+              ...item,
+              label: `${item.label} ${t("tui.setting.thinkingCurrent")}`,
+            }
+          : item,
+      ),
+      env ? { hint: t("tui.setting.thinkingEnvOverride") } : {},
+    );
+    if (!pick) return undefined;
+    return pick.value === THINKING_AUTO ? "" : pick.value;
+  }
+
+  /**
+   * `/setting`：修改旁路产物开关、语言、模型思考与并发量（ADR-0011 决策二、ADR-0013 决策三）。
    *
    * 切换即写回配置并**重开面板**：这几项常常一次要改不止一项，让用户关掉再敲一次 `/setting`
    * 是多余的一步。Esc 关面板。语言并入这里之后，`/toggle-language` 只作为未文档化的别名
@@ -1239,6 +1413,11 @@ export async function runInteractive(
           value: "locale",
           label: t("tui.setting.locale"),
           description: localeLabel(),
+        },
+        {
+          value: "thinking",
+          label: t("tui.setting.thinking"),
+          description: thinkingDescription(),
         },
       ];
       // 小程序驱动固定串行：这里调并发不生效（每个场景子进程各拉起一个开发者
@@ -1274,6 +1453,30 @@ export async function runInteractive(
               path: CONFIG_PATH,
             }),
           );
+        } catch (err2) {
+          append(err(t("tui.setting.failed", { msg: msgOf(err2) })));
+        }
+        updateStatus();
+        continue;
+      }
+      if (pick.value === "thinking") {
+        const value = await pickThinking();
+        if (value === undefined) continue;
+        try {
+          saveThinkingFormat(value || undefined);
+          // provider 是构造时的快照：清掉 catalog 与探活缓存，让父进程下一次
+          // 探活/格式化也用上新值（之后派发的场景子进程本来就会重新读盘）。
+          catalogPromise = undefined;
+          lastProbeKey = "";
+          append(
+            t("tui.setting.thinkingSaved", {
+              value: thinkingValueLabel(value),
+              path: CONFIG_PATH,
+            }),
+          );
+          if (process.env.PAGEQA_LLM_THINKING_FORMAT) {
+            append(warn(t("tui.setting.thinkingEnvOverride")));
+          }
         } catch (err2) {
           append(err(t("tui.setting.failed", { msg: msgOf(err2) })));
         }
@@ -2620,6 +2823,8 @@ export async function runInteractive(
       case "help":
         // 滚轮步长从常量注入，免得帮助里的数字与 `./keys.ts` 慢慢对不上。
         append(t("tui.help", { wheel: WHEEL_SCROLL_LINES }));
+        // 鼠标那段单独一个 key：主帮助是几千字的长字符串，往里插一段的合并成本远高于追加。
+        append(t("tui.help.copy"));
         break;
       case "setting":
         void openSettingPanel();
@@ -2862,6 +3067,41 @@ export async function runInteractive(
       requestShutdown("Ctrl+C");
       return { consume: true };
     }
+    // Alt+C：复制当前选区。拖动松手已经自动复制过一次，这里既是重试入口，也是「为什么没复制」
+    // 唯一的可见诊断——pi-tui 在取不到选区文本时是静默 no-op（连失败提示都不闪），
+    // 用户只能看到「有反显但什么都没发生」，区分不了是没选区、还是选区取不到文本。
+    // 不用 Ctrl+Shift+C：pi-tui 从不启用 Kitty 键盘增强协议，它在字节层与 Ctrl+C 同为 \x03；
+    // 而且 Windows Terminal / VS Code 默认把该组合截作终端自己的「复制」，根本送不到这里。
+    if (matchesKey(data, "alt+c")) {
+      // 快照一律**跟在提示之后**：视口只显示末尾几行，放在前面那条诊断会被提示挤到看不见
+      // 的地方（这就是上一轮没被贴回来的原因）。「没选区」与「取不到文本」是两种故障，
+      // 而前者连 `copySelection` 都不会被调用，只能靠这里留下证据。
+      const appendDiagnostics = () => {
+        if (process.env.PAGEQA_TUI_DEBUG !== "1") return;
+        append(
+          dim(
+            copySelectionDiagnostics(
+              tui,
+              transcript,
+              mouseEnabled,
+              mouseSequenceSent,
+              lastMouseChunkParts,
+            ),
+          ),
+        );
+      };
+      if (!tui.hasActiveSelection()) {
+        append(dim(t("tui.copy.noSelection")));
+        appendDiagnostics();
+        return { consume: true };
+      }
+      void tui.copyActiveSelectionToClipboard().then((copied) => {
+        if (copied) return;
+        append(warn(t("tui.copy.emptySelection")));
+        appendDiagnostics();
+      });
+      return { consume: true };
+    }
     if (matchesKey(data, "escape")) {
       // 提问中的 Esc = 取消这次提问（登录流程会按「已取消」收尾）。
       if (pendingAsk) {
@@ -2933,6 +3173,15 @@ export async function runInteractive(
     if (summary) info(summary);
   });
   tui.start();
+  // 兜底：`?1000h` 本该由库在 beforeTerminalStart 里写出（tui-alt-screen.js:195）。没写出去
+  // 就意味着应用永远收不到拖动坐标，而界面上的「选中」是终端自己画的——自己补写一次，
+  // 让拖动至少有机会进到应用，并把这件事记下来。
+  if (mouseEnabled && !mouseSequenceSent) {
+    terminal.write("\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h");
+    mouseSequenceSent = true;
+    if (process.env.PAGEQA_TUI_DEBUG === "1")
+      info("[pageqa] [copy-debug] mouse sequence missing after start; re-sent it");
+  }
   // 启动后终端尺寸才就绪，立刻渲染一次看板带（窄屏则保持空白、整片日志）。
   updateStatus();
 
@@ -2999,4 +3248,53 @@ export async function runInteractive(
     writtenBack,
     unwritten,
   };
+}
+
+/**
+ * 复制失败时的内部状态快照（只有 `PAGEQA_TUI_DEBUG=1` 才会打印）。
+ *
+ * pi-tui 把选区状态和文本提取都放在私有字段里，取不到文本时一律静默返回 false：界面上的
+ * 「有反显、不闪提示、剪贴板没变」可能是三种完全不同的原因（没选区 / 选区跨了视口 /
+ * 命中的内容行是空的）。这行日志是唯一能把它们区分开的凭据，所以只能读私有字段。
+ */
+function copySelectionDiagnostics(
+  tui: TuiAltScreen,
+  transcript: ScrollView,
+  mouseEnabled: boolean,
+  mouseSequenceSent: boolean,
+  mouseChunkParts: number,
+): string {
+  const internals = tui as unknown as {
+    selectionAnchor?: { row: number; col: number; scrollView?: unknown };
+    selectionFocus?: { row: number; col: number; scrollView?: unknown };
+    selectionPressActive?: boolean;
+    selectionDragged?: boolean;
+    currentLayout?: unknown;
+    getActiveSelectionText?: () => string | undefined;
+  };
+  const anchor = internals.selectionAnchor;
+  const focus = internals.selectionFocus;
+  const at = (p?: { row: number; col: number }) =>
+    p ? `${p.row}:${p.col}` : "-";
+  let text: string | undefined;
+  try {
+    text = internals.getActiveSelectionText?.();
+  } catch {
+    text = undefined;
+  }
+  return [
+    "[copy-debug]",
+    `mouse=${mouseEnabled ? "on" : "off"}`,
+    `mouseSeq=${mouseSequenceSent ? "sent" : "missing"}`,
+    `mouseChunk=${mouseChunkParts}`,
+    `hasSel=${tui.hasActiveSelection()}`,
+    `anchor=${at(anchor)}`,
+    `focus=${at(focus)}`,
+    `sameView=${anchor?.scrollView === focus?.scrollView}`,
+    `onTranscript=${anchor?.scrollView === transcript}`,
+    `pressActive=${Boolean(internals.selectionPressActive)}`,
+    `dragged=${Boolean(internals.selectionDragged)}`,
+    `layout=${Boolean(internals.currentLayout)}`,
+    `text=${text === undefined ? "undefined" : `${text.length}chars`}`,
+  ].join(" ");
 }

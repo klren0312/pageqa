@@ -22,8 +22,10 @@ const {
   CONFIG_PATH,
   ensureConfigDir,
   readSideOutputPrefs,
+  readThinkingFormat,
   saveLocale,
   saveSideOutputPref,
+  saveThinkingFormat,
 } = await import("../../dist/config/config.js");
 const {
   emitSideOutputs,
@@ -95,6 +97,31 @@ describe("旁路产物开关（config）", () => {
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
     assert.equal("htmlReport" in raw, false);
     assert.equal("replayScript" in raw, false);
+  });
+});
+
+describe("思考开关（config）", () => {
+  test("没配时读为 undefined（自动判断）", () => {
+    writeConfig({ locale: "zh" });
+    assert.equal(readThinkingFormat(), undefined);
+  });
+
+  test("写入 none 并保留其它字段", () => {
+    writeConfig({ model: "custom", locale: "zh" });
+    saveThinkingFormat("none");
+    const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+    assert.equal(raw.thinkingFormat, "none");
+    assert.equal(raw.model, "custom");
+    assert.equal(raw.locale, "zh");
+    assert.equal(readThinkingFormat(), "none");
+  });
+
+  test("写 undefined 会删掉键，回到自动判断", () => {
+    writeConfig({ thinkingFormat: "qwen" });
+    saveThinkingFormat(undefined);
+    const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+    assert.equal("thinkingFormat" in raw, false);
+    assert.equal(readThinkingFormat(), undefined);
   });
 });
 
