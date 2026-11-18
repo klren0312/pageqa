@@ -41,6 +41,7 @@ import {
   conditionState,
   describeCondition,
   describeProbe,
+  describeSelectorProblem,
   describeState,
   ELEMENT_STATES,
   isElementState,
@@ -50,6 +51,7 @@ import {
   parseProbe,
   pollUntil,
   probeSaysMaybe,
+  textHit,
   type ConditionProbe,
   type ElementState,
   type WaitCondition,
@@ -105,6 +107,7 @@ import {
   ipcCall,
 } from "./ipc.js";
 import {
+  errorReason,
   extractDialogs,
   ipcErrorToCliError,
   ipcTimeoutToCliError,
@@ -286,6 +289,23 @@ let ipcSuspendedUntil = 0;
 let nativeWaitUsable = true;
 
 /**
+ * 当前环境里 `bsk evaluate` 是否还能当探针用。
+ *
+ * 现场（pageqa-2026-11-18.log）：bsk 在权限闸门就拒掉 evaluate——`observation_required`
+ * 且 `--unverified` 重放同样被拒（控制权/归属/上下文那几层不因 `--unverified` 而豁免）。
+ * 一次运行里 17 次文本 wait_for 全灭、31 轮 LLM 没有任何业务动作落到页面上。
+ *
+ * 而 snapshot 在同一时刻是通的（日志里 4 次 snapshot 全成功）。所以被拒一次就把这个事实
+ * 记下来，所有依赖页面探针的地方统一改走快照：
+ * - `wait_for` 的文本条件（`onSnapshotProbe`）：按快照正文匹配；
+ * - `select_option`（`selectOptionViaSnapshot`）：点开控件后在快照里按可见文本找选项的 `@eN`。
+ *
+ * 只由**权限闸门拒绝**置位（`isStrictObservationRefusal` + 纯读通道同样被拒），刷新类的
+ * 瞬时失败不置位——那种失败下一次探针就好了，不值得永久降级到 600ms 一次的快照读取。
+ */
+let evaluateProbeBlocked = false;
+
+/**
  * 现在能不能用 `bsk wait-for-element`。
  *
  * `PAGEQA_BSK_WAIT_FOR_ELEMENT=0`（也接受 `off`/`false`）强制走页面侧探针：
@@ -296,6 +316,18 @@ function nativeWaitAllowed(): boolean {
   if (!nativeWaitUsable) return false;
   const flag = process.env.PAGEQA_BSK_WAIT_FOR_ELEMENT?.trim().toLowerCase();
   return !(flag === "0" || flag === "off" || flag === "false");
+}
+
+/**
+ * `PAGEQA_BSK_WAIT_PROBE=0`（也接受 off/false）强制文本等待直接读快照。
+ *
+ * 与 `nativeWaitAllowed` 同一个动机：探针被权限闸门拒掉之后的降级路径平时跑不到
+ * （本机只在 tab 不被 agent 控制时才触发），而「降级后结论是否与探针一致」恰恰最需要
+ * 真机验证。这个开关让它可以在正常环境里被走到。
+ */
+function snapshotWaitForced(): boolean {
+  const flag = process.env.PAGEQA_BSK_WAIT_PROBE?.trim().toLowerCase();
+  return flag === "0" || flag === "off" || flag === "false";
 }
 
 /** 传输层问题的冷却时长：期间直接走 CLI，不再尝试 IPC。 */
@@ -749,6 +781,119 @@ function bskErrorDetail(err: unknown): string {
 }
 
 /**
+ * 这次失败是不是「缺一个当前 observation」。
+ *
+ * bsk 的 target policy 下，**没有目标元素**的动作（navigate、不带 ref 的 press、wheel）必须
+ * 带上一次 `cooperate sync` 回复里**顶层**的 `observation_id`，而且那个 id 只能用一次。CLI
+ * 不会替我们补——daemon 只展开显式传入的短 id（`tool_pipeline`：never fabricate omitted
+ * observation_id），所以不带的结果是**永久**被拒：`bsk navigate` 每次都失败，模型只能一遍遍
+ * 重试（实测一次运行里 19 次导航失败、6 次是这条）。
+ *
+ * 同时看结构化 reason（IPC 路径有 `bskData`）与文本（CLI 子进程路径没有）：两条传输下
+ * 这个判断必须一致，否则「换了传输就换了个行为」正是最难查的一类差异。
+ */
+export function isObservationRequiredError(err: unknown): boolean {
+  if (errorReason(err) === "observation_required") return true;
+  return /requires an unused strict observation|needs an explicit current observation/i.test(
+    readErrorText(err),
+  );
+}
+
+/**
+ * 这次失败是不是「点击点被别的元素盖住了」。
+ *
+ * bsk 的 `target_covered` 是在**派发前**用命中测试发现的：`effect_state: none`、点击没有
+ * 发生。所以「同步 + 重试一次」不会变成「点了两次」，与 `element_not_visible` 同属安全
+ * 重试类；区别只是它要的是一次 `cooperate sync`（bsk 的 hint 就是 synchronize before
+ * clicking），而不是把元素滚进视口。
+ *
+ * 为什么值得单独处理：现场（pageqa-2026-11-18.log 第二次运行）14 次 click 失败里 9 次是
+ * 这条，而模型紧接着的那一次同样的 click 往往就成功——页面在动画/浮层收尾，遮挡是瞬时的。
+ * 每次失败都要模型自己「snapshot → 再点」，白花两轮往返（≈3s）和两段上下文。
+ */
+export function isCoveredTargetError(err: unknown): boolean {
+  if (errorReason(err) === "target_covered") return true;
+  // CLI 子进程路径没有结构化 reason，只能看渲染后的文案。
+  return /（reason: target_covered）|pointer target is covered/i.test(
+    readErrorText(err),
+  );
+}
+
+/**
+ * 取 `bsk cooperate sync` 回复里顶层的 `observation_id`。
+ *
+ * 要的是顶层那个（后续动作的凭据），不是 `observation.observation_id`（那属于 VOM 正文，
+ * bsk 的 hint 专门提醒过这一点）。回复是 pretty JSON（`cli/cooperate.rs` 直接 println 序列化
+ * 结果），解析不出来就当没有——宁可这次不带 observation，也不能拿一个猜的值去喂动作。
+ */
+export function readObservationId(reply: string): string | undefined {
+  const json = parseBskJson<{ observation_id?: unknown }>(reply);
+  const id = json?.observation_id;
+  return typeof id === "string" && id.trim() ? id.trim() : undefined;
+}
+
+/**
+ * 快照里「点一下就算选中」的角色：各组件库的选项节点角色不同，宁可多认几种。
+ *
+ * 认错角色的代价只是排序靠后（名字仍要匹配），不认的代价是名字对了却找不到。
+ */
+const OPTION_ROLES = new Set([
+  "option",
+  "menuitem",
+  "menuitemradio",
+  "menuitemcheckbox",
+  "treeitem",
+  "radio",
+  "li",
+  "listitem",
+  "item",
+  "cell",
+  "gridcell",
+]);
+
+/**
+ * 在快照文本里按**可见文本**找一个元素的 `@eN`。
+ *
+ * 用途：`bsk evaluate` 探针被权限闸门拒掉时，`select_option` 没法再用页面侧脚本定位
+ * 浮层里的选项——而模型自己的通用路径（点开 → snapshot → click 选项）证明快照是够用的。
+ * 这个函数把那三步里的"找"自动化。
+ *
+ * **只认唯一命中**：命中多个就返回候选让调用方报错，绝不赌一个。点错同名项之后，
+ * 后续断言会在一个错误的页面上通过，这种错比当场失败难查得多。
+ */
+export function findSnapshotRefByText(
+  snapshotText: string,
+  wanted: string,
+): { ref: string | null; candidates: string[] } {
+  const squash = (s: string) => s.replace(/\s+/g, "");
+  const want = squash(wanted);
+  if (!want) return { ref: null, candidates: [] };
+  const refs = parseSnapshotRefs(snapshotText).filter((r) => r.name.length > 0);
+  const exact = refs.filter((r) => squash(r.name) === want);
+  // 精确匹配一个都没有时才放宽到「目标文本 + 角标」：option 文本常带计数（「二级 (3)」），
+  // 但**不能退成「包含」**——否则「二级」会命中「二级子公司」，那不是同一个选项。
+  const decorated = refs.filter((r) => {
+    const flat = squash(r.name);
+    if (!flat.startsWith(want)) return false;
+    const tail = flat.slice(want.length);
+    return tail.length > 0 && /^[\(（\[【]/.test(tail);
+  });
+  const pool = exact.length > 0 ? exact : decorated;
+  const optionLike = pool.filter((r) => OPTION_ROLES.has(r.role));
+  const picked = optionLike.length > 0 ? optionLike : pool;
+  const refsOfPicked = [...new Set(picked.map((r) => r.ref))];
+  if (refsOfPicked.length === 1) return { ref: refsOfPicked[0], candidates: [] };
+  if (refsOfPicked.length > 1) {
+    // 同名多项：把名字交回去，调用方报告「当前可选项」——那是模型能据此改对的最短路径。
+    return { ref: null, candidates: [...new Set(picked.map((r) => r.name))] };
+  }
+  const hint = [
+    ...new Set(refs.filter((r) => OPTION_ROLES.has(r.role)).map((r) => r.name)),
+  ].slice(0, 10);
+  return { ref: null, candidates: hint };
+}
+
+/**
  * bsk 的结构化失败信封（打在 **stdout**，runBsk 已把它贴到错误对象上）。
  *
  * 有它才能区分「元素根本没找到」与「元素点了但没产生下载」——这两种失败的处置完全相反
@@ -795,11 +940,10 @@ function paramsOf(
  * 「这一步会改变页面、接下来要看新编号」时才值得带上。
  */
 const SHOW_PAGE_PARAM = {
-  type: "boolean",
-  description:
-    "可选。设为 true 时，动作完成后在结果里附一份「动作后的可交互元素」清单（含新的 @eN 编号）——" +
-    "展开下拉/菜单/弹窗之后用它，可以直接拿到新编号，省掉紧接着的一次 snapshot。" +
-    "其它情况不要开：清单本身不小，每步都带会把上下文撑大。",
+    type: "boolean",
+    description:
+      "**一般不用传**：动作完成后，结果里默认就附一份「动作后的可交互元素」清单（含新的 @eN 编号）。" +
+      "只有确定「这次动作之后不会再操作页面」时才传 false，省点上下文。",
 } as const;
 
 /**
@@ -831,6 +975,22 @@ const SHOW_PAGE_PARAM_DEFAULT_ON = {
  */
 export function resolveShowPage(requested?: boolean): boolean {
   return requested !== false;
+}
+
+/**
+ * 会改页面的动作（click / hover / press / wheel / upload）的清单附带策略：
+ * **默认自动附**（带预算），只有显式 `showPage: false` 才不附。
+ *
+ * 与 `select_option` / `pick_date` 的差别只在预算：这两个工具必然让全部编号失效，
+ * 清单再长也是模型下一步要用的；而普通点击之后未必还要操作，所以超出预算就退化。
+ *
+ * 实测依据：21 步的用例单独调了 97 次 snapshot，全都发生在动作之后——把它们并进动作
+ * 结果即可省掉这些往返（见 `REFS_AUTO_MAX_CHARS` 的注释）。
+ */
+export function resolveAutoRefs(requested?: boolean): boolean | "auto" {
+  if (requested === true) return true;
+  if (requested === false) return false;
+  return "auto";
 }
 
 /**
@@ -1201,6 +1361,14 @@ interface BskGetHtmlJson {
   /** 未截断时的原始字节数（截断后它仍是原始长度）。 */
   byte_size?: number;
   truncated?: boolean;
+  /**
+   * 落盘模式（`--out`）专用：写到哪里、实际写了多少字节。
+   *
+   * 这条路径**不返回 html**——`cli/get_html.rs` 的 json_reply 明确只报文件位置，
+   * 「别把几百 KB 的正文再灌回 stdout」。所以落盘时不能拿 `html` 判断成败。
+   */
+  path?: string;
+  written_bytes?: number;
 }
 
 /**
@@ -1339,6 +1507,116 @@ const SNAPSHOT_DEDUP_MS = 1_000;
  */
 const SNAPSHOT_ASSERT_MS = 5_000;
 
+/**
+ * 需要「等人类让出控制 → 同步上下文」才能恢复的失败原因。
+ *
+ * 抄自 BrowserSkill 的 `RpcErrorReason`（`crates/bsk-protocol/src/error.rs`）：这几条
+ * 都意味着 bsk 侧的观察/控制上下文已经和页面脱节，唯一被 bsk 认可的补救是
+ * `bsk cooperate wait` + `bsk cooperate sync`。其它原因（沙箱范围、页面打不开）
+ * 同步也救不回来，硬 sync 只是白跑一趟。
+ */
+const COOPERATION_REASONS = new Set([
+  "cooperation_sync_required",
+  "control_context_invalid",
+  // `DocumentChanged` 与 `ControlContextInvalid` 在 bsk 侧**是同一个处置**：`render_error.rs`
+  // 把它们并成一个分支，给出同一句文案与同一个 `bsk sync` 的 hint。漏掉这一条的结果是
+  // 「同一句话，有一半叫得应、有一半叫不应」——实测 navigate 报的就是 document_changed。
+  "document_changed",
+  "control_authority_required",
+  "human_intervention",
+  "control_held",
+]);
+
+/**
+ * 只读动作**直接重跑**就能救回来的失败原因（不需要先 sync）。
+ *
+ * 与上表的区别是解药不同：协作上下文失效要靠 `cooperate sync` 重建引用；而这两条是
+ * 「观察期间文档自己变了」——重新观察一次本身就是解药，sync 也是一次观察，等于多付一趟
+ * 往返换同一个结果。实测现场：`snapshot` 823ms 报 `Document changed during observation`，
+ * 紧接着下一次 `snapshot` 586ms 就成功了，中间只隔了一次模型往返。
+ *
+ * 只用在 `runObservation` 上。动作类不能用：那里重跑可能变成「点了两次」。
+ */
+const RETRYABLE_OBSERVATION_REASONS = new Set([
+  // `observation.ts` 在观察期间 refStore/documentRevision 变化时回的就是它。
+  "ref_not_found",
+  "observation_changed",
+]);
+
+/**
+ * 这次失败是否属于「观察期间文档变了」——只读动作直接重跑即可。
+ *
+ * 单拎成一个导出函数（而不是在 `runObservation` 里内联判定），是因为它必须能被测：
+ * 判错的方向是「本该重跑却抛给模型」（白烧一轮）和「把真失败当抖动重试」（掩盖问题），
+ * 两个都只能在用例里钉住。
+ */
+export function isRetryableObservationError(err: unknown): boolean {
+  const reason = errorReason(err);
+  if (reason && RETRYABLE_OBSERVATION_REASONS.has(reason)) return true;
+  // CLI 路径拿不到 reason：`REASON_COPY.ref_not_found` 那句就是 bsk 渲染的原文，hint 也
+  // 直接写着「rerun snapshot to get fresh refs」。同一句在手，不该因为传输不同而不救。
+  return /the referenced element no longer exists/i.test(readErrorText(err));
+}
+
+/**
+ * 这次失败是不是「协作/控制上下文脱节」，是则返回一个可用于说明的原因。
+ *
+ * 两层判定缺一不可：
+ * - IPC 路径带着 `bskData.reason`，直接认集合里的原因；
+ * - CLI 子进程路径**拿不到** reason（`errorReason` 只读 `bskData`），只能认 bsk 渲染出的
+ *   固定文案（`cli/render_error.rs` 把 `ControlContextInvalid | DocumentChanged` 合成一句
+ *   `the control context no longer belongs to the current document or control state`）。
+ *
+ * 少了第二层，凡走 CLI 的调用都不会触发 sync——实测 navigate 全部走 CLI 子进程（报错首行
+ * 都是 `Command failed:`），于是这一类失败在 navigate 上一次 rescue 都跑不到。
+ */
+export function cooperationReason(err: unknown): string | undefined {
+  const reason = errorReason(err);
+  if (reason && COOPERATION_REASONS.has(reason)) return reason;
+  if (/control context no longer belongs to the current document/i.test(readErrorText(err))) {
+    // 文本里分不出是 ControlContextInvalid 还是 DocumentChanged，两者的处置与 hint 相同。
+    return "control_context_invalid";
+  }
+  return undefined;
+}
+
+/**
+ * 这次失败是不是「bsk 在权限闸门就拒了，一次都没派发」。
+ *
+ * 四种文案在这里是同一件事：`observation_required`（本次调用需要一份 strict observation）、
+ * `this action needs an explicit current observation`（带了但已过期）、
+ * `the page changed under the action; the reference context expired` / `requires a valid control
+ * context from cooperate sync`（控制上下文不属于当前文档）。它们都由 `render_error.rs` 的同一个
+ * 权限分支渲染，发生在调用真正落到 CDP 之前。
+ *
+ * 与 `cooperationReason` 的区别是用途：那一条给**动作**用（只能 sync，不能重放）；
+ * 这一条给**只读探针**用——探针不产生副作用，直接以 `--unverified` 重放一次就够，
+ * 比再 sync 一趟便宜，也不依赖 cooperate 是否可用（人类接管时 sync 常常救不回来）。
+ */
+export function isStrictObservationRefusal(err: unknown): boolean {
+  if (isObservationRequiredError(err)) return true;
+  return /reference context expired|requires a valid control context from cooperate sync/i.test(
+    readErrorText(err),
+  );
+}
+
+/**
+ * 给「已经恢复过上下文」的失败补一句状态说明。
+ *
+ * 不重放原动作（bsk 对协作冲突的要求是 "check existing effects before another action"），
+ * 所以必须让模型知道：不是环境坏了，是上下文刚被同步回来，重新观察即可继续。
+ */
+function withRecoveryNote(err: unknown, reason: string, synced: boolean): Error {
+  const out = err instanceof Error ? err : new Error(String(err));
+  const what = synced
+    ? "已执行 cooperate wait + sync，会话上下文已同步"
+    : "尝试 cooperate wait + sync 未成功（当前 bsk 可能不支持 cooperate）";
+  out.message += `\npageqa：${what}（${reason}）。原动作没有重放，请先重新 snapshot 确认页面状态。`;
+  const withStderr = out as Error & { stderr?: string };
+  if (typeof withStderr.stderr === "string") withStderr.stderr = out.message;
+  return out;
+}
+
 export function createBskOps(
   session: string,
   jevClient?: JevClient,
@@ -1381,6 +1659,230 @@ export function createBskOps(
     snapshotFresh = false;
   };
 
+  /**
+   * 最近一次 `cooperate sync` 给出的、可能还没被消耗掉的 observation_id。
+   *
+   * bsk 只认「尚未使用过的」那个：一旦带它发过一次动作就作废，所以这里发出前就清空，
+   * 不靠猜。取不到（旧版 bsk / 回复形状不同）时保持 undefined，调用方就不带这个参数。
+   */
+  let pendingObservationId: string | undefined;
+
+  /**
+   * 本会话已确认「无目标动作必须带 observation」（target policy）。
+   *
+   * 置真之后 navigate 会先 sync 备一份：多一次 IPC 往返，换掉「每次导航都先失败一次再重试」
+   * ——后者不但多一次 CDP 失败，还会把一个可恢复的拒绝原样喂给模型。
+   */
+  let observationRequired = false;
+
+  /**
+   * 把 bsk 侧的协作上下文救回来：先 `cooperate wait`（等人让出控制，没人操作时立即返回），
+   * 再 `cooperate sync`（重新观察一次，重建观察/引用）。
+   *
+   * 返回是否真的同步成功——旧版 bsk 没有 `cooperate` 子命令，此时不能让一句「同步失败」
+   * 顶替调用方真正的报错。
+   */
+  const resyncCooperation = async (signal?: AbortSignal): Promise<boolean> => {
+    try {
+      await bsk(["cooperate", "wait", ...quiet, "--timeout-ms", "5000"], signal, 20_000);
+    } catch (err) {
+      if (err instanceof BskAbortError) throw err;
+      debugLog(
+        "[bsk] cooperate wait 跳过：" + (err instanceof Error ? err.message : String(err)),
+      );
+    }
+    try {
+      const reply = await bsk(["cooperate", "sync", ...quiet], signal);
+      // sync 的回复里带着后续「无目标动作」要用的 observation_id（顶层那个）。CLI 不会替
+      // 我们补，所以这里必须自己记下来，否则 navigate 永远被 observation_required 拒掉。
+      pendingObservationId = readObservationId(reply);
+      // 重新观察之后页面可能已经变了，本地快照一律作废。
+      markStale();
+      return true;
+    } catch (err) {
+      if (err instanceof BskAbortError) throw err;
+      debugLog(
+        "[bsk] cooperate sync 失败：" + (err instanceof Error ? err.message : String(err)),
+      );
+      return false;
+    }
+  };
+
+  /**
+   * 取一份可用于本次动作的 `--observation` 参数，取完立即作废。
+   *
+   * bsk 只认「尚未被消耗」的 observation_id：带它发过一次动作就作废，所以这里在发之前
+   * 就清空，而不是等失败了再去猜它还能不能用。
+   */
+  const takeObservation = (): string[] => {
+    const id = pendingObservationId;
+    pendingObservationId = undefined;
+    return id ? ["--observation", id] : [];
+  };
+
+  /**
+   * 动作级自动恢复。只处理 bsk 明确说明「本次动作没有派发」的失败。
+   *
+   * - `element_not_visible`：元素没有可见几何，bsk 的处置就是「wait/scroll/reload 后重试」，
+   *   而几何检查发生在派发之前（`effect_state: none`），因此重试是安全的。这里先
+   *   `scroll-to` 把它滚进视口，再重试一次——典型的失败原因正是元素在滚动容器外。
+   * - 协作/控制权类：只做 wait + sync，然后**把失败交回上层**。这类失败无法确定动作
+   *   是否已经生效，自动重放可能变成「点了两次」。
+   */
+  const runAction = async (
+    action: string,
+    target: string | undefined,
+    run: () => Promise<string>,
+    signal?: AbortSignal,
+  ): Promise<string> => {
+    /** 同一次动作里每种恢复最多做一遍：重试再失败就把失败往上报，不靠重试自旋。 */
+    const recovered = new Set<string>();
+    const once = (kind: string): boolean => {
+      if (recovered.has(kind)) return false;
+      recovered.add(kind);
+      return true;
+    };
+    try {
+      return await run();
+    } catch (err) {
+      if (err instanceof BskAbortError) throw err;
+      const reason = errorReason(err);
+      if (reason === "element_not_visible" && target && once("scroll")) {
+        debugLog(`[bsk] ${action}：目标没有可见几何（${target}），滚动到它之后重试一次`);
+        try {
+          await bsk(["scroll-to", target, ...quiet], signal);
+        } catch (scrollErr) {
+          if (scrollErr instanceof BskAbortError) throw scrollErr;
+        }
+        markStale();
+        return await run();
+      }
+      // 点击点被盖住（`target_covered`）：命中测试在**派发前**就失败了，点击没有发生，
+      // 所以重试不会变成「点两次」。bsk 的 hint 是「synchronize before clicking」，照做：
+      // sync → 把目标滚进视口 → 重试一次。现场日志里这类失败的下一次同样的 click 往往
+      // 就成功（遮挡是抽屉/浮层收尾时的瞬时状态），让模型自己绕要多花两轮往返。
+      if (isCoveredTargetError(err) && target && once("covered")) {
+        debugLog(`[bsk] ${action}：目标被遮挡（${target}），同步后重试一次`);
+        await resyncCooperation(signal);
+        try {
+          await bsk(["scroll-to", target, ...quiet], signal);
+        } catch (scrollErr) {
+          if (scrollErr instanceof BskAbortError) throw scrollErr;
+        }
+        markStale();
+        return await run();
+      }
+      // 权限闸门拒绝：`observation_required`、`reference context expired`、
+      // `requires a valid control context` 都由 `render_error.rs` 的同一个权限分支渲染，
+      // **发生在调用真正落到 CDP 之前**——动作没有派发，重发不会变成「点了两次」。
+      //
+      // 这里原来只认 `observation_required`，于是 `control_context_invalid` 落到了下面的
+      // 「只 sync、不重放」分支：现场（pageqa-2026-11-18.log 第二次运行）这类失败出现 ~10
+      // 次，每次都要模型自己「失败 → snapshot → 再点」，白付两轮往返（≈3s）；而 sync 之后
+      // 重发的那一次几乎都成功。不能重放的是另外一族（人接管、换了标签页），它们不带这条文案。
+      if (isStrictObservationRefusal(err) && once("resend")) {
+        debugLog(`[bsk] ${action}：被权限闸门拒绝（未派发），sync 后重发一次`);
+        if (!(await resyncCooperation(signal))) throw err;
+        return await run();
+      }
+      // 其余的协作冲突（人接管 / 换标签页 / 沙箱归属）只做 wait + sync，然后**把失败交回
+      // 上层**：这类失败可能已经生效或需要人来处理，自动重放会变成「点了两次」。
+      // CLI 路径没有 reason，靠 cooperationReason 的文本兜底。
+      const coop = cooperationReason(err);
+      if (coop) {
+        debugLog(`[bsk] ${action}：协作上下文失效（${coop}），先 wait + sync`);
+        const synced = await resyncCooperation(signal);
+        throw withRecoveryNote(err, coop, synced);
+      }
+      throw err;
+    }
+  };
+
+  /**
+   * 只读动作的自动恢复。
+   *
+   * 与 `runAction` 的差别就在「能不能重放」：
+   * - `wait_for` / `snapshot` / `evaluate` 只是**看**页面，重跑一次没有任何副作用，
+   *   所以协作上下文一断就可以 sync 之后直接重来，不必把这件事抛给模型；
+   * - 抛给模型的代价很大：模型只会照着 hint 手敲 `bsk cooperate wait/sync`，
+   *   那是一次工具调用 + 一轮 LLM 往返，而 shell 里的 `wait` 还可能直接卡住。
+   */
+  const runObservation = async <T>(
+    action: string,
+    run: () => Promise<T>,
+    signal?: AbortSignal,
+    /**
+     * 「不带观察比对」的同一份读取（`bsk evaluate … --unverified`）。
+     *
+     * 只有纯读的探针才给这一项：被 strict observation 拒掉时直接重放一次，省掉
+     * `cooperate wait + sync` 两趟 IPC，也不受「人类接管期间 sync 必然失败」影响。
+     * 不传就退化成原来的行为。
+     */
+    unverified?: () => Promise<T>,
+  ): Promise<T> => {
+    /** 被观察闸门拒掉时：有纯读通道就走纯读通道；纯读通道自己失败则退回原来的报错。 */
+    const retryWithoutObservation = async (cause: unknown): Promise<T | undefined> => {
+      if (!unverified || !isStrictObservationRefusal(cause)) return undefined;
+      debugLog(`[bsk] ${action}：被 strict observation 拒掉，改用 --unverified 重跑一次`);
+      try {
+        return await unverified();
+      } catch (err) {
+        if (err instanceof BskAbortError) throw err;
+        // 旧版 bsk 不认 `--unverified`（clap 参数错误）：不能用「参数不认识」顶替掉
+        // 真正的原因，退回去抛原始报错。
+        //
+        // 但纯读通道**自己也被权限闸门拒掉**是另一回事：那说明这个环境里 evaluate 真的
+        // 用不了（不只是「这次没带 observation」）。把它标在原始错误上，上层才能据此换通道
+        // （见 waitFor 的快照降级）；CLI 的参数错误不会走到这一支。
+        if (isStrictObservationRefusal(err) && cause && typeof cause === "object") {
+          (cause as { unverifiedRefused?: boolean }).unverifiedRefused = true;
+          // 纯读通道也被权限闸门拒了 = 这个环境里 evaluate 探针根本不可用（不是「这次没带
+          // observation」）。记在进程级，wait_for / select_option 据此换用快照通道。
+          evaluateProbeBlocked = true;
+        }
+        debugLog(
+          `[bsk] ${action}：--unverified 重放也失败：` +
+            (err instanceof Error ? err.message : String(err)),
+        );
+        return undefined;
+      }
+    };
+    try {
+      return await run();
+    } catch (err) {
+      if (err instanceof BskAbortError) throw err;
+      const coop = cooperationReason(err);
+      if (coop) {
+        debugLog(`[bsk] ${action}：协作上下文失效（${coop}），sync 后重跑一次`);
+        // 同步不成才把原错交出去（附一句「已经试过同步」）——纯读探针还有纯读通道可退。
+        if (!(await resyncCooperation(signal))) {
+          const direct = await retryWithoutObservation(err);
+          if (direct !== undefined) return direct;
+          throw withRecoveryNote(err, coop, false);
+        }
+        try {
+          return await run();
+        } catch (retryErr) {
+          if (retryErr instanceof BskAbortError) throw retryErr;
+          const direct = await retryWithoutObservation(retryErr);
+          if (direct !== undefined) return direct;
+          throw retryErr;
+        }
+      }
+      // 观察闸门拒绝：一次都没派发，纯读探针重放即解。
+      const direct = await retryWithoutObservation(err);
+      if (direct !== undefined) return direct;
+      // 观察期间文档变了：不 sync，直接重跑（理由见 RETRYABLE_OBSERVATION_REASONS）。
+      if (isRetryableObservationError(err)) {
+        debugLog(
+          `[bsk] ${action}：观察期间文档已变（${errorReason(err)}），直接重跑一次`,
+        );
+        return await run();
+      }
+      throw err;
+    }
+  };
+
   /** 最近一次快照里的引用表（解析成本随快照长度线性增长，因此按快照缓存）。 */
   const refsOf = (): SnapshotRef[] => {
     if (snapshotRefs === null) snapshotRefs = parseSnapshotRefs(snapshotText);
@@ -1421,7 +1923,11 @@ export function createBskOps(
 
   /** 真正抓一次快照：瘦身后交给模型，并按需记录瘦身统计。 */
   const takeSnapshot = async (signal?: AbortSignal): Promise<string> => {
-    const raw = await bsk(["snapshot", ...quiet], signal);
+    const raw = await runObservation(
+      "snapshot",
+      () => bsk(["snapshot", ...quiet], signal),
+      signal,
+    );
     const slim = slimSnapshot(raw, currentSlimOptions());
     if (slim.applied) {
       debugLog(
@@ -1667,11 +2173,77 @@ export function createBskOps(
    * 两条路径必须给同一个结论：原生命令不可用（旧版 bsk）时退回探针，而 `probeSaysMaybe`
    * 的状态矩阵与 bsk 的 `satisfied_by(attached, visible)` 逐条对齐（见 condition.ts 文件头）。
    */
+  /** 强制新抓一份原始快照（不瘦身）：选项文本在原始 VOM 里最完整。 */
+  const takeRawSnapshotForPicker = async (signal?: AbortSignal): Promise<string> => {
+    markStale();
+    return await ensureRawSnapshot(0, "select_option", signal);
+  };
+
+  /**
+   * 探针不可用时怎么选：点开控件 → 读快照 → 按可见文本找选项的 `@eN` → 点它。
+   *
+   * `bsk evaluate` 被权限闸门拒掉时（`evaluateProbeBlocked`），页面侧脚本这条路是彻底断的，
+   * 但快照还能读——模型自己也是这么绕的：「click 展开 → snapshot → click 选项」。
+   * 工具一次做完，省掉中间两轮往返，也省掉它试错时可能点到别处的风险。
+   *
+   * 唯一性由 `findSnapshotRefByText` 把关：名字撞车就报错并列出候选，不猜。
+   */
+  const selectOptionViaSnapshot = async (
+    target: string,
+    option: string,
+    landed: string,
+    signal?: AbortSignal,
+  ): Promise<string> => {
+    const opened = await runAction(
+      "select_option",
+      target,
+      () => bsk(["click", target, ...quiet], signal),
+      signal,
+    );
+    // 浮层可能是异步渲染的（远程搜索 / 虚拟列表）：第一次没找到就再抓一次。
+    let found = findSnapshotRefByText(await takeRawSnapshotForPicker(signal), option);
+    if (!found.ref && found.candidates.length === 0) {
+      found = findSnapshotRefByText(await takeRawSnapshotForPicker(signal), option);
+    }
+    if (!found.ref) {
+      const list = found.candidates.join("、");
+      throw new Error(
+        t("bsk.picker.optionMissing", { option }) +
+          (list ? t("bsk.picker.optionCandidates", { list }) : "") +
+          t("bsk.picker.probeFallback"),
+      );
+    }
+    const out = await runAction(
+      "select_option",
+      found.ref,
+      () => bsk(["click", found.ref as string, ...quiet], signal),
+      signal,
+    );
+    markStale();
+    return `已选择「${option}」${landed}${t("bsk.picker.viaSnapshot")}\n${opened}\n${out}`;
+  };
+
   const doWaitFor = async (
     cond: WaitCondition,
     timeoutMs: number = DEFAULT_WAIT_FOR_TIMEOUT_MS,
     signal?: AbortSignal,
   ): Promise<string> => {
+    // 选择器只接受 CSS。模型经常写 Playwright 的 `div:has-text("工单来源")`，那种写法要到
+    // CDP 才炸成 `DOM Error while querying`，再被兜底成 `cdp_failed` 并附一句「reload 标签页」
+    // ——用法错误被伪装成环境故障，模型于是反复重载页面。同 requiredTarget 的口径：用法错误
+    // 在本地拒掉，不消耗一次浏览器往返，也不会被录进回放脚本。
+    for (const [field, value] of [
+      ["selector", cond.selector],
+      ["gone", cond.gone],
+    ] as const) {
+      if (!value) continue;
+      const problem = describeSelectorProblem(value);
+      if (problem) {
+        throw new Error(
+          t("bsk.waitFor.badSelector", { field, selector: value, why: problem }),
+        );
+      }
+    }
     const requested = Number.isFinite(timeoutMs)
       ? Math.max(1, Math.round(timeoutMs))
       : DEFAULT_WAIT_FOR_TIMEOUT_MS;
@@ -1698,12 +2270,54 @@ export function createBskOps(
     const limit = Math.min(budget, MAX_WAIT_FOR_TIMEOUT_MS);
     const probeExpr = buildProbeExpression(cond);
     const confirmExpr = buildConfirmExpression(cond);
-    const probe = async (expr: string): Promise<string> =>
-      await bsk(
-        ["evaluate", expr, "--session", session, "--timeout", `${SETTLE_PROBE_TIMEOUT_MS}ms`],
+    /** 只有文本条件才有「探针不可用 → 读快照」这条退路：元素条件快照表达不出来。 */
+    const textOnly = Boolean(cond.text);
+    const onSnapshotProbe = () =>
+      textOnly && (evaluateProbeBlocked || snapshotWaitForced());
+    /** 最近一次快照原文：既用来匹配，也用作超时取证。 */
+    let lastWaitText = "";
+    /**
+     * 读一次快照并按文本判定。
+     *
+     * 判定走 `textHit`（与探针表达式同一个三态匹配），所以「换个通道读」不会换出另一个结论。
+     * 快照是 VOM 的可访问性正文，本身就是页面可见内容，无需再复核一次 innerText。
+     */
+    const snapshotSample = async (): Promise<ConditionProbe> => {
+      lastWaitText = await bsk(
+        ["snapshot", ...quiet],
         signal,
         SETTLE_PROBE_TIMEOUT_MS + 10_000,
       );
+      return {
+        selectorHit: false,
+        selectorVisible: false,
+        gonePresent: false,
+        goneVisible: false,
+        textPresent: textHit(lastWaitText, cond.text ?? ""),
+      };
+    };
+    // 探针就是一条 `bsk evaluate`，在 bsk 眼里属于「strict observation required」的动作：
+    // navigate 换过文档之后的第一条探针必被拒。以前这里裸调 bsk，被拒一次整条 wait_for 立刻
+    // 判失败——实测 32 次 wait_for 只成功 1 次，模型于是拿同一个已过期的 observation 反复
+    // navigate 重试，一次运行白烧 140s。现在走 runObservation：被观察闸门拒掉就用
+    // `--unverified` 重放一次（纯读、无副作用，bsk 仍校验控制权与文档归属）。
+    const probe = async (expr: string): Promise<string> => {
+      const args = (unverified: boolean): string[] => [
+        "evaluate",
+        expr,
+        "--session",
+        session,
+        "--timeout",
+        `${SETTLE_PROBE_TIMEOUT_MS}ms`,
+        ...(unverified ? ["--unverified"] : []),
+      ];
+      return await runObservation(
+        "wait_for",
+        () => bsk(args(false), signal, SETTLE_PROBE_TIMEOUT_MS + 10_000),
+        signal,
+        () => bsk(args(true), signal, SETTLE_PROBE_TIMEOUT_MS + 10_000),
+      );
+    };
 
     const outcome = await pollUntil<ConditionProbe>({
       timeoutMs: limit,
@@ -1711,9 +2325,28 @@ export function createBskOps(
       sleep,
       now: Date.now,
       // 探针不可解析时返回 null：pollUntil 按「这次没取到」处理，继续轮询到上限。
-      sample: async () => parseProbe(await probe(probeExpr)),
+      sample: async () => {
+        if (onSnapshotProbe()) return await snapshotSample();
+        try {
+          return parseProbe(await probe(probeExpr));
+        } catch (err) {
+          if (err instanceof BskAbortError) throw err;
+          // 权限闸门彻底拒绝（`--unverified` 也没救回来）：这个环境里 evaluate 探针不可用
+          // （`runObservation` 已把结论记进 `evaluateProbeBlocked`）。这一轮立刻改读快照，
+          // 而不是把一次必然的失败交给模型重试。
+          if (textOnly && evaluateProbeBlocked) {
+            debugLog(
+              "[bsk] wait_for：evaluate 探针被观察闸门拒绝，本轮改读快照",
+            );
+            return await snapshotSample();
+          }
+          throw err;
+        }
+      },
       isHit: async (sample) => {
         if (!probeSaysMaybe(cond, sample)) return false;
+        // 快照文本本身就是页面的可见内容，不需要再用 innerText 复核一遍。
+        if (onSnapshotProbe()) return true;
         if (!needsConfirm(cond)) return true;
         // 文本类条件：`textContent` 命中只说明「字在 DOM 里」，还要确认它**看得见**。
         const confirmed = parseConfirm(await probe(confirmExpr));
@@ -1728,14 +2361,26 @@ export function createBskOps(
     // 超时：取一次页面当前可见文本作为证据，并明确劝阻「再等一遍」——
     // 同一个条件等第二遍只会白烧时间，该做的是看清页面现在是什么。
     let excerpt = "";
-    try {
-      const confirmed = parseConfirm(await probe(confirmExpr));
-      excerpt = confirmed?.excerpt ?? "";
-    } catch (err) {
-      if (err instanceof BskAbortError) throw err;
-      debugLog(
-        `[bsk] wait_for 取证失败：${err instanceof Error ? err.message : String(err)}`,
-      );
+    if (onSnapshotProbe()) {
+      // 快照通道下不必再花一次往返：本轮最后一次采样就是页面当前的样子。
+      if (!lastWaitText) {
+        try {
+          await snapshotSample();
+        } catch (err) {
+          if (err instanceof BskAbortError) throw err;
+        }
+      }
+      excerpt = lastWaitText.replace(/\s+/g, " ").trim().slice(0, 160);
+    } else {
+      try {
+        const confirmed = parseConfirm(await probe(confirmExpr));
+        excerpt = confirmed?.excerpt ?? "";
+      } catch (err) {
+        if (err instanceof BskAbortError) throw err;
+        debugLog(
+          `[bsk] wait_for 取证失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
     // 元素类条件补一句末次探测证据：「还在树里但没显形」与「压根没出现过」是两种 bug。
     const evidence =
@@ -1744,6 +2389,9 @@ export function createBskOps(
     return (
       `等待「${what}」：${limit}ms 内未达成${evidence}` +
       (excerpt ? `（页面当前可见文本：「${excerpt}」）` : "") +
+      (onSnapshotProbe()
+        ? "（本轮直接读快照判断：evaluate 探针被 bsk 权限闸门拒绝）"
+        : "") +
       `。不要重复等待同一个条件，先用 snapshot 确认页面当前状态`
     );
   };
@@ -1767,20 +2415,26 @@ export function createBskOps(
     const limit = Math.min(timeoutMs, NATIVE_WAIT_MAX_MS);
     let out: string;
     try {
-      out = await bsk(
-        [
-          "wait-for-element",
-          selector,
-          "--state",
-          state,
-          "--timeout",
-          `${limit}ms`,
-          "--poll-ms",
-          String(NATIVE_WAIT_POLL_MS),
-          ...quiet,
-        ],
+      // 原生等待只观察页面，重放没有副作用：协作上下文断了就 sync 之后重等一次。
+      out = await runObservation(
+        "wait-for-element",
+        () =>
+          bsk(
+            [
+              "wait-for-element",
+              selector,
+              "--state",
+              state,
+              "--timeout",
+              `${limit}ms`,
+              "--poll-ms",
+              String(NATIVE_WAIT_POLL_MS),
+              ...quiet,
+            ],
+            signal,
+            limit + 30_000,
+          ),
         signal,
-        limit + 30_000,
       );
     } catch (err) {
       if (err instanceof BskAbortError) throw err;
@@ -1818,12 +2472,26 @@ export function createBskOps(
    * 与 wait_for / settle 走同一条路径（`bsk evaluate`）。表达式本身是毫秒级的，
    * 那个 timeout 只防页面卡死。
    */
-  const evalExpr = async (expr: string, signal?: AbortSignal): Promise<string> =>
-    await bsk(
-      ["evaluate", expr, "--session", session, "--timeout", `${SETTLE_PROBE_TIMEOUT_MS}ms`],
+  const evalExpr = async (expr: string, signal?: AbortSignal): Promise<string> => {
+    const args = (unverified: boolean): string[] => [
+      "evaluate",
+      expr,
+      "--session",
+      session,
+      "--timeout",
+      `${SETTLE_PROBE_TIMEOUT_MS}ms`,
+      ...(unverified ? ["--unverified"] : []),
+    ];
+    return await runObservation(
+      "evaluate",
+      () => bsk(args(false), signal, SETTLE_PROBE_TIMEOUT_MS + 10_000),
       signal,
-      SETTLE_PROBE_TIMEOUT_MS + 10_000,
+      // 表达式都是纯读（探针、浮层探测、选择标记的写入/清除），被观察闸门拒掉时
+      // 用 --unverified 重放不会造成副作用；这一步就是 select_option 那 10 次
+      // `observation_required` 的解法。
+      () => bsk(args(true), signal, SETTLE_PROBE_TIMEOUT_MS + 10_000),
     );
+  };
 
   /** 清掉上一次留下的选择标记（残留会把这次的真实点击引到别的元素上）。 */
   const clearMarks = async (signal?: AbortSignal): Promise<void> => {
@@ -2107,19 +2775,57 @@ export function createBskOps(
       const sameDocument =
         before !== null && isSameDocumentNavigation(before.href, url);
       const waitTimeout = sameDocument ? SAME_DOCUMENT_WAIT_MS : undefined;
+      const navArgs = (observation: string[]): string[] => [
+        "navigate",
+        url,
+        ...quiet,
+        "--wait-until",
+        "domcontentloaded",
+        ...observation,
+        ...(waitTimeout ? ["--timeout", `${waitTimeout}ms`] : []),
+      ];
       try {
-        const out = await bsk(
-          [
-            "navigate",
-            url,
-            ...quiet,
-            "--wait-until",
-            "domcontentloaded",
-            ...(waitTimeout ? ["--timeout", `${waitTimeout}ms`] : []),
-          ],
-          signal,
-          waitTimeout ? waitTimeout + 30_000 : undefined,
-        );
+        // navigate 没有目标元素，在 bsk 的 target policy 下属于「无目标动作」：必须带一个
+        // **尚未被消耗**的 observation_id（sync 回复顶层的那个），否则每次都被
+        // `observation_required` 拒掉——实测一次运行里 19 次导航失败全卡在这条。
+        // 已知这条路被要求时先补一份：多一次 IPC 往返，换掉「每次导航先失败一次」。
+        if (observationRequired && !pendingObservationId) await resyncCooperation(signal);
+        const observationArg = takeObservation();
+        /** 发一次导航。observation 每次现取：一个 id 只能用一次，重试必须配新的。 */
+        const attempt = (observation: string[]) =>
+          bsk(navArgs(observation), signal, waitTimeout ? waitTimeout + 30_000 : undefined);
+        let out: string;
+        try {
+          out = await attempt(observationArg);
+        } catch (err4) {
+          if (err4 instanceof BskAbortError) throw err4;
+          // 缺 observation：这次动作没有派发，补一份再试一次是安全的。
+          //
+          // 「带了但已被 bsk 判过期」（`The strict observation changed before this action`）
+          // 是同一个拒绝、同一个处置：那次调用同样没到 CDP，而导航到同一地址是幂等的。
+          // 以前只补「完全没带」的那种，带了过期的就直接抛回模型——模型手里没有更新的 id，
+          // 只会拿同一个再发一次，实测一次运行里这样空转 23 次。现在两种情况都现 sync 一份
+          // 新 id 重发一次（`takeObservation` 保证用的是新的那个）。
+          if (isObservationRequiredError(err4)) {
+            debugLog("[bsk] navigate 需要新的 observation_id（target policy），sync 后重试一次");
+            // sync 没成、或者回复里根本没有 observation_id（版本不提供）时不置标记：否则
+            // 之后每次导航都会先白 sync 一趟，把一次失败摊成每次多一次往返。
+            if (!(await resyncCooperation(signal)) || !pendingObservationId) throw err4;
+            observationRequired = true;
+            out = await attempt(takeObservation());
+          } else {
+            // 协作上下文脱节（control_context_invalid / document_changed）：被拒时页面往往
+            // **还在原处**，而「导航到同一个地址」是幂等的——sync 回来重试一次不会造成第二
+            // 次副作用，代价只是可能多加载一次。这与 click 那类不可重放的动作不同，所以这
+            // 里可以直接重试，不必把一个可恢复的失败丢给模型（实测这一类 56ms 就被拒，
+            // 一次 CDP 都没到）。
+            const coop = cooperationReason(err4);
+            if (!coop) throw err4;
+            debugLog(`[bsk] navigate：协作上下文失效（${coop}），sync 后重试一次`);
+            if (!(await resyncCooperation(signal))) throw withRecoveryNote(err4, coop, false);
+            out = await attempt(takeObservation());
+          }
+        }
         // Page.navigate 遵守 HTTP 缓存：响应在 max-age 内时浏览器直接用旧副本、
         // 请求根本不会发出去（实测同 URL 二次 navigate 服务器零请求）——刷新却带
         // max-age=0 强制重验证，于是「agent 打开是旧页面、手动刷新才是新的」。
@@ -2127,26 +2833,50 @@ export function createBskOps(
         // 但不能因此让每个页面都付两次文档加载：先读 Navigation Timing，只有文档确实
         // 来自缓存（或拿不到判断依据）时才 `--hard` 重载；明确走了网络就跳过。
         let timing: ReturnType<typeof parseNavigationTiming> = null;
+        /** 探针自己抛错了（不只是「没数据」）：此时不存在「拿不到判断依据」之外的结论。 */
+        let probeFailed = false;
         try {
           timing = parseNavigationTiming(await evalExpr(NAVIGATION_TIMING_EXPR, signal));
         } catch (err2) {
           if (err2 instanceof BskAbortError) throw err2;
+          probeFailed = true;
+          // 探针失败不是「页面是旧的」，而是「读不到」。此时若按旧行为硬刷新，代价是
+          // 整页换文档：bsk 侧的观察/引用上下文随之失效，后续第一步动作必然
+          // `element_not_visible` / `cooperation_sync_required`——比读到一份缓存页糟得多。
           debugLog(
-            "[bsk] navigate 缓存判定失败，按旧行为硬刷新：" +
+            "[bsk] navigate 缓存判定失败，本次跳过硬刷新：" +
               (err2 instanceof Error ? err2.message : String(err2)),
           );
         }
-        const needReload = shouldHardReload(timing);
+        const needReload = probeFailed ? false : shouldHardReload(timing);
         debugLog(
           `[bsk] navigate 缓存判定：transferSize=${timing?.transferSize ?? "?"}` +
-            ` deliveryType=${timing?.deliveryType || "?"} → ${needReload ? "硬刷新" : "跳过硬刷新"}`,
+            ` deliveryType=${timing?.deliveryType || "?"}` +
+            `${probeFailed ? "（探针失败）" : ""} → ${needReload ? "硬刷新" : "跳过硬刷新"}`,
         );
-        const reloaded = needReload
-          ? await bsk(
-              ["reload", "--hard", ...quiet, "--wait-until", "domcontentloaded"],
-              signal,
-            )
-          : "";
+        let reloaded = "";
+        if (needReload) {
+          const reloadArgs = [
+            "reload",
+            "--hard",
+            ...quiet,
+            "--wait-until",
+            "domcontentloaded",
+          ];
+          try {
+            reloaded = await bsk(reloadArgs, signal);
+          } catch (err3) {
+            if (err3 instanceof BskAbortError) throw err3;
+            const reason = cooperationReason(err3);
+            // 硬刷新被拒不是缓存判定的事，而是协作上下文脱节：sync 回来再试一次。
+            if (!reason) throw err3;
+            debugLog(`[bsk] reload --hard 被拒（${reason}），sync 后重试一次`);
+            await resyncCooperation(signal);
+            reloaded = await bsk(reloadArgs, signal);
+          }
+          // 整页换了文档，本地快照必然作废。
+          markStale();
+        }
         return `已导航到 ${url}\n${out}${reloaded ? `\n${reloaded}` : ""}`;
       } catch (err) {
         // 被中止不是「页面打不开」，别拿诊断层去解释它。
@@ -2176,7 +2906,12 @@ export function createBskOps(
     async click(target: string, signal?: AbortSignal): Promise<string> {
       const landed = checkRef("click", target);
       markStale();
-      const out = await bsk(["click", target, ...quiet], signal);
+      const out = await runAction(
+        "click",
+        target,
+        () => bsk(["click", target, ...quiet], signal),
+        signal,
+      );
       return `已点击 ${target}${landed}\n${out}`;
     },
 
@@ -2187,7 +2922,12 @@ export function createBskOps(
     ): Promise<string> {
       const landed = checkRef("fill", target);
       markStale();
-      const out = await bsk(["fill", target, "--value", value, ...quiet], signal);
+      const out = await runAction(
+        "fill",
+        target,
+        () => bsk(["fill", target, "--value", value, ...quiet], signal),
+        signal,
+      );
       return `已在 ${target} 填入文本${landed}\n${out}`;
     },
 
@@ -2393,7 +3133,12 @@ export function createBskOps(
     async hover(target: string, signal?: AbortSignal): Promise<string> {
       const landed = checkRef("hover", target);
       markStale();
-      const out = await bsk(["hover", target, ...quiet], signal);
+      const out = await runAction(
+        "hover",
+        target,
+        () => bsk(["hover", target, ...quiet], signal),
+        signal,
+      );
       return `已悬停 ${target}${landed}\n${out}`;
     },
 
@@ -2402,7 +3147,12 @@ export function createBskOps(
       // （早期实现用 evaluate + querySelector，遇到 @eN 会静默返回 element-not-found。）
       const landed = checkRef("scroll", target);
       markStale();
-      const out = await bsk(["scroll-to", target, ...quiet], signal);
+      const out = await runAction(
+        "scroll",
+        target,
+        () => bsk(["scroll-to", target, ...quiet], signal),
+        signal,
+      );
       return `已滚动到 ${target}${landed}\n${out}`;
     },
 
@@ -2424,7 +3174,7 @@ export function createBskOps(
         args.push("--hold-ms", String(Math.round(options.holdMs)));
       }
       args.push(...quiet);
-      const out = await bsk(args, signal);
+      const out = await runAction("press", target, () => bsk(args, signal), signal);
       const what = target ? `${key}（先聚焦 ${target}）` : key;
       return `已按键 ${what}${landed}\n${out}`;
     },
@@ -2540,14 +3290,28 @@ export function createBskOps(
       }
       const raw = await bsk(args, signal);
       const meta = parseBskJson<BskGetHtmlJson>(raw);
-      if (!meta || typeof meta.html !== "string") {
-        throw new Error(t("bsk.getHtml.unreadable"));
-      }
-      const bytes = typeof meta.byte_size === "number" ? meta.byte_size : meta.html.length;
+      // 两种模式的回包形状不同：直接读时给 `html`，落盘时**只给** `path`/`written_bytes`
+      // （`cli/get_html.rs` 的 json_reply 有意不回正文）。此前共用「必须有 html」这一条
+      // 判定，于是每次传 out 都报「读不到 HTML」——文件其实已经写好，真因反被这句话吃掉。
+      // 报错里带上 bsk 的原始输出：解析不了时要能当场看出是版本不对还是回包形状变了。
+      const unreadable = (): Error =>
+        new Error(t("bsk.getHtml.unreadable", { detail: clipLine(raw, 200) }));
+      if (!meta) throw unreadable();
+      const bytes =
+        typeof meta.byte_size === "number"
+          ? meta.byte_size
+          : typeof meta.html === "string"
+            ? meta.html.length
+            : (meta.written_bytes ?? 0);
       const summary =
         `tab=${meta.tab_id ?? "?"} bytes=${bytes}` +
         (meta.truncated === true ? " truncated=true" : "");
-      if (outPath) return `已保存页面 HTML：${outPath}（${summary}）${landed}`;
+      if (outPath) {
+        // 落盘模式以 path 为准：写没写成功由 bsk 决定，我们只确认它确实给了位置。
+        if (typeof meta.path !== "string" || !meta.path.trim()) throw unreadable();
+        return `已保存页面 HTML：${meta.path}（${summary}）${landed}`;
+      }
+      if (typeof meta.html !== "string") throw unreadable();
       const note = meta.truncated === true ? t("bsk.getHtml.truncated", { bytes }) : "";
       return `${summary}${landed}\n${meta.html}${note}`;
     },
@@ -2566,6 +3330,12 @@ export function createBskOps(
       // 引用闸门与普通动作同一条规则：拿旧编号点开控件会点到别的地方去。
       const landed = checkRef("select_option", target);
       markStale();
+      // 页面探针不可用时，下面每一步（探浮层、标记选项）都会以 `observation_required` 失败，
+      // 而这不是可重试的错误，重试多少次都一样。直接换通道，别让模型在同一个错上耗轮次。
+      if (evaluateProbeBlocked) {
+        debugLog("[bsk] select_option：evaluate 探针不可用，改走快照定位");
+        return await selectOptionViaSnapshot(target, option, landed, signal);
+      }
       // 上一次的标记若还在，这次的 `bsk click [data-pageqa-pick]` 就会点到那个元素。
       await clearMarks(signal);
 
@@ -2574,7 +3344,28 @@ export function createBskOps(
       // 找选项，读到的自然是隔壁下拉的选项。
       let overlay: OverlayProbe | null = await probeOwnOverlay(target, signal);
       if (!overlay?.hit) {
-        await bsk(["click", target, ...quiet], signal);
+        // 走 runAction 而不是裸 bsk：点开控件这一步最常见的失败正是 `element_not_visible`
+        // （控件在滚动容器外）与 `target_covered`（浮层动画中），两者的处置都在 runAction 里。
+        try {
+          await runAction(
+            "select_option",
+            target,
+            () => bsk(["click", target, ...quiet], signal),
+            signal,
+          );
+        } catch (err) {
+          if (err instanceof BskAbortError) throw err;
+          // 连「点开控件」都点不成（遮挡重试后仍失败 / 上下文反复失效）：改走「点开 →
+          // 读快照 → 按文本点选」这条已经在探针不可用时验证过的通道，而不是把整个
+          // select_option 判失败。现场（pageqa-2026-11-18.log）步骤 8/9 就是这么丢的：
+          // 展开点击被遮挡，模型随后所有选择类动作接连熔断，整条流程往后全乱。
+          debugLog(
+            `[bsk] select_option：展开点击失败，改走快照定位：${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          return await selectOptionViaSnapshot(target, option, landed, signal);
+        }
         // 没有可解析的 aria-controls 时，自己的浮层永远不会命中；直接等通用浮层，
         // 否则每次都要先白等 PICKER_WAIT_MS 才回退（Element Plus 下拉实测每次多 3s）。
         overlay =
@@ -2604,7 +3395,14 @@ export function createBskOps(
         );
       }
 
-      const out = await bsk(["click", PICK_SELECTOR, ...quiet], signal);
+      // 与点开控件同一条路径：这一步也可能撞上 element_not_visible / 协作上下文失效，
+      // 裸调 bsk 会把一次可自动恢复的失败直接抛给模型。
+      const out = await runAction(
+        "select_option",
+        PICK_SELECTOR,
+        () => bsk(["click", PICK_SELECTOR, ...quiet], signal),
+        signal,
+      );
       await clearMarks(signal);
       markStale();
       // 等它收起来再交还控制权：浮层还盖在下面的控件上，不等就去点下一个会点在它身上。
@@ -2646,7 +3444,12 @@ export function createBskOps(
         ? await probeDatePanel(signal)
         : null;
       if (!panel?.hit) {
-        await bsk(["click", target, ...quiet], signal);
+        await runAction(
+          "pick_date",
+          target,
+          () => bsk(["click", target, ...quiet], signal),
+          signal,
+        );
         panel = await waitDatePanel(signal);
       }
       // 没有 `aria-controls` 的组件库：退回「有没有可见面板」，与改造前行为一致。
@@ -3197,11 +4000,22 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
      * 那次动作没成功，说「动作后」会让人以为它成功了。
      */
     header: string = t("bsk.refs.afterAction"),
+    /**
+     * 清单的字符预算：超过就只回一句「元素太多，要编号请自己 snapshot」。
+     *
+     * 只有**自动附带**（见 exec 的 `snapshotAfter: "auto"`）会给预算：模型没点名要清单，
+     * 就不该为了一份几百行的清单挤掉上下文。显式 `showPage: true` 的调用不给预算——
+     * 那是模型明确要的。
+     */
+    maxChars?: number,
   ): Promise<string> => {
     try {
       // `fresh`：动作刚改过页面，缓存的快照在这里必然是过期的。
       const fresh = await ops.snapshot(signal, { fresh: true });
       const slim = slimSnapshot(fresh, { mode: "refs", ...currentSlimOptions() });
+      if (maxChars !== undefined && slim.text.length > maxChars) {
+        return `\n\n【${header}】\n${t("bsk.refs.tooLarge", { chars: slim.text.length })}`;
+      }
       return `\n\n【${header}】\n${slim.text}`;
     } catch (err) {
       if (err instanceof BskAbortError) throw err;
@@ -3211,16 +4025,109 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     }
   };
 
+  /**
+   * 同一动作（工具名 + 入参）的连续失败次数。
+   *
+   * 只为一个目的存在：**打断死循环**。模型面对同一个报错会原样重试——实测一次运行里
+   * 同一个 navigate 连着失败 23 次、同一个 wait_for 连着失败 31 次，白烧 140s 而页面一步
+   * 没动；提示词里那句「同一操作连续两次失败才可判定该步骤失败」只是建议，没有强制力。
+   *
+   * 计数口径：只按该签名自己的成败复位（中间插一次 snapshot / 别的动作不算「换了路径」——
+   * 失败是「就这件事卡住了」，而那正是最容易被别的动作掩盖的情形）。
+   */
+  /**
+   * 「自动附带元素清单」的字符预算（见 exec 的 `snapshotAfter: "auto"`）。
+   *
+   * 为什么值得默认附：实测 21 步的用例调了 97 次 snapshot——每一次都是「刚做完动作，
+   * 要拿新 @eN 才能继续」，一次 snapshot 就是一轮 LLM 往返（~1s 起），97 次占了全程的
+   * 四分之一。而模型本来就要看这份清单，随动作结果一起给，省的是**那一轮往返**，
+   * 不是省 token（清单总量与单独快照相同，还少一条消息）。
+   *
+   * 为什么要有预算：6000 字符大约覆盖 200 多个可交互元素（实测 120 个按钮 ≈ 2900 字符），
+   * 再大的页面（Element Plus 六百多元素的表格页）光是清单就有上万字符，无条件附会把上下文
+   * 挤爆。超过这条线只回一句「自己 snapshot」——与不做这个改动等价，不会更差。
+   */
+  const REFS_AUTO_MAX_CHARS = 6_000;
+
+  const repeatFailures = new Map<string, number>();
+  /** 连续失败到这里就在报错里附一句「别再原样重试」。 */
+  const REPEAT_WARN_AT = 2;
+  /** 连续失败到这里直接拒绝执行，把机会留给「换路径」或「如实判该步骤失败」。 */
+  const REPEAT_STOP_AT = 5;
+
+  /**
+   * 同一动作**连续成功**到这个次数就开始拦。
+   *
+   * 比失败阈值更早（3 vs 5）：重复成功没有辩解空间——同一个工具、同一份入参、页面并没有
+   * 因此往前走，第 4 次不会带来任何新信息。
+   *
+   * 现场（pageqa-2026-11-18.log 第二次运行的前 21 轮）：navigate 同一 URL 成功 5 次、
+   * wait_for 6 次、snapshot 4 次，**全部成功**，于是熔断一次都没触发，52 秒和一整段上下文
+   * 就这么耗在「原地确认页面」上。失败熔断管不了这个，成功重复得单独有闸。
+   */
+  const REPEAT_SUCCESS_LIMIT = 3;
+  /** 同一动作连续成功的计数（签名同上）。 */
+  const repeatSuccesses = new Map<string, number>();
+  /**
+   * 多看几眼页面不算打转：这些工具的重复调用不消耗页面状态，也不代表流程原地踏步。
+   *
+   * 反过来，`wait` 是纯睡眠，重复它没有任何信息量，所以不在这个集合里。
+   */
+  const READONLY_TOOLS: ReadonlySet<string> = new Set([
+    "snapshot",
+    "read",
+    "get_html",
+    "screenshot",
+    "download",
+    "wait_for",
+    "assert_text",
+    "assert_no_console_error",
+    "assert_network",
+    "report_defect",
+  ]);
+
   const exec = async (
     name: string,
     params: Record<string, unknown>,
     fn: (signal?: AbortSignal) => Promise<string>,
     signal?: AbortSignal,
-    options: { snapshotAfter?: boolean } = {},
+    /**
+     * 成功后在结果里附一份「动作后的可交互元素」清单。
+     *
+     * `true` = 显式附带（模型点名 `showPage: true`，或 select_option / pick_date 这种
+     * 必然改掉全部编号的工具），不限长度；`"auto"` = 默认附带，超过 `REFS_AUTO_MAX_CHARS`
+     * 就退化成一句「元素太多，自己 snapshot」。
+     */
+    options: { snapshotAfter?: boolean | "auto" } = {},
   ) => {
     const before = ops.lastSnapshot();
+    /** 熔断签名：工具名 + 入参（入参相同才是「同一个动作」，换了参数属于换路径）。 */
+    const signature = `${name}|${JSON.stringify(params)}`;
+    const failedBefore = repeatFailures.get(signature) ?? 0;
+    // 断言型工具不受熔断限制：它的「失败」是结论（要进报告），不能因为重复就被跳过。
+    if (failedBefore >= REPEAT_STOP_AT && !ASSERTION_TOOLS.has(name)) {
+      // 不调 onExec：这次动作根本没有执行，录进回放脚本会变成「回放时凭空多做一次」。
+      throw new Error(
+        t("bsk.repeatFailure.stop", { action: name, count: failedBefore }),
+      );
+    }
+    // 原地打转：同一个动作已经连续成功这么多次，页面却没有任何推进。拦住它，把这一轮
+    // 还给「看一眼当前页面、推进下一步」，而不是再执行一次已经成功过的动作。
+    const succeededBefore = repeatSuccesses.get(signature) ?? 0;
+    if (
+      succeededBefore >= REPEAT_SUCCESS_LIMIT &&
+      !READONLY_TOOLS.has(name) &&
+      !ASSERTION_TOOLS.has(name)
+    ) {
+      throw new Error(
+        t("bsk.repeatSuccess.stop", { action: name, count: succeededBefore }),
+      );
+    }
     try {
       const text = await fn(signal);
+      // 这个动作这次成了：它自己的失败计数清零（别的动作的计数不受影响）。
+      repeatFailures.delete(signature);
+      repeatSuccesses.set(signature, succeededBefore + 1);
       // 断言型工具的结论（成立与否 + 证据）都落在同一条结构化结果上：报告直接取用，
       // 不去解析工具返回文案的措辞（见 ASSERTION_TOOLS）。
       const assertion = ASSERTION_TOOLS.has(name) ? ops.lastAssert() : null;
@@ -3247,13 +4154,37 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       });
       // 把截图路径告诉模型：它据此知道「现场已经留下来了」，不必再自己调一次 screenshot。
       const shotNote = shot ? t("bsk.screenshot.onFailure", { path: shot }) : "";
+      const wantRefs =
+        options.snapshotAfter === true || options.snapshotAfter === "auto";
       return ok(
-        options.snapshotAfter
-          ? text + shotNote + (await refsAfterAction(signal))
+        wantRefs
+          ? text +
+              shotNote +
+              (await refsAfterAction(
+                signal,
+                undefined,
+                options.snapshotAfter === "auto" ? REFS_AUTO_MAX_CHARS : undefined,
+              ))
           : text + shotNote,
       );
     } catch (err) {
       opts.onExec?.({ name, params, ok: false, lastSnapshot: before });
+      // 中止（用户取消 / 超时）不算这个动作的失败：它没有「结论」，也谈不上重试。
+      const counted = !(err instanceof BskAbortError);
+      const failed = counted ? failedBefore + 1 : failedBefore;
+      if (counted) repeatFailures.set(signature, failed);
+      // 失败说明流程换了方向：成功重复的计数从零开始（下一次成功才算第一下）。
+      repeatSuccesses.delete(signature);
+      // 反复失败时追加一句硬提示：同一条报错下，模型自己不会改变策略。
+      const repeatNote =
+        counted && failed >= REPEAT_WARN_AT
+          ? "\n\n" +
+            t("bsk.repeatFailure.warn", {
+              action: name,
+              count: failed,
+              left: Math.max(1, REPEAT_STOP_AT - failed),
+            })
+          : "";
       // 引用失效是**可自愈**的：模型收到它之后必然要做「重新 snapshot 拿新编号」这件事。
       // 与其让它为此多花一轮 LLM 往返（实测 3 秒起），不如这里顺手把**当前页面**的可交互
       // 元素清单附在报错里——它直接拿新编号重试即可（这一抓也把快照刷新成新鲜的了）。
@@ -3264,14 +4195,25 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
             (await refsAfterAction(
               signal,
               t("bsk.refs.forRetry", { action: name }),
-            )),
+            )) +
+            repeatNote,
         );
       }
       const message = err instanceof Error ? err.message : String(err);
       if (isSelectorMiss(message)) {
         throw new Error(
-          message + "\n\n" + t("bsk.selectorMiss", { action: name }),
+          message + "\n\n" + t("bsk.selectorMiss", { action: name }) + repeatNote,
         );
+      }
+      // 原样抛出同一个实例（带上提示）：类型与 `stderr` 都不能丢，上游还要靠它们分类。
+      if (repeatNote) {
+        if (err instanceof Error) {
+          err.message += repeatNote;
+          const withStderr = err as Error & { stderr?: string };
+          if (typeof withStderr.stderr === "string") withStderr.stderr += repeatNote;
+        } else {
+          throw new Error(message + repeatNote);
+        }
       }
       throw err;
     }
@@ -3393,7 +4335,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     label: "Click",
     description:
       "点击一个元素。可用快照里的 @eN 引用或 CSS 选择器。" +
-      "展开下拉/菜单/弹窗、切换路由这类**会改变页面**的点击，请带上 showPage: true，一次拿到新编号。",
+      "结果里会附带动作**之后**的可交互元素清单（含展开出来的菜单项、弹窗按钮的新编号）——直接用，不要再单独 snapshot。",
     parameters: paramsOf(
       {
         target: { type: "string", description: "@eN 引用或 CSS 选择器" },
@@ -3408,7 +4350,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         { target: p.target, ...(p.showPage ? { showPage: true } : {}) },
         (s) => ops.click(p.target, s),
         signal,
-        { snapshotAfter: p.showPage === true },
+        { snapshotAfter: resolveAutoRefs(p.showPage) },
       );
     },
   };
@@ -3420,7 +4362,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       "在输入框/文本域中填入文本（会先清空原有内容）。" +
       "**只能填真正的文本输入框**：下拉框（el-select）、日期选择器等控件的输入框是只读的，" +
       "填不进去——那两类请分别用 select_option / pick_date。" +
-      "填完之后若需要看校验提示或新出现的元素，带上 showPage: true。",
+      "填完之后结果里会附带当前可交互元素清单（校验提示/联动选项带来的新编号也在里面）。",
     parameters: paramsOf(
       {
         target: { type: "string", description: "@eN 引用或 CSS 选择器" },
@@ -3436,7 +4378,8 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         { target: p.target, value: p.value, ...(p.showPage ? { showPage: true } : {}) },
         (s) => ops.fill(p.target, p.value, s),
         signal,
-        { snapshotAfter: p.showPage === true },
+        // 填值本身不改结构，但会触发校验提示/联动选项——旧编号同样可能失效。
+        { snapshotAfter: resolveAutoRefs(p.showPage) },
       );
     },
   };
@@ -3555,6 +4498,10 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         p.target ? { target: p.target, file: p.file } : { file: p.file },
         (s) => ops.upload(p.target, p.file, s),
         signal,
+        {
+          // 上传成功往往伴随表单重建（出现文件名、校验通过），旧编号一并失效。
+          snapshotAfter: "auto",
+        },
       );
     },
   };
@@ -3619,7 +4566,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
     label: "Hover",
     description:
       "悬停在一个元素上，用于触发悬停菜单/提示。" +
-      "悬停型下拉（如 el-dropdown）展开后带上 showPage: true，一次拿到菜单项的新编号。",
+      "悬停型下拉（如 el-dropdown）展开后的菜单项编号会一并在结果里给出，直接用即可。",
     parameters: paramsOf(
       {
         target: { type: "string", description: "@eN 引用或 CSS 选择器" },
@@ -3634,7 +4581,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         { target: p.target, ...(p.showPage ? { showPage: true } : {}) },
         (s) => ops.hover(p.target, s),
         signal,
-        { snapshotAfter: p.showPage === true },
+        { snapshotAfter: resolveAutoRefs(p.showPage) },
       );
     },
   };
@@ -3672,7 +4619,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       "不传就按在页面当前焦点上（通常是上一步 fill 过的输入框）。" +
       "modifiers 可选：逗号分隔的修饰键（如 \"Ctrl,Shift\"）；键名里已写出的组合键不必重复。" +
       "holdMs 可选：按下与松开之间保持的毫秒数，用于测试长按。" +
-      "showPage: true 时在结果里附一份动作后的可交互元素清单。",
+      "结果里会附带动作后的可交互元素清单。",
     parameters: paramsOf(
       {
         key: {
@@ -3712,7 +4659,7 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         { key: p.key, ...options, ...(p.showPage ? { showPage: true } : {}) },
         (s) => ops.press(p.key, options, s),
         signal,
-        { snapshotAfter: p.showPage === true },
+        { snapshotAfter: resolveAutoRefs(p.showPage) },
       );
     },
   };
@@ -3751,7 +4698,10 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         ...(typeof p.deltaX === "number" ? { deltaX: p.deltaX } : {}),
         ...(p.modifiers ? { modifiers: p.modifiers } : {}),
       };
-      return exec("wheel", { ...options }, (s) => ops.wheel(options, s), signal);
+      return exec("wheel", { ...options }, (s) => ops.wheel(options, s), signal, {
+        // 滚动的意义就是「加载出更多东西」：新内容必然带新编号。
+        snapshotAfter: "auto",
+      });
     },
   };
 
@@ -3907,8 +4857,8 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
       "菜单与导航里的字到处都是，不能当地标）。" +
       "记下的是**条件本身**：回放会重新等同一个条件，页面没到那个状态时会如实报「等它没出现」。" +
       "典型用法：等列表刷新出现新行（text/selector）、等弹窗出现（selector）、等遮罩消失（gone）。" +
-      "showPage: true 时等到之后顺带附一份可交互元素清单——「navigate 后先 wait_for 地标」" +
-      "这条最常用的开头，用它可以省掉紧接着的那次 snapshot。",
+      "等到之后结果里会顺带附一份可交互元素清单——「navigate 后先 wait_for 地标」" +
+      "这条最常用的开头，用它可以直接拿新编号，省掉紧接着的那次 snapshot。",
     parameters: paramsOf(
       {
         text: {
@@ -3922,7 +4872,9 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
           type: "string",
           description:
             "等到该 CSS 选择器达到 state 描述的状态（默认 visible）。注意只看**第一个**匹配元素：" +
-            "宽泛的选择器（如 .el-loading-mask）可能命中另一个已隐藏的遮罩，请带上区域限定（如 #orders-panel .el-loading-mask）",
+            "宽泛的选择器（如 .el-loading-mask）可能命中另一个已隐藏的遮罩，请带上区域限定（如 #orders-panel .el-loading-mask）。" +
+            "只接受**纯 CSS**（Chrome 原生 querySelector）：Playwright 的 :has-text() / :visible、text=、XPath 一律不认，" +
+            "要按页面上的文字等待请改用 text 条件",
         },
         gone: {
           type: "string",
@@ -3991,7 +4943,9 @@ export function createBskTools(opts: BskToolOptions): AgentTool[] {
         },
         (s) => ops.waitFor(cond, p.timeoutMs, s),
         signal,
-        { snapshotAfter: p.showPage === true },
+        // 「navigate 后先等一个地标」是每步开头最常见的两步里的第二步：等完之后模型
+        // 必然要拿新编号，所以这里也按默认附带（超预算自动退化为提示）。
+        { snapshotAfter: resolveAutoRefs(p.showPage) },
       );
     },
   };

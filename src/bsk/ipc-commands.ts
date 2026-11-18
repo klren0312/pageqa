@@ -654,12 +654,70 @@ export function withCliTrailingNewline(text: string): string {
 }
 
 /**
- * ErrorCode → CLI 的 `error:` / `hint:` 文案。
+ * `data.reason` → CLI 的 `error:` / `hint:` 文案（优先于 ErrorCode 级别的默认说法）。
  *
- * 抄的是 BrowserSkill 的 `crates/bsk-cli/src/cli/render_error.rs`，但**只抄这里面会出现的码**：
- * 这张表是给人/模型读的说明文本，不是判定依据（判定依据是 `code`），所以少一条只会让措辞退化成
- * daemon 原话，不会让结论出错。reason 级的细分覆盖（fill_failed 等）刻意不做——那些细节
- * 由 `details:` 一行里的 daemon 原话承担，避免把 bsk 的一大张表复制进这里慢慢漂移。
+ * 为什么必须按 reason 分：daemon 把好几种完全不同的拒绝都归在 `permission_denied` 下，
+ * 只有 `data.reason` 才说明**是哪一种**。BrowserSkill 的 `render_error.rs` 也是按
+ * `(code, reason)` 二元组分流的，并且有单测钉住「`element_not_visible` 的文案里
+ * 不能出现 sandbox」。这里只按 code 查表就会把「元素没有可见几何」说成「Agent Window
+ * 沙箱拒绝」——模型照着 hint 去 borrow 标签页，方向从第一步就错了。
+ */
+const REASON_COPY: Record<string, { summary: string; hint?: string }> = {
+  element_not_visible: {
+    summary: "target element has no visible geometry",
+    hint: "rerun snapshot and choose a visible child ref, or wait/scroll/reload before retrying",
+  },
+  agent_window_scope: {
+    summary: "operation denied by the Agent Window sandbox",
+    hint: "tabs outside an Agent Window must first be borrowed via `bsk tab borrow <tab-id> --session <id>`",
+  },
+  cooperation_sync_required: {
+    summary: "shared page control or observation changed",
+    hint: "use `bsk cooperate wait --session <id>`, then `bsk cooperate sync --session <id>`, and re-observe before acting again",
+  },
+  control_context_invalid: {
+    summary: "the page changed under the action; the reference context expired",
+    hint: "synchronize the session, then re-snapshot before retrying",
+  },
+  control_authority_required: {
+    summary: "the agent does not currently have control of this tab",
+    hint: "wait for the user to hand control back and re-inspect; do not replay the original action",
+  },
+  human_intervention: {
+    summary: "the user has taken control of this tab",
+    hint: "wait until control returns, then synchronize before another action",
+  },
+  control_held: {
+    summary: "the user has taken control of this tab",
+    hint: "wait until control returns, then synchronize before another action",
+  },
+  user_moved_tab: {
+    summary: "the tab was moved by the user",
+    hint: "re-read the tab list and retarget the action",
+  },
+  frame_unobservable: {
+    summary: "page interaction coverage is unavailable",
+    hint: "reload the tab once; if it persists, fall back to read-only commands such as `bsk get-html`",
+  },
+  page_load_failed: {
+    summary: "the main page failed to load",
+    hint: "check the URL and the server, then navigate again",
+  },
+  ref_not_found: {
+    summary: "the referenced element no longer exists",
+    hint: "rerun snapshot to get fresh refs",
+  },
+  selector_not_found: {
+    summary: "the selector matched nothing",
+    hint: "check the selector, or wait for the region to render first",
+  },
+};
+
+/**
+ * ErrorCode → CLI 的 `error:` / `hint:` 文案（`data.reason` 命中时由 REASON_COPY 覆盖）。
+ *
+ * 抄的是 BrowserSkill 的 `crates/bsk-cli/src/cli/render_error.rs`：这张表是给人/模型读的
+ * 说明文本，不是判定依据（判定依据是 `code`），少一条只会让措辞退化成 daemon 原话。
  */
 const ERROR_COPY: Record<string, { summary: string; hint?: string }> = {
   unknown_method: {
@@ -678,9 +736,11 @@ const ERROR_COPY: Record<string, { summary: string; hint?: string }> = {
     summary: "requested resource does not exist",
     hint: "the session, tab, or browser may have stopped; run `bsk session list` / `bsk browsers` to see current state",
   },
+  // 基础文案保持中性：sandbox 只对应 `agent_window_scope` 这一种 reason，
+  // 写成默认说法会把 `element_not_visible` 等其它 reason 一起带偏（见 REASON_COPY）。
   permission_denied: {
-    summary: "operation denied by the Agent Window sandbox",
-    hint: "tabs outside an Agent Window must first be borrowed via `bsk tab borrow <tab-id> --session <id>`",
+    summary: "the operation is not permitted on the current target",
+    hint: "check the tab belongs to this session's Agent Window (`bsk tab list --scope agent`); a user tab must first be borrowed via `bsk tab borrow <tab-id> --session <id>`",
   },
   timeout: {
     summary: "operation timed out",
@@ -722,14 +782,41 @@ const ERROR_COPY: Record<string, { summary: string; hint?: string }> = {
  * 三行的顺序与措辞是刻意的：`navigate-diagnosis` 靠 `details:` 取真实原因，
  * `bskErrorDetail` 靠剥离包装噪声后取整段——它们读的就是这段文本。
  */
-export function renderCliErrorText(code: string, message: string, hint?: string): string {
-  const copy = ERROR_COPY[code];
-  const summary = copy ? copy.summary : message;
+export function renderCliErrorText(
+  code: string,
+  message: string,
+  data?: unknown,
+  hint?: string,
+): string {
+  const reason = bskErrorReason(data);
+  const reasonCopy = reason ? REASON_COPY[reason] : undefined;
+  const copy = reasonCopy ?? ERROR_COPY[code];
+  // reason 有值但表里没有：不要让它静默退化成 code 级的通用说法。实测一次 11ms 被拒的
+  // `wait_for` 只留下一句「去 borrow 标签页」，而到底是哪一种拒绝无从判断（表里每一条
+  // reason 的 hint 都不同，方向可能完全相反）。把 reason 原样带出来，下次日志自己会说明。
+  const unlisted = reason && !reasonCopy ? `（reason: ${reason}）` : "";
+  const summary = (copy ? copy.summary : message) + unlisted;
   const lines = [`error: ${summary}`];
   const hintText = hint ?? copy?.hint;
   if (hintText) lines.push(`hint: ${hintText}`);
   if (message && message !== summary) lines.push(`details: ${message}`);
   return lines.join("\n");
+}
+
+/** 从 daemon 结构化错误的 `data` 里取 `reason`；没有就是 undefined。 */
+export function bskErrorReason(data: unknown): string | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const reason = (data as { reason?: unknown }).reason;
+  return typeof reason === "string" && reason.length > 0 ? reason : undefined;
+}
+
+/**
+ * 从任意 error 上取 `reason`：IPC 路径挂在 `bskData` 上（见 ipcErrorToCliError）；
+ * CLI 子进程路径拿不到结构化数据，返回 undefined——调用方要按「原因未知」处理。
+ */
+export function errorReason(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  return bskErrorReason((err as { bskData?: unknown }).bskData);
 }
 
 /**
@@ -740,7 +827,9 @@ export function renderCliErrorText(code: string, message: string, hint?: string)
  * 所以没有任何消费方会依赖它们）。
  */
 export function ipcErrorToCliError(err: BskIpcRpcError): Error {
-  const text = renderCliErrorText(err.code, err.message);
+  // `data.reason` 必须传下去：同一个 `permission_denied` 下，`element_not_visible`
+  // 与 `agent_window_scope` 的处置方式完全相反（前者重新快照，后者才需要 borrow）。
+  const text = renderCliErrorText(err.code, err.message, err.data);
   const out = new Error(text) as Error & {
     stderr?: string;
     stdout?: string;

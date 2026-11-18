@@ -5,23 +5,30 @@ import {
   isConsoleOffender,
   literalAssertion,
   parseStatusSpec,
+  resolveAutoRefs,
   resolveShowPage,
   statusMatches,
 } from "../../dist/bsk/tools.js";
 import { getLocale, setLocale, t } from "../../dist/shared/i18n.js";
 
 /**
- * `select_option` / `pick_date` 的 `showPage` **默认开**（click/fill/hover 则默认关）。
+ * `showPage` / 自动清单的默认值。
  *
- * 这是「每个选择动作白付一轮失败重试 + 一次全量快照」那个问题的开关：选择类操作必然
- * 改动页面，旧 `@eN` 随即失效；默认不给清单，模型就只能走「引用被拒 → 重新 snapshot → 重试」。
- * 默认值很容易在某次改动里被顺手翻回去，所以在这里钉住。
+ * 这是「每个动作白付一轮 LLM」那个问题的开关：动作之后旧 `@eN` 立即失效，默认不给清单，
+ * 模型就只能走「动作 → 一轮 LLM → snapshot → 一轮 LLM」（实测 21 步用例单独调了 97 次
+ * snapshot）。默认值很容易在某次改动里被顺手翻回去，所以在这里钉住。
  */
-describe("选择类工具的 showPage 默认值", () => {
-  test("不给就是开，只有显式 false 才关", () => {
+describe("动作后附清单的默认值", () => {
+  test("select_option / pick_date：不给就是开，只有显式 false 才关", () => {
     assert.equal(resolveShowPage(undefined), true);
     assert.equal(resolveShowPage(true), true);
     assert.equal(resolveShowPage(false), false);
+  });
+
+  test("click / fill / hover / press / wheel：默认 auto（带预算），false 才不附", () => {
+    assert.equal(resolveAutoRefs(undefined), "auto");
+    assert.equal(resolveAutoRefs(true), true, "显式要清单时不设预算");
+    assert.equal(resolveAutoRefs(false), false);
   });
 });
 

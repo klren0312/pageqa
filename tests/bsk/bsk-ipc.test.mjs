@@ -540,16 +540,59 @@ describe("错误文本与 CLI 对齐", () => {
     assert.doesNotMatch(text, /^details:/m);
   });
 
+  test("reason 有值但表里没有：把它带进文案，不静默退化成通用说法", () => {
+    // 现场一次 11ms 被拒的 wait_for 只剩「去 borrow 标签页」——表里每条 reason 的 hint
+    // 方向都不同，退化成通用文案等于把可诊断的信息丢掉。
+    const text = renderCliErrorText("permission_denied", "denied for a new reason", {
+      reason: "some_new_reason",
+    });
+    assert.match(
+      text,
+      /^error: the operation is not permitted on the current target（reason: some_new_reason）$/m,
+    );
+    assert.match(text, /^details: denied for a new reason$/m);
+  });
+
   test("RPC 错误 → 与 CLI 失败同形（stderr 文本 + stdout 空）", () => {
     const err = ipcErrorToCliError(
       new BskIpcRpcError("permission_denied", "element not visible (no content quads)", {
         reason: "element_not_visible",
       }),
     );
-    assert.match(err.stderr, /^error: operation denied by the Agent Window sandbox$/m);
+    // reason 必须盖过 code：`permission_denied` 下只有 `agent_window_scope` 才是沙箱，
+    // `element_not_visible` 的处置是「重新快照/滚动」，说成沙箱会把模型引向 borrow 标签页。
+    assert.match(err.stderr, /^error: target element has no visible geometry$/m);
+    assert.match(err.stderr, /^hint: rerun snapshot/m);
+    assert.doesNotMatch(err.stderr, /sandbox/);
     assert.match(err.stderr, /^details: element not visible/m);
     assert.equal(err.stdout, "");
     assert.equal(err.bskCode, "permission_denied");
+  });
+
+  test("同一个 permission_denied，agent_window_scope 才说沙箱与 borrow", () => {
+    const err = ipcErrorToCliError(
+      new BskIpcRpcError("permission_denied", "tab outside agent window", {
+        reason: "agent_window_scope",
+      }),
+    );
+    assert.match(err.stderr, /^error: operation denied by the Agent Window sandbox$/m);
+    assert.match(err.stderr, /^hint: .*bsk tab borrow/m);
+  });
+
+  test("缺 reason 时用中性文案，不硬说沙箱", () => {
+    const err = ipcErrorToCliError(new BskIpcRpcError("permission_denied", "denied"));
+    assert.match(err.stderr, /^error: the operation is not permitted on the current target$/m);
+    assert.doesNotMatch(err.stderr, /^error: operation denied by the Agent Window sandbox$/m);
+  });
+
+  test("协作冲突给出 wait + sync 的处置，而不是让模型重试同一动作", () => {
+    const err = ipcErrorToCliError(
+      new BskIpcRpcError("permission_denied", "context expired", {
+        reason: "cooperation_sync_required",
+      }),
+    );
+    assert.match(err.stderr, /^error: shared page control or observation changed$/m);
+    assert.match(err.stderr, /^hint: .*cooperate wait.*cooperate sync/m);
   });
 
   test("超时失败明确劝阻重发（动作可能已生效）", () => {

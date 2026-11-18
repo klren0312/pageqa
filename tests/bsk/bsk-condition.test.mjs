@@ -7,6 +7,7 @@ import {
   conditionState,
   describeCondition,
   describeProbe,
+  describeSelectorProblem,
   describeState,
   ELEMENT_STATES,
   isElementState,
@@ -385,5 +386,47 @@ describe("pollUntil（注入时钟的时间边界）", () => {
     });
     assert.equal(out.hit, true);
     assert.equal(out.polls, 2);
+  });
+});
+
+// 这层校验只做一件事：把「Chrome 一定不认」的写法在本地拦下来。
+// 两个方向都要钉——放行一条非法写法，它就变成 CDP 的 `DOM Error while querying`，
+// 被兜底成 cdp_failed 并劝人 reload（实测现场就是这么烧掉一轮的）；误杀一条合法
+// 选择器，正常用例直接被挡在门外，而且用户没有绕过的手段。
+describe("describeSelectorProblem：只拦确定的非 CSS 写法", () => {
+  test("Playwright 的 :has-text() 被拦下（实测报错的正是这一条）", () => {
+    const why = describeSelectorProblem('div:has-text("工单来源")');
+    assert.ok(why);
+    assert.match(why, /has-text/);
+  });
+
+  test("原生 :has() 与 :not() 必须放行（它们是真 CSS）", () => {
+    assert.equal(describeSelectorProblem("div:has(> span)"), null);
+    assert.equal(describeSelectorProblem("li:not(.active)"), null);
+    assert.equal(describeSelectorProblem(".el-tabs__nav"), null);
+    assert.equal(describeSelectorProblem("#app > .layout[data-x=':has']"), null);
+  });
+
+  test("其它 Playwright / jQuery 专有写法逐个拦下", () => {
+    for (const bad of [
+      "text=工单来源",
+      "xpath=//div[@id='x']",
+      "//div[@id='x']",
+      "div >> span",
+      "li:visible",
+      "li:hidden",
+      "div:text('x')",
+      "div:text-is('x')",
+      "li:nth-match(2)",
+      "div:contains('x')",
+    ]) {
+      assert.ok(describeSelectorProblem(bad), `应当拦下：${bad}`);
+    }
+  });
+
+  test("大小写不敏感；空串与空白一律放过", () => {
+    assert.ok(describeSelectorProblem('DIV:HAS-TEXT("x")'));
+    assert.equal(describeSelectorProblem(""), null);
+    assert.equal(describeSelectorProblem("   "), null);
   });
 });

@@ -95,6 +95,39 @@ export function conditionState(cond: WaitCondition): ElementState | null {
   return null;
 }
 
+/**
+ * 形似 CSS、Chrome 其实不认的写法（Playwright / jQuery 专有）给一句原因，认不出返回 null。
+ *
+ * 为什么要在本地拦：这类写法一路走到 CDP 才炸，报的是 `-32000 DOM Error while querying`，
+ * 被兜底成 `cdp_failed` 并附一句「reload 标签页」——一个用法错误被伪装成环境故障，模型
+ * 于是反复重载页面（实测一次运行里 `div:has-text("…")` 就吃掉了整整一轮工具调用）。
+ * 在这里当场说清楚，失败不消耗浏览器往返，也不会被录进回放脚本。
+ *
+ * 只列**确定**不被接受的写法：`:has(` 这类原生 CSS 必须放过。宁可漏判一条怪写法，
+ * 也不能把一个合法选择器判死——那会把正常用例拦在门外。
+ */
+export function describeSelectorProblem(selector: string): string | null {
+  const s = selector.trim();
+  if (!s) return null;
+  // Playwright 的前缀语法：`text=Foo` / `xpath=//div` 不是 CSS。
+  if (/^text\s*=/i.test(s)) return "Playwright 的 `text=` 前缀";
+  if (/^xpath\s*=/i.test(s)) return "Playwright 的 `xpath=` 前缀";
+  // XPath 与 Playwright 的组合符，同样喂不进 querySelector。
+  if (s.startsWith("//") || s.startsWith("(//")) return "XPath 表达式";
+  if (s.includes(">>")) return "Playwright 的 `>>` 组合写法";
+  // 伪类：先长后短，避免 `:has-text(` 被更泛的模式先吃掉。
+  if (/:has-text\(/i.test(s)) return "Playwright 的 `:has-text(...)` 伪类";
+  if (/:text-is\(/i.test(s)) return "Playwright 的 `:text-is(...)` 伪类";
+  if (/:text\(/i.test(s)) return "Playwright 的 `:text(...)` 伪类";
+  if (/:nth-match\(/i.test(s)) return "Playwright 的 `:nth-match(...)` 伪类";
+  if (/:(above|below|left-of|right-of|near)\(/i.test(s)) return "Playwright 的相对位置伪类";
+  if (/:contains\(/i.test(s)) return "jQuery 的 `:contains(...)` 伪类";
+  // 可见性是最容易被误写成伪类的一个：bsk 用 `state` 表达，不用选择器。
+  if (/:visible\b/i.test(s)) return "Playwright 的 `:visible` 伪类";
+  if (/:hidden\b/i.test(s)) return "Playwright 的 `:hidden` 伪类";
+  return null;
+}
+
 /** 状态的中文说法（进日志、轨迹与报告）。 */
 export function describeState(state: ElementState): string {
   switch (state) {
@@ -317,6 +350,25 @@ export function describeProbe(cond: WaitCondition, probe: ConditionProbe): strin
 /** 文本条件的最终判定需要复核；选择器类条件探针说了算。 */
 export function needsConfirm(cond: WaitCondition): boolean {
   return Boolean(cond.text);
+}
+
+/**
+ * 页面文本里是否出现 `want`——与 `buildProbeExpression` 里的三态匹配逐字一致：
+ * 原文命中 / 归一化空白后命中 / 去掉全部空白后命中。
+ *
+ * 单拎出来的理由不是复用，而是**这条路必须和探针给同一个答案**：当探针（`bsk evaluate`）
+ * 被权限闸门拒掉、只能用快照文本继续等时，两种读法对同一页面必须同结论，否则会出现
+ * 「同一个条件，探针超时、快照命中」这种查不出来的差异。
+ */
+export function textHit(haystack: string, want: string): boolean {
+  if (!want) return false;
+  if (haystack.indexOf(want) !== -1) return true;
+  const flat = haystack.replace(/\s+/g, " ");
+  const wantFlat = want.replace(/\s+/g, " ").trim();
+  if (wantFlat && flat.indexOf(wantFlat) !== -1) return true;
+  const squash = haystack.replace(/\s+/g, "");
+  const wantSquash = want.replace(/\s+/g, "");
+  return wantSquash.length > 0 && squash.indexOf(wantSquash) !== -1;
 }
 
 /**
