@@ -94,6 +94,25 @@ describe("renderHtml", () => {
     assert.ok(html.includes("用户中止"));
   });
 
+  test("套件视图也写出每个场景的取消原因（没跑 ≠ 失败）", () => {
+    const html = renderHtml(
+      base({
+        scenarios: [
+          {
+            name: "C 支付",
+            status: "cancelled",
+            steps: [],
+            trace: [],
+            assertions: [],
+            cancelReason: "模型端点不可用、运行已停止，本场景没有派发",
+          },
+        ],
+      }),
+    );
+    assert.ok(html.includes("C 支付"));
+    assert.ok(html.includes("模型端点不可用"));
+  });
+
   test("场景名 HTML 转义，不产生可执行标签", () => {
     const html = renderHtml(
       base({

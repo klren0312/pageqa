@@ -1736,6 +1736,7 @@ async function replayScenario(
       steps: scenario.caseSteps,
       trace,
       assertions,
+      ...(report.cancelReason ? { cancelReason: report.cancelReason } : {}),
     },
   };
 }

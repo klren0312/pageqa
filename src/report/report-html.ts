@@ -170,6 +170,12 @@ function scenarioSection(sc: ScenarioDetail, index: number, total: number): stri
         : "") +
       `</h2>`,
   );
+  // 未派发/被中止的场景与「跑完但没断言」在 HTML 里长得一模一样：不写出原因，
+  // 16 个「已取消」就会被当成 16 个失败。文本报告与单场景视图都有这段，
+  // 只有套件视图漏了（见 singleSection）。
+  if (sc.cancelReason) {
+    parts.push(`<p>${escapeHtml(t("report.cancelled", { reason: sc.cancelReason }))}</p>`);
+  }
   parts.push(stepsList(sc.steps));
   parts.push(assertionsTable(sc.assertions));
   if (sc.skipped?.length) {

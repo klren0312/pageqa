@@ -437,7 +437,11 @@ export async function runSuiteInChildren(
       if (failure) {
         return { name: sc.name, report: failedMember(sc, failure), usage: emptyUsage() };
       }
-      return { name: sc.name, report: cancelledMember(sc), usage: emptyUsage() };
+      return {
+        name: sc.name,
+        report: cancelledMember(sc, fatal?.kind),
+        usage: emptyUsage(),
+      };
     });
 
     const summary = summarizeSuite(members);
@@ -889,11 +893,19 @@ function reasonSummary(failure: {
 /**
  * 被联带取消的场景：既不是通过也不是失败，不计入退出码（ADR-0002 决策五）。
  * 它必须被记成「已取消」而不是「失败」——环境坏了不是被测页面挂了。
+ *
+ * 原因必须分开写：用户按 Esc、模型端点挂掉、bsk/浏览器不可用，在报告里都是
+ * 「已取消 + 无断言」，但用户要做的事完全不同（重跑 / 换模型 / 查环境）。
  */
-function cancelledMember(sc: Scenario): TestReport {
+function cancelledMember(
+  sc: Scenario,
+  dueTo?: "model" | "infrastructure",
+): TestReport {
+  const key =
+    dueTo === "model" ? "report.cancelModelGone" : "report.cancelEnvGone";
   return {
     status: "cancelled",
-    cancelReason: t("report.cancelEnvGone"),
+    cancelReason: t(key),
     assertions: [],
     transcript: "",
     steps: numberSteps(sc.body).steps,

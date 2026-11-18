@@ -214,7 +214,7 @@ describe("未恢复的工具失败不能给 PASS", () => {
     assert.equal(r.status, "pass");
   });
 
-  test("只保留最后一次仍失败的工具；其它工具成功不能替它翻案", () => {
+  test("只保留最后一次仍失败的工具；此前的成功不能替它翻案", () => {
     const failures = unrecoveredToolFailures(
       [
         "[tool-error] click：boom",
@@ -243,6 +243,38 @@ describe("未恢复的工具失败不能给 PASS", () => {
         ].join("\n"),
       ),
       [],
+    );
+  });
+
+  // 现场（pageqa-report 2026-11-18 17:35）：select_option 因 evaluate 探针被权限闸门拒掉而
+  // 必挂，模型改用「click 展开 → snapshot → click 选项」做完，press 也改用 click 提交，
+  // 22 步跑满、断言全过、建单成功。旧口径只认同名工具恢复 → 误判 FAIL + 两轮无效补做。
+  test("失败之后出现动作类工具的成功，视为已被另一条路径覆盖", () => {
+    const failures = unrecoveredToolFailures(
+      [
+        "[tool-error] select_option：reason: observation_required",
+        "[tool-ok] fill",
+        "[tool-ok] click",
+        "[tool-error] press：the page changed under the action",
+        "[tool-ok] click",
+        "[tool-ok] assert_text",
+      ].join("\n"),
+    );
+    assert.deepEqual(failures, []);
+  });
+
+  test("失败之后只有读类工具成功，不算被替代", () => {
+    const failures = unrecoveredToolFailures(
+      [
+        "[tool-error] select_option：reason: observation_required",
+        "[tool-ok] snapshot",
+        "[tool-ok] assert_text",
+      ].join("\n"),
+    );
+    assert.deepEqual(
+      failures.map((f) => f.tool),
+      ["select_option"],
+      "snapshot / assert_text 只是读，不能证明页面被改对了",
     );
   });
 });

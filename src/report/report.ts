@@ -116,6 +116,13 @@ export interface ScenarioDetail {
   durationMs?: number;
   /** 场景摘要（成员报告有才写）。 */
   summary?: string;
+  /**
+   * 被中止/未派发时的说明（成员报告有才写）。
+   *
+   * 渲染层必须把它显示出来：没有它，「未派发的 16 个场景」和「跑完但没断言的 16 个
+   * 场景」在 HTML 里完全一样，用户会把「没跑」读成「失败」。
+   */
+  cancelReason?: string;
   /** 异常终止的归因（成员报告有才写）；断言不成立时没有这个字段。 */
   reason?: ScenarioFailureReason;
   /** 回放中因「元素未找到」被跳过的步骤（非空才写）。 */
@@ -659,39 +666,78 @@ function isPickerShortcutMiss(tool: string, reason: string): boolean {
 }
 
 /**
- * 找出「最后一次调用仍是失败」的工具。
+ * 「改页面」的工具：它们成功说明流程**以另一条路径**继续了。
+ *
+ * snapshot / read / assert_text / screenshot 只是读，不能当作替代证据——那恰好是
+ * 「读了一眼没变的旧页面」这种假阳性的来源。导航也算动作：换页之后旧失败自然作废。
+ */
+const ACTION_TOOLS = new Set([
+  "click",
+  "fill",
+  "upload",
+  "select_option",
+  "pick_date",
+  "press",
+  "navigate",
+  "hover",
+  "scroll",
+  "scroll_to",
+  "type",
+  "drag",
+  "check",
+  "uncheck",
+]);
+
+/**
+ * 找出「最后一次调用仍是失败、且流程没有从别的路走通」的工具。
  *
  * 工具失败是「这个操作没走成」的确定性证据：同名工具后来成功即视为已重试恢复；
  * 只看最后一次，避免把「失败 → 重试成功」的正常过程误判成失败。
  * 选择类工具的「快捷路径不适用」是已知的回退信号，不计入失败。
  *
- * 报告不能只数断言：实测一次筛选用例的 select_option 连续 6 次、click 1 次全部
- * CDP 失败，页面仍是未筛选的旧数据，但两条文本断言照样命中旧内容，报告给出了 PASS。
+ * **替代路径也算恢复**（现场 pageqa-report 2026-11-18 17:35）：`select_option` 在
+ * evaluate 探针被权限闸门拒掉时必然报 `observation_required`，模型改用
+ * 「click 展开 → snapshot → click 选项」把它做了，`press` 失败后改用 click 提交，
+ * 22 步全跑完、4 条断言全过、建单成功——但旧口径只认**同名工具**恢复，于是这条用例
+ * 被判 FAIL，还触发两轮「补做」，第二轮模型回头重跑了第 9 步的校验断言（弹窗此时已关闭），
+ * 制造出一条真的假失败（语义匹配度 19%）。
+ *
+ * 所以失败之后只要出现过**动作类**工具的成功（`ACTION_TOOLS`），就认为这次失败已被
+ * 另一条路径覆盖：页面确实动了，后续断言不是在旧页面上读的。反过来，那个反例
+ * （select_option×6 + click 全部 CDP 失败）依然会被抓住——失败之后再没有任何动作成功。
  */
 export function unrecoveredToolFailures(
   transcript: string,
 ): UnrecoveredToolFailure[] {
-  const last = new Map<string, UnrecoveredToolFailure | null>();
-  for (const raw of transcript.split(/\r?\n/)) {
-    const m = TOOL_OUTCOME_LINE.exec(raw.trim());
+  const lines = transcript.split(/\r?\n/);
+  /** 动作类成功行的行号（升序），用于判断失败之后的流程去向。 */
+  const actionOkLines: number[] = [];
+  const last = new Map<
+    string,
+    { failure: UnrecoveredToolFailure | null; at: number }
+  >();
+  for (let at = 0; at < lines.length; at += 1) {
+    const m = TOOL_OUTCOME_LINE.exec(lines[at].trim());
     if (!m) continue;
     const [, status, tool, reason] = m;
     if (status === "error" && isPickerShortcutMiss(tool, reason ?? "")) {
       // 快捷路径不适用：模型接下来应走通用路径。不要用它覆盖更早的硬失败
       // （硬失败仍需同名工具成功才算恢复）。
-      if (!last.has(tool)) last.set(tool, null);
+      if (!last.has(tool)) last.set(tool, { failure: null, at });
       continue;
     }
     last.set(
       tool,
       status === "error"
-        ? { tool, ...(reason ? { reason } : {}) }
-        : null,
+        ? { failure: { tool, ...(reason ? { reason } : {}) }, at }
+        : { failure: null, at },
     );
+    if (status === "ok" && ACTION_TOOLS.has(tool)) actionOkLines.push(at);
   }
-  return [...last.values()].filter(
-    (f): f is UnrecoveredToolFailure => f !== null,
-  );
+  return [...last.values()]
+    .filter((e) => e.failure !== null)
+    .filter((e) => !actionOkLines.some((ok) => ok > e.at))
+    .map((e) => e.failure as UnrecoveredToolFailure);
 }
 
 /** 轨迹末尾若干条，拼成「轨迹末尾：…」的说明文本。 */
@@ -721,6 +767,24 @@ export function parseProgress(
   if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0)
     return null;
   return { done, total };
+}
+
+/**
+ * 解析「第 k 步完成」这类**单步**自述，取最后一次出现的 k。
+ *
+ * 与 {@link parseProgress} 的分工：那条读收尾的 `步骤完成：k/n`（一次给全），
+ * 这条读过程中的「第 k 步完成：<结果>」。运行中只有后者可用——进度锚要在**每一轮**
+ * 都知道「当前该做第几步」，而收尾声明要等全部步骤跑完才出现。
+ *
+ * 只认带「完成」的写法：`extractTrace` 里大量「第 k 步」是在描述/计划，不是完成证据。
+ */
+export function parseStepMark(text: string): number | null {
+  const re = /第\s*(\d+)\s*步\s*(?:已)?完成/g;
+  const matches = [...text.matchAll(re)];
+  const m = matches.at(-1);
+  if (!m) return null;
+  const done = Number(m[1]);
+  return Number.isFinite(done) && done > 0 ? done : null;
 }
 
 /**
@@ -999,7 +1063,8 @@ export function summarizeSuite(members: SuiteMember[]): TestReport {
       // 只有调用方给出了来源才写这个字段：批处理模式的 JSON 与历史逐字一致。
       ...(m.origin ? { origin: m.origin } : {}),
       ...(m.report.summary ? { summary: m.report.summary } : {}),
-      // 异常归因同样只在成员报告有时才写：断言失败的场景不带这个字段。
+      // 中止原因与异常归因同理：只在成员报告有时才写。
+      ...(m.report.cancelReason ? { cancelReason: m.report.cancelReason } : {}),
       ...(m.report.reason ? { reason: m.report.reason } : {}),
       ...(m.report.skipped?.length ? { skipped: m.report.skipped } : {}),
       ...(m.report.screenshots?.length ? { screenshots: m.report.screenshots } : {}),
