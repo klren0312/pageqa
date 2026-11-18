@@ -63,7 +63,7 @@ import {
 // `agent/vars.js` 只做时间格式化与占位符展开（实测 ~2ms），且 `buildHelp` 是同步的、
 // `--help` 就要用——没有理由为它改成异步。
 import { captureRunVars, expandVars, VAR_HELP } from "./agent/vars.js";
-import { info, setDebug, debugLog } from "./shared/log.js";
+import { info, setDebug, debugLog, enableFileLog } from "./shared/log.js";
 import { parseLocale, setLocale, t } from "./shared/i18n.js";
 import {
   describeProxyRules,
@@ -1240,6 +1240,10 @@ async function main(): Promise<number> {
   // setDebug 提到这里：代理现状要与 `--debug` 一起判定，否则这行永远打不出来
   // （各分支末尾虽也会 setDebug，但那时这行早就过去了）。
   setDebug(args.debug);
+  // 进度日志落盘：终端一滚就没了，而事后排查要的是原文。按天一个文件、只留当天
+  // （`PAGEQA_LOG=0` 关、`PAGEQA_LOG_DIR` / `PAGEQA_LOG_KEEP_DAYS` 可调）。
+  // 放在这里而不是更早：`--debug` 已经生效，这行本身才有意义。
+  debugLog(`[log] 进度日志 → ${enableFileLog() ?? "（未启用）"}`);
   installProxyRouting();
   reportProxyRouting();
   markStartup("proxy");
